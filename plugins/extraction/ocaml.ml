@@ -191,7 +191,7 @@ let rec pp_expr par env args =
 	   pp_apply (record ++ str "." ++ pp_global Term r) par (List.tl args)
 	 with e when Errors.noncritical e -> apply (pp_global Term r))
     | MLfix (i,idtys,defs) ->
-	let ids',env' = push_vars (List.rev (Array.to_list ids)) env in
+	let ids',env' = push_vars (List.rev (Array.to_list (Array.map fst idtys))) env in
 	pp_fix par env' i (Array.of_list (List.rev ids'),defs) args
     | MLexn s ->
 	(* An [MLexn] may be applied, but I don't really care. *)
