@@ -109,19 +109,19 @@ type ml_ident =
 type ml_branch = ml_ident list * ml_pattern * ml_ast
 
 and ml_ast =
-  | MLrel    of int
+  | MLrel    of int * ml_type list
   | MLapp    of ml_ast * ml_ast list
-  | MLlam    of ml_ident * ml_ast
-  | MLletin  of ml_ident * ml_ast * ml_ast
-  | MLglob   of global_reference
+  | MLlam    of ml_ident * ml_type * ml_ast
+  | MLletin  of ml_ident * ml_schema * ml_ast * ml_ast
+  | MLglob   of global_reference * ml_type list
   | MLcons   of ml_type * global_reference * ml_ast list
   | MLtuple  of ml_ast list
   | MLcase   of ml_type * ml_ast * ml_branch array
-  | MLfix    of int * identifier array * ml_ast array
+  | MLfix    of int * (identifier * ml_type) array * ml_ast array
   | MLexn    of string
   | MLdummy
   | MLaxiom
-  | MLmagic  of ml_ast
+  | MLmagic  of ml_ast * ml_type
 
 and ml_pattern =
   | Pcons   of global_reference * ml_pattern list

@@ -92,11 +92,15 @@ let begins_with_CoqXX s =
   with Not_found -> false
 
 let unquote s =
-  if lang () <> Scheme then s
-  else
+  match lang () with
+  | Ocaml | Haskell -> s
+  | Scheme ->
     let s = String.copy s in
     for i=0 to String.length s - 1 do if s.[i] = '\'' then s.[i] <- '~' done;
     s
+  | Scala ->
+      let ss = List.map (function | "\'" -> "$prime" | c -> c) (explode s) in
+      String.concat "" ss
 
 let rec qualify delim = function
   | [] -> assert false
@@ -122,7 +126,7 @@ let uppercase_id id =
 type kind = Term | Type | Cons | Mod
 
 let upperkind = function
-  | Type -> lang () = Haskell
+  | Type -> lang () = Haskell || lang () = Scala
   | Term -> false
   | Cons | Mod -> true
 
@@ -569,6 +573,7 @@ let pp_global k r =
       | Scheme -> unquote s (* no modular Scheme extraction... *)
       | Haskell -> if modular () then pp_haskell_gen k mp rls else s
       | Ocaml -> pp_ocaml_gen k mp rls (Some l)
+      | Scala -> unquote s (* no modular Scheme extraction... *)
 
 (* The next function is used only in Ocaml extraction...*)
 

@@ -166,7 +166,7 @@ let rec pp_expr par env args =
   let apply st = pp_apply st par args
   and apply2 st = pp_apply2 st par args in
   function
-    | MLrel n ->
+    | MLrel (n,_) ->
 	let id = get_db_name n env in apply (pr_id id)
     | MLapp (f,args') ->
 	let stl = List.map (pp_expr true env []) args' in
@@ -177,19 +177,20 @@ let rec pp_expr par env args =
 	let fl,env' = push_vars fl env in
 	let st = pp_abst (List.rev fl) ++ pp_expr false env' [] a' in
 	apply2 st
-    | MLletin (id,a1,a2) ->
+    | MLletin (id,_,a1,a2) ->
 	let i,env' = push_vars [id_of_mlid id] env in
 	let pp_id = pr_id (List.hd i)
 	and pp_a1 = pp_expr false env [] a1
 	and pp_a2 = pp_expr (not par && expr_needs_par a2) env' [] a2 in
 	hv 0 (apply2 (pp_letin pp_id pp_a1 pp_a2))
-    | MLglob r ->
+    | MLglob (r,_) ->
 	(try
 	   let args = list_skipn (projection_arity r) args in
 	   let record = List.hd args in
 	   pp_apply (record ++ str "." ++ pp_global Term r) par (List.tl args)
 	 with _ -> apply (pp_global Term r))
-    | MLfix (i,ids,defs) ->
+    | MLfix (i,idtys,defs) ->
+        let ids = Array.map fst idtys in
 	let ids',env' = push_vars (List.rev (Array.to_list ids)) env in
 	pp_fix par env' i (Array.of_list (List.rev ids'),defs) args
     | MLexn s ->
@@ -197,7 +198,7 @@ let rec pp_expr par env args =
 	pp_par par (str "assert false" ++ spc () ++ str ("(* "^s^" *)"))
     | MLdummy ->
 	str "__" (* An [MLdummy] may be applied, but I don't really care. *)
-    | MLmagic a ->
+    | MLmagic (a,_) ->
 	pp_apply (str "Obj.magic") par (pp_expr true env [] a :: args)
     | MLaxiom ->
 	pp_par par (str "failwith \"AXIOM TO BE REALIZED\"")
@@ -271,8 +272,8 @@ and pp_record_proj par env typ t pv args =
   let n = List.length ids in
   let no_patvar a = not (List.exists (ast_occurs_itvl 1 n) a) in
   let rel_i,a = match body with
-    | MLrel i when i <= n -> i,[]
-    | MLapp(MLrel i, a) when i<=n && no_patvar a -> i,a
+    | MLrel (i,_) when i <= n -> i,[]
+    | MLapp(MLrel (i,_), a) when i<=n && no_patvar a -> i,a
     | _ -> raise Impossible
   in
   let rec lookup_rel i idx = function
@@ -345,7 +346,7 @@ and pp_function env t =
   let bl,t' = collect_lams t in
   let bl,env' = push_vars (List.map id_of_mlid bl) env in
   match t' with
-    | MLcase(Tglob(r,_),MLrel 1,pv) when
+    | MLcase(Tglob(r,_),MLrel (1,_),pv) when
 	not (is_coinductive r) && get_record_fields r = [] &&
 	not (is_custom_match pv) ->
 	if not (ast_occurs 1 (MLcase(Tunknown,MLdummy,pv))) then

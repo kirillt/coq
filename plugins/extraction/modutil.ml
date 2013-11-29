@@ -16,6 +16,8 @@ open Table
 open Mlutil
 open Mod_subst
 
+let tydummy = Tdummy Kother
+
 (*S Functions upon ML modules. *)
 
 let rec msid_of_mt = function
@@ -89,7 +91,7 @@ let ast_iter_references do_term do_cons do_type a =
   let rec iter a =
     ast_iter iter a;
     match a with
-      | MLglob r -> do_term r
+      | MLglob (r,_) -> do_term r
       | MLcons (_,r,_) -> do_cons r
       | MLcase (ty,_,v) ->
 	type_iter_references do_type ty;
@@ -239,11 +241,11 @@ let dfix_to_mlfix rv av i =
   let s = make_subst (Array.length rv - 1) Refmap'.empty
   in
   let rec subst n t = match t with
-    | MLglob ((ConstRef kn) as refe) ->
-	(try MLrel (n + (Refmap'.find refe s)) with Not_found -> t)
+    | MLglob ((ConstRef kn) as refe, _) ->
+(try MLrel (n + (Refmap'.find refe s),[]) with Not_found -> t)
     | _ -> ast_map_lift subst n t
   in
-  let ids = Array.map (fun r -> id_of_label (label_of_r r)) rv in
+  let ids = Array.map (fun r -> id_of_label (label_of_r r), tydummy) rv in
   let c = Array.map (subst 0) av
   in MLfix(i, ids, c)
 
@@ -258,7 +260,7 @@ let rec optim_se top to_appear s = function
       else
 	let d = match optimize_fix a with
 	  | MLfix (0, _, [|c|]) ->
-	      Dfix ([|r|], [|ast_subst (MLglob r) c|], [|t|])
+	      Dfix ([|r|], [|ast_subst (MLglob (r,[])) c|], [|t|])
 	  | a -> Dterm (r, a, t)
 	in (l,SEdecl d) :: (optim_se top to_appear s lse)
   | (l,SEdecl (Dfix (rv,av,tv))) :: lse ->

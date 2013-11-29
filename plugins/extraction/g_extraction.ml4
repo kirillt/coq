@@ -43,12 +43,14 @@ let pr_language = function
   | Ocaml -> str "Ocaml"
   | Haskell -> str "Haskell"
   | Scheme -> str "Scheme"
+  | Scala -> str "Scala"
 
 VERNAC ARGUMENT EXTEND language
 PRINTED BY pr_language
 | [ "Ocaml" ] -> [ Ocaml ]
 | [ "Haskell" ] -> [ Haskell ]
 | [ "Scheme" ] -> [ Scheme ]
+| [ "Scala" ] -> [ Scala ]
 END
 
 (* Extraction commands *)
