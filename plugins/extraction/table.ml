@@ -11,10 +11,11 @@ open Term
 open Declarations
 open Nameops
 open Namegen
-open Summary
 open Libobject
 open Goptions
 open Libnames
+open Globnames
+open Errors
 open Util
 open Pp
 open Miniml
@@ -22,14 +23,14 @@ open Miniml
 (** Sets and maps for [global_reference] that use the "user" [kernel_name]
     instead of the canonical one *)
 
-module Refmap' = Map.Make(RefOrdered_env)
-module Refset' = Set.Make(RefOrdered_env)
+module Refmap' = Refmap_env
+module Refset' = Refset_env
 
 (*S Utilities about [module_path] and [kernel_names] and [global_reference] *)
 
 let occur_kn_in_ref kn = function
   | IndRef (kn',_)
-  | ConstructRef ((kn',_),_) -> kn = kn'
+  | ConstructRef ((kn',_),_) -> Names.eq_mind kn kn'
   | ConstRef _ -> false
   | VarRef _ -> assert false
 
@@ -54,21 +55,19 @@ let is_modfile = function
   | _ -> false
 
 let raw_string_of_modfile = function
-  | MPfile f -> String.capitalize (string_of_id (List.hd (repr_dirpath f)))
+  | MPfile f -> String.capitalize (Id.to_string (List.hd (DirPath.repr f)))
   | _ -> assert false
 
-let current_toplevel () = fst (Lib.current_prefix ())
-
 let is_toplevel mp =
-  mp = initial_path || mp = current_toplevel ()
+  ModPath.equal mp initial_path || ModPath.equal mp (Lib.current_mp ())
 
 let at_toplevel mp =
   is_modfile mp || is_toplevel mp
 
-let rec mp_length mp =
-  let mp0 = current_toplevel () in
+let mp_length mp =
+  let mp0 = Lib.current_mp () in
   let rec len = function
-    | mp when mp = mp0 -> 1
+    | mp when ModPath.equal mp mp0 -> 1
     | MPdot (mp,_) -> 1 + len mp
     | _ -> 1
   in len mp
@@ -80,7 +79,7 @@ let rec prefixes_mp mp = match mp with
   | _ -> MPset.singleton mp
 
 let rec get_nth_label_mp n = function
-  | MPdot (mp,l) -> if n=1 then l else get_nth_label_mp (n-1) mp
+  | MPdot (mp,l) -> if Int.equal n 1 then l else get_nth_label_mp (n-1) mp
   | _ -> failwith "get_nth_label: not enough MPdot"
 
 let common_prefix_from_list mp0 mpl =
@@ -91,12 +90,12 @@ let common_prefix_from_list mp0 mpl =
   in f mpl
 
 let rec parse_labels2 ll mp1 = function
-  | mp when mp1=mp -> mp,ll
+  | mp when ModPath.equal mp1 mp -> mp,ll
   | MPdot (mp,l) -> parse_labels2 (l::ll) mp1 mp
   | mp -> mp,ll
 
 let labels_of_ref r =
-  let mp_top = current_toplevel () in
+  let mp_top = Lib.current_mp () in
   let mp,_,l = repr_of_r r in
   parse_labels2 [l] mp_top mp
 
@@ -138,7 +137,7 @@ let is_coinductive r =
     | IndRef (kn,_) -> kn
     | _ -> assert false
   in
-  try Mindmap_env.find kn !inductive_kinds = Coinductive
+  try Mindmap_env.find kn !inductive_kinds == Coinductive
   with Not_found -> false
 
 let is_coinductive_type = function
@@ -163,29 +162,27 @@ let record_fields_of_type = function
 (*s Recursors table. *)
 
 (* NB: here we can use the equivalence between canonical
-   and user constant names : Cset is fine, no need for [Cset_env] *)
+   and user constant names. *)
 
-let recursors = ref Cset.empty
-let init_recursors () = recursors := Cset.empty
+let recursors = ref KNset.empty
+let init_recursors () = recursors := KNset.empty
 
-let add_recursors env kn =
-  let mk_con id =
-    make_con_equiv
-      (modpath (user_mind kn))
-      (modpath (canonical_mind kn))
-      empty_dirpath (label_of_id id)
+let add_recursors env ind =
+  let kn = MutInd.canonical ind in
+  let mk_kn id =
+    KerName.make (KerName.modpath kn) DirPath.empty (Label.of_id id)
   in
-  let mib = Environ.lookup_mind kn env in
+  let mib = Environ.lookup_mind ind env in
   Array.iter
     (fun mip ->
        let id = mip.mind_typename in
-       let c_rec = mk_con (Nameops.add_suffix id "_rec")
-       and c_rect = mk_con (Nameops.add_suffix id "_rect") in
-       recursors := Cset.add c_rec (Cset.add c_rect !recursors))
+       let kn_rec = mk_kn (Nameops.add_suffix id "_rec")
+       and kn_rect = mk_kn (Nameops.add_suffix id "_rect") in
+       recursors := KNset.add kn_rec (KNset.add kn_rect !recursors))
     mib.mind_packets
 
 let is_recursor = function
-  | ConstRef kn -> Cset.mem kn !recursors
+  | ConstRef c -> KNset.mem (Constant.canonical c) !recursors
   | _ -> false
 
 (*s Record tables. *)
@@ -240,11 +237,11 @@ let safe_basename_of_global r =
   let last_chance r =
     try Nametab.basename_of_global r
     with Not_found ->
-      anomaly "Inductive object unknown to extraction and not globally visible"
+      anomaly (Pp.str "Inductive object unknown to extraction and not globally visible")
   in
   match r with
-    | ConstRef kn -> id_of_label (con_label kn)
-    | IndRef (kn,0) -> id_of_label (mind_label kn)
+    | ConstRef kn -> Label.to_id (con_label kn)
+    | IndRef (kn,0) -> Label.to_id (mind_label kn)
     | IndRef (kn,i) ->
       (try (snd (lookup_ind kn)).ind_packets.(i).ip_typename
        with Not_found -> last_chance r)
@@ -254,8 +251,13 @@ let safe_basename_of_global r =
     | VarRef _ -> assert false
 
 let string_of_global r =
+<<<<<<< HEAD
  try string_of_qualid (Nametab.shortest_qualid_of_global Idset.empty r)
  with e when Errors.noncritical e -> string_of_id (safe_basename_of_global r)
+=======
+ try string_of_qualid (Nametab.shortest_qualid_of_global Id.Set.empty r)
+ with Not_found -> Id.to_string (safe_basename_of_global r)
+>>>>>>> trunk
 
 let safe_pr_global r = str (string_of_global r)
 
@@ -263,15 +265,19 @@ let safe_pr_global r = str (string_of_global r)
 
 let safe_pr_long_global r =
   try Printer.pr_global r
+<<<<<<< HEAD
   with e when Errors.noncritical e -> match r with
+=======
+  with Not_found -> match r with
+>>>>>>> trunk
     | ConstRef kn ->
 	let mp,_,l = repr_con kn in
-	str ((string_of_mp mp)^"."^(string_of_label l))
+	str ((string_of_mp mp)^"."^(Label.to_string l))
     | _ -> assert false
 
 let pr_long_mp mp =
-  let lid = repr_dirpath (Nametab.dirpath_of_module mp) in
-  str (String.concat "." (List.map string_of_id (List.rev lid)))
+  let lid = DirPath.repr (Nametab.dirpath_of_module mp) in
+  str (String.concat "." (List.rev_map Id.to_string lid))
 
 let pr_long_global ref = pr_path (Nametab.path_of_global ref)
 
@@ -281,18 +287,18 @@ let err s = errorlabstrm "Extraction" s
 
 let warning_axioms () =
   let info_axioms = Refset'.elements !info_axioms in
-  if info_axioms = [] then ()
+  if List.is_empty info_axioms then ()
   else begin
-    let s = if List.length info_axioms = 1 then "axiom" else "axioms" in
+    let s = if Int.equal (List.length info_axioms) 1 then "axiom" else "axioms" in
     msg_warning
       (str ("The following "^s^" must be realized in the extracted code:")
        ++ hov 1 (spc () ++ prlist_with_sep spc safe_pr_global info_axioms)
        ++ str "." ++ fnl ())
   end;
   let log_axioms = Refset'.elements !log_axioms in
-  if log_axioms = [] then ()
+  if List.is_empty log_axioms then ()
   else begin
-    let s = if List.length log_axioms = 1 then "axiom was" else "axioms were"
+    let s = if Int.equal (List.length log_axioms) 1 then "axiom was" else "axioms were"
     in
     msg_warning
       (str ("The following logical "^s^" encountered:") ++
@@ -303,13 +309,13 @@ let warning_axioms () =
        spc () ++ str "may lead to incorrect or non-terminating ML terms." ++
        fnl ())
   end;
-  if !Flags.load_proofs = Flags.Dont && info_axioms@log_axioms <> [] then
+  if !Flags.load_proofs == Flags.Dont && not (List.is_empty (info_axioms@log_axioms)) then
     msg_warning
       (str "Some of these axioms might be due to option -dont-load-proofs.")
 
 let warning_opaques accessed =
   let opaques = Refset'.elements !opaques in
-  if opaques = [] then ()
+  if List.is_empty opaques then ()
   else
     let lst = hov 1 (spc () ++ prlist_with_sep spc safe_pr_global opaques) in
     if accessed then
@@ -337,7 +343,7 @@ let warning_both_mod_and_cst q mp r =
 
 let error_axiom_scheme r i =
   err (str "The type scheme axiom " ++ spc () ++
-       safe_pr_global r ++ spc () ++ str "needs " ++ pr_int i ++
+       safe_pr_global r ++ spc () ++ str "needs " ++ int i ++
        str " type variable(s).")
 
 let check_inside_module () =
@@ -409,9 +415,9 @@ let error_MPfile_as_mod mp b =
 let msg_non_implicit r n id =
   let name = match id with
     | Anonymous -> ""
-    | Name id -> "(" ^ string_of_id id ^ ") "
+    | Name id -> "(" ^ Id.to_string id ^ ") "
   in
-  "The " ^ (ordinal n) ^ " argument " ^ name ^ "of " ^ (string_of_global r)
+  "The " ^ (String.ordinal n) ^ " argument " ^ name ^ "of " ^ (string_of_global r)
 
 let error_non_implicit msg =
   err (str (msg ^ " still occurs after extraction.") ++
@@ -420,16 +426,16 @@ let error_non_implicit msg =
 let check_loaded_modfile mp = match base_mp mp with
   | MPfile dp ->
       if not (Library.library_is_loaded dp) then begin
-	match base_mp (current_toplevel ()) with
-	  | MPfile dp' when dp<>dp' ->
-	      err (str ("Please load library "^(string_of_dirpath dp^" first.")))
+	match base_mp (Lib.current_mp ()) with
+	  | MPfile dp' when not (DirPath.equal dp dp') ->
+	      err (str ("Please load library "^(DirPath.to_string dp^" first.")))
 	  | _ -> ()
       end
   | _ -> ()
 
 let info_file f =
-  Flags.if_verbose message
-    ("The file "^f^" has been created by extraction.")
+  Flags.if_verbose msg_info
+    (str ("The file "^f^" has been created by extraction."))
 
 
 (*S The Extraction auxiliary commands *)
@@ -481,7 +487,7 @@ type opt_flag =
       opt_lin_let : bool;   (* 512 *)
       opt_lin_beta : bool } (* 1024 *)
 
-let kth_digit n k = (n land (1 lsl k) <> 0)
+let kth_digit n k = not (Int.equal (n land (1 lsl k)) 0)
 
 let flag_of_int n =
     { opt_kill_dum = kth_digit n 0;
@@ -518,7 +524,7 @@ let _ = declare_bool_option
            optdepr = false;
 	   optname = "Extraction Optimize";
 	   optkey = ["Extraction"; "Optimize"];
-	   optread = (fun () -> !int_flag_ref <> 0);
+	   optread = (fun () -> not (Int.equal !int_flag_ref 0));
 	   optwrite = (fun b -> chg_flag (if b then int_flag_init else 0))}
 
 let _ = declare_int_option
@@ -531,12 +537,37 @@ let _ = declare_int_option
                           | None -> chg_flag 0
                           | Some i -> chg_flag (max i 0))}
 
+(* This option controls whether "dummy lambda" are removed when a
+   toplevel constant is defined. *)
+let conservative_types_ref = ref false
+let conservative_types () = !conservative_types_ref
+
+let _ = declare_bool_option
+  {optsync = true;
+   optdepr = false;
+   optname = "Extraction Conservative Types";
+   optkey = ["Extraction"; "Conservative"; "Types"];
+   optread = (fun () -> !conservative_types_ref);
+   optwrite = (fun b -> conservative_types_ref := b) }
+
+
+(* Allows to print a comment at the beginning of the output files *)
+let file_comment_ref = ref ""
+let file_comment () = !file_comment_ref
+
+let _ = declare_string_option
+  {optsync = true;
+   optdepr = false;
+   optname = "Extraction File Comment";
+   optkey = ["Extraction"; "File"; "Comment"];
+   optread = (fun () -> !file_comment_ref);
+   optwrite = (fun s -> file_comment_ref := s) }
 
 (*s Extraction Lang *)
 
 type lang = Ocaml | Haskell | Scheme | Scala
 
-let lang_ref = ref Ocaml
+let lang_ref = Summary.ref Ocaml ~name:"ExtrLang"
 
 let lang () = !lang_ref
 
@@ -546,18 +577,13 @@ let extr_lang : lang -> obj =
        cache_function = (fun (_,l) -> lang_ref := l);
        load_function = (fun _ (_,l) -> lang_ref := l)}
 
-let _ = declare_summary "Extraction Lang"
-	  { freeze_function = (fun () -> !lang_ref);
-	    unfreeze_function = ((:=) lang_ref);
-	    init_function = (fun () -> lang_ref := Ocaml) }
-
 let extraction_language x = Lib.add_anonymous_leaf (extr_lang x)
 
 (*s Extraction Inline/NoInline *)
 
 let empty_inline_table = (Refset'.empty,Refset'.empty)
 
-let inline_table = ref empty_inline_table
+let inline_table = Summary.ref empty_inline_table ~name:"ExtrInline"
 
 let to_inline r = Refset'.mem r (fst !inline_table)
 
@@ -584,11 +610,6 @@ let inline_extraction : bool * global_reference list -> obj =
         (fun (s,(b,l)) -> (b,(List.map (fun x -> fst (subst_global s x)) l)))
     }
 
-let _ = declare_summary "Extraction Inline"
-	  { freeze_function = (fun () -> !inline_table);
-	    unfreeze_function = ((:=) inline_table);
-	    init_function = (fun () -> inline_table := empty_inline_table) }
-
 (* Grammar entries. *)
 
 let extraction_inline b l =
@@ -604,7 +625,6 @@ let extraction_inline b l =
 let print_extraction_inline () =
   let (i,n)= !inline_table in
   let i'= Refset'.filter (function ConstRef _ -> true | _ -> false) i in
-  msg
     (str "Extraction Inline:" ++ fnl () ++
      Refset'.fold
        (fun r p ->
@@ -626,9 +646,9 @@ let reset_extraction_inline () = Lib.add_anonymous_leaf (reset_inline ())
 
 (*s Extraction Implicit *)
 
-type int_or_id = ArgInt of int | ArgId of identifier
+type int_or_id = ArgInt of int | ArgId of Id.t
 
-let implicits_table = ref Refmap'.empty
+let implicits_table = Summary.ref Refmap'.empty ~name:"ExtrImplicit"
 
 let implicits_of_global r =
  try Refmap'.find r !implicits_table with Not_found -> []
@@ -645,7 +665,7 @@ let add_implicits r l =
 	else err (int i ++ str " is not a valid argument number for " ++
 		  safe_pr_global r)
     | ArgId id ->
-	(try list_index (Name id) names
+	(try List.index Name.equal (Name id) names
 	 with Not_found ->
 	   err (str "No argument " ++ pr_id id ++ str " for " ++
 		safe_pr_global r))
@@ -664,11 +684,6 @@ let implicit_extraction : global_reference * int_or_id list -> obj =
        subst_function = (fun (s,(r,l)) -> (fst (subst_global s r), l))
     }
 
-let _ = declare_summary "Extraction Implicit"
-	  { freeze_function = (fun () -> !implicits_table);
-	    unfreeze_function = ((:=) implicits_table);
-	    init_function = (fun () -> implicits_table := Refmap'.empty) }
-
 (* Grammar entries. *)
 
 let extraction_implicit r l =
@@ -678,21 +693,21 @@ let extraction_implicit r l =
 
 (*s Extraction Blacklist of filenames not to use while extracting *)
 
-let blacklist_table = ref Idset.empty
+let blacklist_table = Summary.ref Id.Set.empty ~name:"ExtrBlacklist"
 
 let modfile_ids = ref []
 let modfile_mps = ref MPmap.empty
 
 let reset_modfile () =
-  modfile_ids := Idset.elements !blacklist_table;
+  modfile_ids := Id.Set.elements !blacklist_table;
   modfile_mps := MPmap.empty
 
 let string_of_modfile mp =
   try MPmap.find mp !modfile_mps
   with Not_found ->
-    let id = id_of_string (raw_string_of_modfile mp) in
+    let id = Id.of_string (raw_string_of_modfile mp) in
     let id' = next_ident_away id !modfile_ids in
-    let s' = string_of_id id' in
+    let s' = Id.to_string id' in
     modfile_ids := id' :: !modfile_ids;
     modfile_mps := MPmap.add mp s' !modfile_mps;
     s'
@@ -701,16 +716,16 @@ let string_of_modfile mp =
 
 let file_of_modfile mp =
   let s0 = match mp with
-    | MPfile f -> string_of_id (List.hd (repr_dirpath f))
+    | MPfile f -> Id.to_string (List.hd (DirPath.repr f))
     | _ -> assert false
   in
   let s = String.copy (string_of_modfile mp) in
-  if s.[0] <> s0.[0] then s.[0] <- s0.[0];
+  if s.[0] != s0.[0] then s.[0] <- s0.[0];
   s
 
 let add_blacklist_entries l =
   blacklist_table :=
-    List.fold_right (fun s -> Idset.add (id_of_string (String.capitalize s)))
+    List.fold_right (fun s -> Id.Set.add (Id.of_string (String.capitalize s)))
       l !blacklist_table
 
 (* Registration of operations for rollback. *)
@@ -723,40 +738,33 @@ let blacklist_extraction : string list -> obj =
        subst_function = (fun (_,x) -> x)
     }
 
-let _ = declare_summary "Extraction Blacklist"
-	  { freeze_function = (fun () -> !blacklist_table);
-	    unfreeze_function = ((:=) blacklist_table);
-	    init_function = (fun () -> blacklist_table := Idset.empty) }
-
 (* Grammar entries. *)
 
 let extraction_blacklist l =
-  let l = List.rev_map string_of_id l in
+  let l = List.rev_map Id.to_string l in
   Lib.add_anonymous_leaf (blacklist_extraction l)
 
 (* Printing part *)
 
 let print_extraction_blacklist () =
-  msgnl
-    (prlist_with_sep fnl pr_id (Idset.elements !blacklist_table))
+  prlist_with_sep fnl pr_id (Id.Set.elements !blacklist_table)
 
 (* Reset part *)
 
 let reset_blacklist : unit -> obj =
   declare_object
     {(default_object "Reset Extraction Blacklist") with
-       cache_function = (fun (_,_)-> blacklist_table := Idset.empty);
-       load_function = (fun _ (_,_)-> blacklist_table := Idset.empty)}
+       cache_function = (fun (_,_)-> blacklist_table := Id.Set.empty);
+       load_function = (fun _ (_,_)-> blacklist_table := Id.Set.empty)}
 
 let reset_extraction_blacklist () = Lib.add_anonymous_leaf (reset_blacklist ())
 
 (*s Extract Constant/Inductive. *)
 
 (* UGLY HACK: to be defined in [extraction.ml] *)
-let use_type_scheme_nb_args, register_type_scheme_nb_args =
-  let r = ref (fun _ _ -> 0) in (fun x y -> !r x y), (:=) r
+let (use_type_scheme_nb_args, type_scheme_nb_args_hook) = Hook.make ()
 
-let customs = ref Refmap'.empty
+let customs = Summary.ref Refmap'.empty ~name:"ExtrCustom"
 
 let add_custom r ids s = customs := Refmap'.add r (ids,s) !customs
 
@@ -768,13 +776,13 @@ let find_custom r = snd (Refmap'.find r !customs)
 
 let find_type_custom r = Refmap'.find r !customs
 
-let custom_matchs = ref Refmap'.empty
+let custom_matchs = Summary.ref Refmap'.empty ~name:"ExtrCustomMatchs"
 
 let add_custom_match r s =
   custom_matchs := Refmap'.add r s !custom_matchs
 
 let indref_of_match pv =
-  if Array.length pv = 0 then raise Not_found;
+  if Array.is_empty pv then raise Not_found;
   let (_,pat,_) = pv.(0) in
   match pat with
     | Pusual (ConstructRef (ip,_)) -> IndRef ip
@@ -800,11 +808,6 @@ let in_customs : global_reference * string list * string -> obj =
         (fun (s,(r,ids,str)) -> (fst (subst_global s r), ids, str))
     }
 
-let _ = declare_summary "ML extractions"
-	  { freeze_function = (fun () -> !customs);
-	    unfreeze_function = ((:=) customs);
-	    init_function = (fun () -> customs := Refmap'.empty) }
-
 let in_custom_matchs : global_reference * string -> obj =
   declare_object
     {(default_object "ML extractions custom matchs") with
@@ -813,11 +816,6 @@ let in_custom_matchs : global_reference * string -> obj =
        classify_function = (fun o -> Substitute o);
        subst_function = (fun (subs,(r,s)) -> (fst (subst_global subs r), s))
     }
-
-let _ = declare_summary "ML extractions custom match"
-	  { freeze_function = (fun () -> !custom_matchs);
-	    unfreeze_function = ((:=) custom_matchs);
-	    init_function = (fun () -> custom_matchs := Refmap'.empty) }
 
 (* Grammar entries. *)
 
@@ -831,8 +829,8 @@ let extract_constant_inline inline r ids s =
 	let typ = Reduction.whd_betadeltaiota env typ in
 	if Reduction.is_arity env typ
 	  then begin
-	    let nargs = use_type_scheme_nb_args env typ in
-	    if List.length ids <> nargs then error_axiom_scheme g nargs
+	    let nargs = Hook.get use_type_scheme_nb_args env typ in
+	    if not (Int.equal (List.length ids) nargs) then error_axiom_scheme g nargs
 	  end;
 	Lib.add_anonymous_leaf (inline_extraction (inline,[g]));
 	Lib.add_anonymous_leaf (in_customs (g,ids,s))
@@ -847,12 +845,12 @@ let extract_inductive r s l optstr =
     | IndRef ((kn,i) as ip) ->
 	let mib = Global.lookup_mind kn in
 	let n = Array.length mib.mind_packets.(i).mind_consnames in
-	if n <> List.length l then error_nb_cons ();
+	if not (Int.equal n (List.length l)) then error_nb_cons ();
 	Lib.add_anonymous_leaf (inline_extraction (true,[g]));
 	Lib.add_anonymous_leaf (in_customs (g,[],s));
 	Option.iter (fun s -> Lib.add_anonymous_leaf (in_custom_matchs (g,s)))
 	  optstr;
-	list_iter_i
+	List.iteri
 	  (fun j s ->
 	     let g = ConstructRef (ip,succ j) in
 	     Lib.add_anonymous_leaf (inline_extraction (true,[g]));
