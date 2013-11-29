@@ -127,12 +127,7 @@ let pp_type par vl t =
   let rec pp_rec par = function
     | Tmeta _ | Tvar' _ | Taxiom -> assert false
     | Tvar i -> (try pp_tvar (List.nth vl (pred i))
-<<<<<<< HEAD
-		 with e when Errors.noncritical e ->
-                   (str "'a" ++ int i))
-=======
                  with Failure _ -> (str "'a" ++ int i))
->>>>>>> trunk
     | Tglob (r,[a1;a2]) when is_infix r ->
 	pp_par par (pp_rec true a1 ++ str (get_infix r) ++ pp_rec true a2)
     | Tglob (r,[]) -> pp_global Type r
@@ -202,13 +197,8 @@ let rec pp_expr par env args =
 	   let record = List.hd args in
 	   pp_apply (record ++ str "." ++ pp_global Term r) par (List.tl args)
 	 with e when Errors.noncritical e -> apply (pp_global Term r))
-<<<<<<< HEAD
     | MLfix (i,idtys,defs) ->
 	let ids',env' = push_vars (List.rev (Array.to_list (Array.map fst idtys))) env in
-=======
-    | MLfix (i,ids,defs) ->
-	let ids',env' = push_vars (List.rev (Array.to_list ids)) env in
->>>>>>> trunk
 	pp_fix par env' i (Array.of_list (List.rev ids'),defs) args
     | MLexn s ->
 	(* An [MLexn] may be applied, but I don't really care. *)
@@ -363,13 +353,8 @@ and pp_function env t =
   let bl,t' = collect_lams t in
   let bl,env' = push_vars (List.map id_of_mlid bl) env in
   match t' with
-<<<<<<< HEAD
     | MLcase(Tglob(r,_),MLrel (1,_),pv) when
-	not (is_coinductive r) && get_record_fields r = [] &&
-=======
-    | MLcase(Tglob(r,_),MLrel 1,pv) when
 	not (is_coinductive r) && List.is_empty (get_record_fields r) &&
->>>>>>> trunk
 	not (is_custom_match pv) ->
 	if not (ast_occurs 1 (MLcase(Tunknown,MLdummy,pv))) then
 	  pr_binding (List.rev (List.tl bl)) ++
