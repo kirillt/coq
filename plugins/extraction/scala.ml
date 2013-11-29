@@ -3,6 +3,7 @@ open Util           (* lib/util.ml *)
 module N = Names    (* kernel/names.ml *)
 module No = Nameops (* library/nameops.ml *) 
 module L = Libnames (* library/libnames.ml *)
+module G = Globnames (* library/globnames.ml *)
 
 module T = Table
 open Miniml
@@ -37,7 +38,7 @@ let keywords =
     "final"; "implicit"; "null"; "protected"; "throw"; "val"; ]
   N.Idset.empty
 
-let preamble mod_name used_modules usf = str ""
+let preamble mod_name opt used_modules usf = str ""
 
 let prarray_with_sep pp f xs = prlist_with_sep pp f (Array.to_list xs)
 let prlist_with_comma f xs = prlist_with_sep (fun () -> str ", ") f xs
@@ -49,7 +50,7 @@ let pp_global k r =
 
 let pr_id id =
   let s = N.string_of_id id in
-  let ss = List.map (function | "\'" -> "$prime" | c -> c) (explode s) in
+  let ss = List.map (function | "\'" -> "$prime" | c -> c) (CString.explode s) in
   str (String.concat "" ss)
 
 let free_type_vars typ =
@@ -57,7 +58,7 @@ let free_type_vars typ =
   let rec iter = function
     | Tmeta _ | Tvar' _ -> S.empty
     | Tvar (i:int) ->  S.singleton i
-    | Tglob ((r: L.global_reference), (l: ml_type list)) ->
+    | Tglob ((r: G.global_reference), (l: ml_type list)) ->
 	List.fold_left (fun store typ ->
 	  S.union store (iter typ)) S.empty l
     | Tarr (t1,t2) ->
@@ -89,7 +90,7 @@ let rec pp_type (tvs:N.identifier list) = function
 (*	| None -> str (name_of_tvar2 i)*)
         | None -> str "Any"
 	end
-    | Tglob ((r: L.global_reference), (l: ml_type list)) ->
+    | Tglob ((r: G.global_reference), (l: ml_type list)) ->
 	pp_global C.Type r
 	  ++ if l = [] then mt ()
 	     else str "[" ++ prlist_with_comma (pp_type tvs) l ++ str "]"
@@ -133,7 +134,7 @@ let rec pp_expr (tvs: N.identifier list) (env: C.env) : ml_ast -> 'a =
           else str"[" ++ prlist_with_comma (pp_type tvs) ty_args ++ str "]"
         in
         pp_global C.Term r ++ type_annot
-    | MLcons ((_: ml_type), (r: L.global_reference), (args: ml_ast list)) ->
+    | MLcons ((_: ml_type), (r: G.global_reference), (args: ml_ast list)) ->
 	pp_global C.Cons r ++ str "("
 	  ++ prlist_with_comma (pp_expr tvs env) args ++ str ")"
     | MLtuple (ts : ml_ast list) ->
@@ -148,7 +149,7 @@ let rec pp_expr (tvs: N.identifier list) (env: C.env) : ml_ast -> 'a =
 	let ids'' = List.rev ids' in
 	let local_defs =
 	  prlist_with_sep Pp.fnl id
-	    (list_map3 (fun id ty def -> local_def' tvs env' id 0 ty def)
+	    (List.map3 (fun id ty def -> local_def' tvs env' id 0 ty def)
 	       ids'' tys (Array.to_list defs))
 	in
 	let body = pr_id (List.nth ids'' i) in
@@ -221,12 +222,12 @@ let pp_singleton kn packet =
   let params = if l = [] then mt ()
       else str "[" ++ prlist_with_comma pr_id l ++ str "]"
   in
-  str "type " ++ pp_global C.Type (L.IndRef (kn, 0)) ++ params 
+  str "type " ++ pp_global C.Type (G.IndRef (kn, 0)) ++ params 
     ++ str " = " ++ pp_type l' (List.hd packet.ip_types.(0)) ++ fnl()
 
 let pp_one_ind (ip: N.inductive) (tvars: N.identifier list)
     (cv: ml_type list array) =
-  let tname = pp_global C.Type (L.IndRef ip) in
+  let tname = pp_global C.Type (G.IndRef ip) in
   let pp_tvars vs =
     if vs = [] then mt()
     else str "[" ++ prlist_with_comma pr_id vs ++ str "]"
@@ -242,7 +243,7 @@ let pp_one_ind (ip: N.inductive) (tvars: N.identifier list)
   in
   str "sealed abstract class " ++ tname ++ pp_tvars tvars ++ fnl()
     ++ prvect_with_sep Pp.fnl pp_constructor
-      (Array.mapi (fun j typ -> (L.ConstructRef(ip,j+1), typ)) cv)
+      (Array.mapi (fun j typ -> (G.ConstructRef(ip,j+1), typ)) cv)
     
 
 let pp_decl : ml_decl -> std_ppcmds = function
@@ -259,7 +260,7 @@ let pp_decl : ml_decl -> std_ppcmds = function
 	    ++ iter (i+1)
       in
       iter 0
-  | Dtype ((r:L.global_reference), (l: N.identifier list), (t: ml_type)) ->
+  | Dtype ((r: G.global_reference), (l: N.identifier list), (t: ml_type)) ->
       if T.is_inline_custom r then mt()
       else
         let name = pp_global C.Type r in
@@ -272,7 +273,7 @@ let pp_decl : ml_decl -> std_ppcmds = function
             else str "[" ++ prlist_with_comma id ty_args ++ str "]"
         in
         str "type " ++ name ++ tparams ++ str " = " ++ def ++ Pp.fnl()
-  | Dfix ((rv: L.global_reference array), (defs: ml_ast array), (typs: ml_type array)) ->
+  | Dfix ((rv: G.global_reference array), (defs: ml_ast array), (typs: ml_type array)) ->
       let max = Array.length rv in
       let rec iter i =
 	if i = max then mt ()
@@ -280,7 +281,7 @@ let pp_decl : ml_decl -> std_ppcmds = function
 	  pp_def rv.(i) defs.(i) typs.(i) ++ iter (i+1)
       in
       iter 0
-  | Dterm ((r: L.global_reference), (a: ml_ast), (t: ml_type)) ->
+  | Dterm ((r: G.global_reference), (a: ml_ast), (t: ml_type)) ->
       if T.is_inline_custom r then mt ()
       else pp_def r a t
 
@@ -314,7 +315,7 @@ let descr = {
   preamble = preamble;
   pp_struct = pp_struct;
   sig_suffix = None;
-  sig_preamble = (fun _ _ _ -> mt ());
+  sig_preamble = (fun _ _ _ _ -> mt ());
   pp_sig = (fun _ -> mt ());
   pp_decl = pp_decl;
 }

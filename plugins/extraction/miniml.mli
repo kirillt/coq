@@ -9,9 +9,8 @@
 (*s Target language for extraction: a core ML called MiniML. *)
 
 open Pp
-open Util
 open Names
-open Libnames
+open Globnames
 
 (* The [signature] type is used to know how many arguments a CIC
    object expects, and what these arguments will become in the ML
@@ -66,11 +65,11 @@ type inductive_kind =
 *)
 
 type ml_ind_packet = {
-  ip_typename : identifier;
-  ip_consnames : identifier array;
+  ip_typename : Id.t;
+  ip_consnames : Id.t array;
   ip_logical : bool;
   ip_sign : signature;
-  ip_vars : identifier list;
+  ip_vars : Id.t list;
   ip_types : (ml_type list) array
 }
 
@@ -92,8 +91,8 @@ type ml_ind = {
 
 type ml_ident =
   | Dummy
-  | Id of identifier
-  | Tmp of identifier
+  | Id of Id.t
+  | Tmp of Id.t
 
 (** We now store some typing information on constructors
     and cases to avoid type-unsafe optimisations. This will be
@@ -134,13 +133,13 @@ and ml_pattern =
 
 type ml_decl =
   | Dind  of mutual_inductive * ml_ind
-  | Dtype of global_reference * identifier list * ml_type
+  | Dtype of global_reference * Id.t list * ml_type
   | Dterm of global_reference * ml_ast * ml_type
   | Dfix  of global_reference array * ml_ast array * ml_type array
 
 type ml_spec =
   | Sind  of mutual_inductive * ml_ind
-  | Stype of global_reference * identifier list * ml_type option
+  | Stype of global_reference * Id.t list * ml_type option
   | Sval  of global_reference * ml_type
 
 type ml_specif =
@@ -150,15 +149,15 @@ type ml_specif =
 
 and ml_module_type =
   | MTident of module_path
-  | MTfunsig of mod_bound_id * ml_module_type * ml_module_type
+  | MTfunsig of MBId.t * ml_module_type * ml_module_type
   | MTsig of module_path * ml_module_sig
   | MTwith of ml_module_type * ml_with_declaration
 
 and ml_with_declaration =
-  | ML_With_type of identifier list * identifier list * ml_type
-  | ML_With_module of identifier list * module_path
+  | ML_With_type of Id.t list * Id.t list * ml_type
+  | ML_With_module of Id.t list * module_path
 
-and ml_module_sig = (label * ml_specif) list
+and ml_module_sig = (Label.t * ml_specif) list
 
 type ml_structure_elem =
   | SEdecl of ml_decl
@@ -167,11 +166,11 @@ type ml_structure_elem =
 
 and ml_module_expr =
   | MEident of module_path
-  | MEfunctor of mod_bound_id * ml_module_type * ml_module_expr
+  | MEfunctor of MBId.t * ml_module_type * ml_module_expr
   | MEstruct of module_path * ml_module_structure
   | MEapply of ml_module_expr * ml_module_expr
 
-and ml_module_structure = (label * ml_structure_elem) list
+and ml_module_structure = (Label.t * ml_structure_elem) list
 
 and ml_module =
     { ml_mod_expr : ml_module_expr;
@@ -192,16 +191,22 @@ type unsafe_needs = {
 }
 
 type language_descr = {
-  keywords : Idset.t;
+  keywords : Id.Set.t;
 
   (* Concerning the source file *)
   file_suffix : string;
-  preamble : identifier -> module_path list -> unsafe_needs -> std_ppcmds;
+  (* the second argument is a comment to add to the preamble *)
+  preamble :
+    Id.t -> std_ppcmds option -> module_path list -> unsafe_needs ->
+    std_ppcmds;
   pp_struct : ml_structure -> std_ppcmds;
 
   (* Concerning a possible interface file *)
   sig_suffix : string option;
-  sig_preamble : identifier -> module_path list -> unsafe_needs -> std_ppcmds;
+  (* the second argument is a comment to add to the preamble *)
+  sig_preamble :
+    Id.t -> std_ppcmds option -> module_path list -> unsafe_needs ->
+    std_ppcmds;
   pp_sig : ml_signature -> std_ppcmds;
 
   (* for an isolated declaration print *)

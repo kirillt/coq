@@ -92,7 +92,7 @@ let unquote s =
   match lang () with
   | Ocaml | Haskell -> s
   | Scala ->
-      let ss = List.map (function | "\'" -> "$prime" | c -> c) (explode s) in
+      let ss = List.map (function | "\'" -> "$prime" | c -> c) (CString.explode s) in
       String.concat "" ss
   | Scheme ->
       let s = String.copy s in

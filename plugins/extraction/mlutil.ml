@@ -1046,7 +1046,7 @@ and simpl_case o typ br e =
     let idtys,br = if o.opt_case_fun then permut_case_fun br [] else [],br in
     let n = List.length idtys in
     if not (Int.equal n 0) then
-      simpl o (named_lams idtys (MLcase (typ, ast_lift n e, br)))
+      simpl o (named_lams' idtys (MLcase (typ, ast_lift n e, br)))
     else
       (* Can we merge several branches as the same constant or function ? *)
       if lang() == Scheme || is_custom_match br
@@ -1120,8 +1120,8 @@ let kill_some_lams' bl (idtys,c) =
   if there is no lambda left at all. *)
 
 let kill_dummy_lams c =
-  let ids,c = collect_lams c in
-  let bl = List.map sign_of_id ids in
+  let ids,c = collect_lams' c in
+  let bl = List.map sign_of_id (List.map fst ids) in
   if not (List.memq Keep bl) then raise Impossible;
   let rec fst_kill n = function
     | [] -> raise Impossible
@@ -1131,9 +1131,9 @@ let kill_dummy_lams c =
   let skip = max 0 ((fst_kill 0 bl) - 1) in
   let ids_skip, ids = List.chop skip ids in
   let _, bl = List.chop skip bl in
-  let c = named_lams ids_skip c in
-  let ids',c = kill_some_lams bl (ids,c) in
-  ids, named_lams ids' c
+  let c = named_lams' ids_skip c in
+  let ids',c = kill_some_lams' bl (ids,c) in
+  ids, named_lams' ids' c, ids'
 
 (*s [eta_expansion_sign] takes a function [fun idn ... id1 -> c]
    and a signature [s] and builds a eta-long version. *)
@@ -1171,8 +1171,8 @@ let term_expunge s (idtys,c) =
   else
     let ids,c = kill_some_lams' (List.rev s) (idtys,c) in
     if List.is_empty idtys && lang () != Haskell && List.mem (Kill Kother) s then
-      MLlam (Dummy, ast_lift 1 c)
-    else named_lams idtys c
+      MLlam (Dummy, tydummy, ast_lift 1 c)
+    else named_lams' idtys c
 
 (*s [kill_dummy_args ids r t] looks for occurences of [MLrel r] in [t] and
   purge the args of [MLrel r] corresponding to a [dummy_name].

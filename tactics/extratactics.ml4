@@ -824,21 +824,3 @@ TACTIC EXTEND give_up
 | [ "give_up" ] ->
     [ Proofview.give_up ]
 END
-
-TACTIC EXTEND is_fix
-| [ "is_fix" constr(x) ] ->
-  [ match kind_of_term x with
-    | Fix _ -> Tacticals.tclIDTAC
-    | _ -> Tacticals.tclFAIL 0 (Pp.str "not a fix definition") ]
-END;;
-
-(* Command to grab the evars left unresolved at the end of a proof. *)
-(* spiwack: I put it in extratactics because it is somewhat tied with
-   the semantics of the LCF-style tactics, hence with the classic tactic
-   mode. *)
-VERNAC COMMAND EXTEND GrabEvars
-[ "Grab" "Existential" "Variables" ] ->
-  [ let p = Proof_global.give_me_the_proof () in
-    Proof.V82.grab_evars p;
-    Flags.if_verbose (fun () -> Pp.msg (Printer.pr_open_subgoals ())) () ]
-END

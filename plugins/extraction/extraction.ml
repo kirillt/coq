@@ -855,7 +855,7 @@ and extract_fix env mle i (fi,ti,ci as recd) mlt =
   metas.(i) <- mlt;
   let mle = Array.fold_left Mlenv.push_type mle metas in
   let ei = Array.map2 (extract_maybe_term env mle) metas ci in
-  let idtys = array_map2 (fun f meta -> (id_of_name f, meta)) fi metas in
+  let idtys = Array.map2 (fun f meta -> (id_of_name f, meta)) fi metas in
   MLfix (i, idtys, ei)
 
 (*S ML declarations. *)
