@@ -9,23 +9,20 @@
 open Pp
 open Util
 open Names
-open Term
-open Declarations
 open Namegen
 open Nameops
 open Libnames
+open Globnames
 open Table
 open Miniml
 open Mlutil
-open Modutil
-open Mod_subst
 
 let string_of_id id =
-  let s = Names.string_of_id id in
+  let s = Names.Id.to_string id in
   for i = 0 to String.length s - 2 do
-    if s.[i] = '_' && s.[i+1] = '_' then warning_id s
+    if s.[i] == '_' && s.[i+1] == '_' then warning_id s
   done;
-  ascii_of_ident s
+  Unicode.ascii_of_ident s
 
 let is_mp_bound = function MPbound _ -> true | _ -> false
 
@@ -42,7 +39,7 @@ let pp_apply st par args = match args with
 (** Same as [pp_apply], but with also protection of the head by parenthesis *)
 
 let pp_apply2 st par args =
-  let par' = args <> [] || par in
+  let par' = not (List.is_empty args) || par in
   pp_apply (pp_par par' st) par args
 
 let pr_binding = function
@@ -82,10 +79,10 @@ let is_digit = function
 
 let begins_with_CoqXX s =
   let n = String.length s in
-  n >= 4 && s.[0] = 'C' && s.[1] = 'o' && s.[2] = 'q' &&
+  n >= 4 && s.[0] == 'C' && s.[1] == 'o' && s.[2] == 'q' &&
   let i = ref 3 in
   try while !i < n do
-    if s.[!i] = '_' then i:=n (*Stop*)
+    if s.[!i] == '_' then i:=n (*Stop*)
     else if is_digit s.[!i] then incr i
     else raise Not_found
   done; true
@@ -94,13 +91,13 @@ let begins_with_CoqXX s =
 let unquote s =
   match lang () with
   | Ocaml | Haskell -> s
-  | Scheme ->
-    let s = String.copy s in
-    for i=0 to String.length s - 1 do if s.[i] = '\'' then s.[i] <- '~' done;
-    s
   | Scala ->
       let ss = List.map (function | "\'" -> "$prime" | c -> c) (explode s) in
       String.concat "" ss
+  | Scheme ->
+      let s = String.copy s in
+      for i=0 to String.length s - 1 do if s.[i] == '\'' then s.[i] <- '~' done;
+      s
 
 let rec qualify delim = function
   | [] -> assert false
@@ -116,17 +113,17 @@ let pseudo_qualify = qualify "__"
 let is_upper s = match s.[0] with 'A' .. 'Z' -> true | _ -> false
 let is_lower s = match s.[0] with 'a' .. 'z' | '_' -> true | _ -> false
 
-let lowercase_id id = id_of_string (String.uncapitalize (string_of_id id))
+let lowercase_id id = Id.of_string (String.uncapitalize (string_of_id id))
 let uppercase_id id =
   let s = string_of_id id in
-  assert (s<>"");
-  if s.[0] = '_' then id_of_string ("Coq_"^s)
-  else id_of_string (String.capitalize s)
+  assert (not (String.is_empty s));
+  if s.[0] == '_' then Id.of_string ("Coq_"^s)
+  else Id.of_string (String.capitalize s)
 
 type kind = Term | Type | Cons | Mod
 
 let upperkind = function
-  | Type -> lang () = Haskell || lang () = Scala
+  | Type -> lang () == Haskell || lang () == Scala
   | Term -> false
   | Cons | Mod -> true
 
@@ -135,12 +132,12 @@ let kindcase_id k id =
 
 (*s de Bruijn environments for programs *)
 
-type env = identifier list * Idset.t
+type env = Id.t list * Id.Set.t
 
 (*s Generic renaming issues for local variable names. *)
 
 let rec rename_id id avoid =
-  if Idset.mem id avoid then rename_id (lift_subscript id) avoid else id
+  if Id.Set.mem id avoid then rename_id (lift_subscript id) avoid else id
 
 let rec rename_vars avoid = function
   | [] ->
@@ -152,14 +149,14 @@ let rec rename_vars avoid = function
   | id :: idl ->
       let (idl, avoid) = rename_vars avoid idl in
       let id = rename_id (lowercase_id id) avoid in
-      (id :: idl, Idset.add id avoid)
+      (id :: idl, Id.Set.add id avoid)
 
 let rename_tvars avoid l =
   let rec rename avoid = function
     | [] -> [],avoid
     | id :: idl ->
 	let id = rename_id (lowercase_id id) avoid in
-	let idl, avoid = rename (Idset.add id avoid) idl in
+	let idl, avoid = rename (Id.Set.add id avoid) idl in
 	(id :: idl, avoid) in
   fst (rename avoid l)
 
@@ -169,7 +166,7 @@ let push_vars ids (db,avoid) =
 
 let get_db_name n (db,_) =
   let id = List.nth db (pred n) in
-  if id = dummy_name then id_of_string "__" else id
+  if Id.equal id dummy_name then Id.of_string "__" else id
 
 
 (*S Renamings of global objects. *)
@@ -186,13 +183,13 @@ let set_phase, get_phase =
   let ph = ref Impl in ((:=) ph), (fun () -> !ph)
 
 let set_keywords, get_keywords =
-  let k = ref Idset.empty in
+  let k = ref Id.Set.empty in
   ((:=) k), (fun () -> !k)
 
 let add_global_ids, get_global_ids =
-  let ids = ref Idset.empty in
+  let ids = ref Id.Set.empty in
   register_cleanup (fun () -> ids := get_keywords ());
-  let add s = ids := Idset.add s !ids
+  let add s = ids := Id.Set.add s !ids
   and get () = !ids
   in (add,get)
 
@@ -262,7 +259,7 @@ let params_ren_add, params_ren_mem =
 
 type visible_layer = { mp : module_path;
 		       params : module_path list;
-		       content : ((kind*string),label) Hashtbl.t }
+		       content : ((kind*string),Label.t) Hashtbl.t }
 
 let pop_visible, push_visible, get_visible =
   let vis = ref [] in
@@ -273,7 +270,7 @@ let pop_visible, push_visible, get_visible =
       | v :: vl ->
 	  vis := vl;
 	  (* we save the 1st-level-content of MPfile for later use *)
-	  if get_phase () = Impl && modular () && is_modfile v.mp
+	  if get_phase () == Impl && modular () && is_modfile v.mp
 	  then add_mpfiles_content v.mp v.content
   and push mp mps =
     vis := { mp = mp; params = mps; content = Hashtbl.create 97 } :: !vis
@@ -287,21 +284,31 @@ let add_visible ks l = Hashtbl.add (top_visible ()).content ks l
 
 (* table of local module wrappers used to provide non-ambiguous names *)
 
+module DupOrd =
+struct
+  type t = ModPath.t * Label.t
+  let compare (mp1, l1) (mp2, l2) =
+    let c = Label.compare l1 l2 in
+    if Int.equal c 0 then ModPath.compare mp1 mp2 else c
+end
+
+module DupMap = Map.Make(DupOrd)
+
 let add_duplicate, check_duplicate =
-  let index = ref 0 and dups = ref Gmap.empty in
-  register_cleanup (fun () -> index := 0; dups := Gmap.empty);
+  let index = ref 0 and dups = ref DupMap.empty in
+  register_cleanup (fun () -> index := 0; dups := DupMap.empty);
   let add mp l =
      incr index;
-     let ren = "Coq__" ^ string_of_int (!index) in
-     dups := Gmap.add (mp,l) ren !dups
-  and check mp l = Gmap.find (mp, l) !dups
+     let ren = "Coq__" ^ string_of_int !index in
+     dups := DupMap.add (mp,l) ren !dups
+  and check mp l = DupMap.find (mp, l) !dups
   in (add,check)
 
 type reset_kind = AllButExternal | Everything
 
 let reset_renaming_tables flag =
   do_cleanup ();
-  if flag = Everything then clear_mpfiles_content ()
+  if flag == Everything then clear_mpfiles_content ()
 
 (*S Renaming functions *)
 
@@ -316,8 +323,8 @@ let modular_rename k id =
     if upperkind k then "Coq_",is_upper else "coq_",is_lower
   in
   if not (is_ok s) ||
-    (Idset.mem id (get_keywords ())) ||
-    (String.length s >= 4 && String.sub s 0 4 = prefix)
+    (Id.Set.mem id (get_keywords ())) ||
+    (String.length s >= 4 && String.equal (String.sub s 0 4) prefix)
   then prefix ^ s
   else s
 
@@ -327,8 +334,8 @@ let modular_rename k id =
 let modfstlev_rename =
   let add_prefixes,get_prefixes,_ = mktable true in
   fun l ->
-    let coqid = id_of_string "Coq" in
-    let id = id_of_label l in
+    let coqid = Id.of_string "Coq" in
+    let id = Label.to_id l in
     try
       let coqset = get_prefixes id in
       let nextcoq = next_ident_away coqid coqset in
@@ -347,17 +354,20 @@ let rec mp_renaming_fun mp = match mp with
   | _ when not (modular ()) && at_toplevel mp -> [""]
   | MPdot (mp,l) ->
       let lmp = mp_renaming mp in
-      if lmp = [""] then (modfstlev_rename l)::lmp
-      else (modular_rename Mod (id_of_label l))::lmp
+      let mp = match lmp with
+      | [""] -> modfstlev_rename l
+      | _ -> modular_rename Mod (Label.to_id l)
+      in
+      mp ::lmp
   | MPbound mbid ->
-      let s = modular_rename Mod (id_of_mbid mbid) in
+      let s = modular_rename Mod (MBId.to_id mbid) in
       if not (params_ren_mem mp) then [s]
-      else let i,_,_ = repr_mbid mbid in [s^"__"^string_of_int i]
+      else let i,_,_ = MBId.repr mbid in [s^"__"^string_of_int i]
   | MPfile _ ->
       assert (modular ()); (* see [at_toplevel] above *)
-      assert (get_phase () = Pre);
-      let current_mpfile = (list_last (get_visible ())).mp in
-      if mp <> current_mpfile then mpfiles_add mp;
+      assert (get_phase () == Pre);
+      let current_mpfile = (List.last (get_visible ())).mp in
+      if not (ModPath.equal mp current_mpfile) then mpfiles_add mp;
       [string_of_modfile mp]
 
 (* ... and its version using a cache *)
@@ -374,17 +384,17 @@ and mp_renaming =
 let ref_renaming_fun (k,r) =
   let mp = modpath_of_r r in
   let l = mp_renaming mp in
-  let l = if lang () <> Ocaml && not (modular ()) then [""] else l in
+  let l = if lang () != Ocaml && not (modular ()) then [""] else l in
   let s =
     let idg = safe_basename_of_global r in
-    if l = [""] (* this happens only at toplevel of the monolithic case *)
-    then
-      let globs = Idset.elements (get_global_ids ()) in
+    match l with
+    | [""] -> (* this happens only at toplevel of the monolithic case *)
+      let globs = Id.Set.elements (get_global_ids ()) in
       let id = next_ident_away (kindcase_id k idg) globs in
       string_of_id id
-    else modular_rename k idg
+    | _ -> modular_rename k idg
   in
-  add_global_ids (id_of_string s);
+  add_global_ids (Id.of_string s);
   s::l
 
 (* Cached version of the last function *)
@@ -403,7 +413,7 @@ let ref_renaming =
 
 let rec clash mem mp0 ks = function
   | [] -> false
-  | mp :: _ when mp = mp0 -> false
+  | mp :: _ when ModPath.equal mp mp0 -> false
   | mp :: _ when mem mp ks -> true
   | _ :: mpl -> clash mem mp0 ks mpl
 
@@ -413,15 +423,18 @@ let mpfiles_clash mp0 ks =
 
 let rec params_lookup mp0 ks = function
   | [] -> false
-  | param :: _ when mp0 = param -> true
+  | param :: _ when ModPath.equal mp0 param -> true
   | param :: params ->
-      if ks = (Mod, List.hd (mp_renaming param)) then params_ren_add param;
+      let () = match ks with
+      | (Mod, mp) when String.equal (List.hd (mp_renaming param)) mp -> params_ren_add param
+      | _ -> ()
+      in
       params_lookup mp0 ks params
 
 let visible_clash mp0 ks =
   let rec clash = function
     | [] -> false
-    | v :: _ when v.mp = mp0 -> false
+    | v :: _ when ModPath.equal v.mp mp0 -> false
     | v :: vis ->
 	let b = Hashtbl.mem v.content ks in
 	if b && not (is_mp_bound mp0) then true
@@ -437,7 +450,7 @@ let visible_clash mp0 ks =
 let visible_clash_dbg mp0 ks =
   let rec clash = function
     | [] -> None
-    | v :: _ when v.mp = mp0 -> None
+    | v :: _ when ModPath.equal v.mp mp0 -> None
     | v :: vis ->
 	try Some (v.mp,Hashtbl.find v.content ks)
 	with Not_found ->
@@ -480,7 +493,7 @@ let opened_libraries () =
 
 let pp_duplicate k' prefix mp rls olab =
   let rls', lbl =
-    if k'<>Mod then
+    if k' != Mod then
       (* Here rls=[s], the ref to print is <prefix>.<s>, and olab<>None *)
       rls, Option.get olab
     else
@@ -489,7 +502,7 @@ let pp_duplicate k' prefix mp rls olab =
   in
   try dottify (check_duplicate prefix lbl :: rls')
   with Not_found ->
-    assert (get_phase () = Pre); (* otherwise it's too late *)
+    assert (get_phase () == Pre); (* otherwise it's too late *)
     add_duplicate prefix lbl; dottify rls
 
 let fstlev_ks k = function
@@ -502,8 +515,8 @@ let fstlev_ks k = function
 
 let pp_ocaml_local k prefix mp rls olab =
   (* what is the largest prefix of [mp] that belongs to [visible]? *)
-  assert (k <> Mod || mp <> prefix); (* mp as whole module isn't in itself *)
-  let rls' = list_skipn (mp_length prefix) rls in
+  assert (k != Mod || not (ModPath.equal mp prefix)); (* mp as whole module isn't in itself *)
+  let rls' = List.skipn (mp_length prefix) rls in
   let k's = fstlev_ks k rls' in
   (* Reference r / module path mp is of the form [<prefix>.s.<...>]. *)
   if not (visible_clash prefix k's) then dottify rls'
@@ -514,7 +527,7 @@ let pp_ocaml_local k prefix mp rls olab =
 
 let pp_ocaml_bound base rls =
   (* clash with a MPbound will be detected and fixed by renaming this MPbound *)
-  if get_phase () = Pre then ignore (visible_clash base (Mod,List.hd rls));
+  if get_phase () == Pre then ignore (visible_clash base (Mod,List.hd rls));
   dottify rls
 
 (* [pp_ocaml_extern] : [mp] isn't local, it is defined in another [MPfile]. *)
@@ -523,7 +536,7 @@ let pp_ocaml_extern k base rls = match rls with
   | [] -> assert false
   | base_s :: rls' ->
       if (not (modular ())) (* Pseudo qualification with "" *)
-	|| (rls' = [])  (* Case of a file A.v used as a module later *)
+	|| (List.is_empty rls')  (* Case of a file A.v used as a module later *)
 	|| (not (mpfiles_mem base)) (* Module not opened *)
 	|| (mpfiles_clash base (fstlev_ks k rls')) (* Conflict in opened files *)
 	|| (visible_clash base (fstlev_ks k rls')) (* Local conflict *)
@@ -553,7 +566,7 @@ let pp_haskell_gen k mp rls = match rls with
   | s::rls' ->
     let str = pseudo_qualify rls' in
     let str = if is_upper str && not (upperkind k) then ("_"^str) else str in
-    let prf = if base_mp mp <> top_visible_mp () then s ^ "." else "" in
+    let prf = if not (ModPath.equal (base_mp mp) (top_visible_mp ())) then s ^ "." else "" in
     prf ^ str
 
 (* Main name printing function for a reference *)
@@ -563,7 +576,7 @@ let pp_global k r =
   assert (List.length ls > 1);
   let s = List.hd ls in
   let mp,_,l = repr_of_r r in
-  if mp = top_visible_mp () then
+  if ModPath.equal mp (top_visible_mp ()) then
     (* simpliest situation: definition of r (or use in the same context) *)
     (* we update the visible environment *)
     (add_visible (k,s) l; unquote s)
@@ -580,7 +593,7 @@ let pp_global k r =
 let pp_module mp =
   let ls = mp_renaming mp in
   match mp with
-    | MPdot (mp0,l) when mp0 = top_visible_mp () ->
+    | MPdot (mp0,l) when ModPath.equal mp0 (top_visible_mp ()) ->
 	(* simpliest situation: definition of mp (or use in the same context) *)
 	(* we update the visible environment *)
 	let s = List.hd ls in
@@ -592,7 +605,7 @@ let pp_module mp =
     the constants are directly turned into chars *)
 
 let mk_ind path s =
-  make_mind (MPfile (dirpath_of_string path)) empty_dirpath (mk_label s)
+  MutInd.make2 (MPfile (dirpath_of_string path)) (Label.make s)
 
 let ind_ascii = mk_ind "Coq.Strings.Ascii" "ascii"
 
@@ -603,7 +616,7 @@ let check_extract_ascii () =
       | Haskell -> "Char"
       | _ -> raise Not_found
     in
-    find_custom (IndRef (ind_ascii,0)) = char_type
+    String.equal (find_custom (IndRef (ind_ascii, 0))) (char_type)
   with Not_found -> false
 
 let is_list_cons l =
@@ -611,7 +624,7 @@ let is_list_cons l =
 
 let is_native_char = function
   | MLcons(_,ConstructRef ((kn,0),1),l) ->
-    kn = ind_ascii && check_extract_ascii () && is_list_cons l
+    MutInd.equal kn ind_ascii && check_extract_ascii () && is_list_cons l
   | _ -> false
 
 let pp_native_char c =
