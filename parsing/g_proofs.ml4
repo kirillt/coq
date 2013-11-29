@@ -6,16 +6,18 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pcoq
-open Pp
-open Tactic
-open Util
-open Vernac_
-open Topconstr
+open Compat
+open Constrexpr
 open Vernacexpr
-open Prim
-open Constr
+open Locality
+open Misctypes
 open Tok
+
+open Pcoq
+open Pcoq.Tactic
+open Pcoq.Prim
+open Pcoq.Constr
+open Pcoq.Vernac_
 
 let thm_token = G_vernac.thm_token
 
@@ -81,27 +83,33 @@ GEXTEND Gram
       (* Hints for Auto and EAuto *)
       | IDENT "Create"; IDENT "HintDb" ;
 	  id = IDENT ; b = [ "discriminated" -> true | -> false ] ->
-	    VernacCreateHintDb (use_module_locality (), id, b)
+	    VernacCreateHintDb (id, b)
       | IDENT "Remove"; IDENT "Hints"; ids = LIST1 global; dbnames = opt_hintbases ->
-	  VernacRemoveHints (use_module_locality (), dbnames, ids)
+	  VernacRemoveHints (dbnames, ids)
       | IDENT "Hint"; local = obsolete_locality; h = hint;
 	  dbnames = opt_hintbases ->
-	  VernacHints (enforce_module_locality local,dbnames, h)
+	  VernacHints (local,dbnames, h)
       (* Declare "Resolve" explicitly so as to be able to later extend with
          "Resolve ->" and "Resolve <-" *)
-      | IDENT "Hint"; IDENT "Resolve"; lc = LIST1 constr; n = OPT natural;
+      | IDENT "Hint"; IDENT "Resolve"; lc = LIST1 reference_or_constr; 
+	  pri = OPT [ "|"; i = natural -> i ];
 	  dbnames = opt_hintbases ->
-	  VernacHints (use_module_locality (),dbnames,
-	    HintsResolve (List.map (fun x -> (n, true, x)) lc))
+	  VernacHints (false,dbnames,
+	    HintsResolve (List.map (fun x -> (pri, true, x)) lc))
       ] ];
 
   obsolete_locality:
     [ [ IDENT "Local" -> true | -> false ] ]
   ;
+  reference_or_constr:
+   [ [ r = global -> HintsReference r
+     | c = constr -> HintsConstr c ] ]
+  ;
   hint:
-    [ [ IDENT "Resolve"; lc = LIST1 constr; n = OPT natural ->
-          HintsResolve (List.map (fun x -> (n, true, x)) lc)
-      | IDENT "Immediate"; lc = LIST1 constr -> HintsImmediate lc
+    [ [ IDENT "Resolve"; lc = LIST1 reference_or_constr; 
+	pri = OPT [ "|"; i = natural -> i ] ->
+          HintsResolve (List.map (fun x -> (pri, true, x)) lc)
+      | IDENT "Immediate"; lc = LIST1 reference_or_constr -> HintsImmediate lc
       | IDENT "Transparent"; lc = LIST1 global -> HintsTransparency (lc, true)
       | IDENT "Opaque"; lc = LIST1 global -> HintsTransparency (lc, false)
       | IDENT "Unfold"; lqid = LIST1 global -> HintsUnfold lqid
@@ -112,6 +120,6 @@ GEXTEND Gram
     ;
   constr_body:
     [ [ ":="; c = lconstr -> c
-      | ":"; t = lconstr; ":="; c = lconstr -> CCast(loc,c, Glob_term.CastConv (Term.DEFAULTcast,t)) ] ]
+      | ":"; t = lconstr; ":="; c = lconstr -> CCast(!@loc,c,CastConv t) ] ]
   ;
 END

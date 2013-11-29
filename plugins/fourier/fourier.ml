@@ -95,12 +95,12 @@ let partitionne s =
 *)
 let add_hist le =
    let n = List.length le in
-   let i=ref 0 in
+   let i = ref 0 in
    List.map (fun (ie,s) ->
-              let h =ref [] in
-              for k=1 to (n-(!i)-1) do pop r0 h; done;
+              let h = ref [] in
+              for _k = 1 to (n - (!i) - 1) do pop r0 h; done;
               pop r1 h;
-              for k=1 to !i do pop r0 h; done;
+              for _k = 1 to !i do pop r0 h; done;
               i:=!i+1;
               {coef=ie;hist=(!h);strict=s})
              le
@@ -151,7 +151,7 @@ let deduce1 s =
 let deduce lie =
    let n = List.length (fst (List.hd lie)) in
    let lie=ref (add_hist lie) in
-   for i=1 to n-1 do
+   for _i = 1 to n - 1 do
       lie:= deduce1 !lie;
    done;
    !lie
@@ -164,20 +164,19 @@ qui donne 0 < c si s=true
        ou 0 <= c sinon
 cette inéquation étant absurde.
 *)
+
+exception Contradiction of (rational * bool * rational list) list
+
 let unsolvable lie =
    let lr = deduce lie in
-   let res = ref [] in
-   (try (List.iter (fun e ->
-         match e with
-           {coef=[c];hist=lc;strict=s} ->
-		  if (rinf c r0 && (not s)) || (rinfeq c r0 && s)
-                  then (res := [c,s,lc];
-			raise (Failure "contradiction found"))
-          |_->assert false)
-			     lr)
-   with e when Errors.noncritical e -> ());
-   !res
-;;
+   let check = function
+     | {coef=[c];hist=lc;strict=s} ->
+       if (rinf c r0 && (not s)) || (rinfeq c r0 && s)
+       then raise (Contradiction [c,s,lc])
+     |_->assert false
+   in
+   try List.iter check lr; []
+   with Contradiction l -> l
 
 (* Exemples:
 

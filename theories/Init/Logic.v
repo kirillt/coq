@@ -8,7 +8,9 @@
 
 Set Implicit Arguments.
 
-Require Import Notations.
+Require Export Notations.
+
+Notation "A -> B" := (forall (_ : A), B) : type_scope.
 
 (** * Propositional connectives *)
 
@@ -18,6 +20,9 @@ Inductive True : Prop :=
 
 (** [False] is the always false proposition *)
 Inductive False : Prop :=.
+
+(** [proof_admitted] is used to implement the admit tactic *)
+Axiom proof_admitted : False.
 
 (** [not A], written [~A], is the negation of [A] *)
 Definition not (A:Prop) := A -> False.
@@ -92,6 +97,36 @@ End Equivalence.
 
 Hint Unfold iff: extcore.
 
+(** Backward direction of the equivalences above does not need assumptions *)
+
+Theorem and_iff_compat_l : forall A B C : Prop,
+  (B <-> C) -> (A /\ B <-> A /\ C).
+Proof.
+  intros ? ? ? [Hl Hr]; split; intros [? ?]; (split; [ assumption | ]);
+  [apply Hl | apply Hr]; assumption.
+Qed.
+
+Theorem and_iff_compat_r : forall A B C : Prop,
+  (B <-> C) -> (B /\ A <-> C /\ A).
+Proof.
+  intros ? ? ? [Hl Hr]; split; intros [? ?]; (split; [ | assumption ]);
+  [apply Hl | apply Hr]; assumption.
+Qed.
+
+Theorem or_iff_compat_l : forall A B C : Prop,
+  (B <-> C) -> (A \/ B <-> A \/ C).
+Proof.
+  intros ? ? ? [Hl Hr]; split; (intros [?|?]; [left; assumption| right]);
+  [apply Hl | apply Hr]; assumption.
+Qed.
+
+Theorem or_iff_compat_r : forall A B C : Prop,
+  (B <-> C) -> (B \/ A <-> C \/ A).
+Proof.
+  intros ? ? ? [Hl Hr]; split; (intros [?|?]; [left| right; assumption]);
+  [apply Hl | apply Hr]; assumption.
+Qed.
+
 (** Some equivalences *)
 
 Theorem neg_false : forall A : Prop, ~ A <-> (A <-> False).
@@ -104,73 +139,62 @@ Qed.
 Theorem and_cancel_l : forall A B C : Prop,
   (B -> A) -> (C -> A) -> ((A /\ B <-> A /\ C) <-> (B <-> C)).
 Proof.
-  intros; tauto.
+  intros A B C Hl Hr.
+  split; [ | apply and_iff_compat_l]; intros [HypL HypR]; split; intros.
+  + apply HypL; split; [apply Hl | ]; assumption.
+  + apply HypR; split; [apply Hr | ]; assumption.
 Qed.
 
 Theorem and_cancel_r : forall A B C : Prop,
   (B -> A) -> (C -> A) -> ((B /\ A <-> C /\ A) <-> (B <-> C)).
 Proof.
-  intros; tauto.
+  intros A B C Hl Hr.
+  split; [ | apply and_iff_compat_r]; intros [HypL HypR]; split; intros.
+  + apply HypL; split; [ | apply Hl ]; assumption.
+  + apply HypR; split; [ | apply Hr ]; assumption.
 Qed.
 
 Theorem and_comm : forall A B : Prop, A /\ B <-> B /\ A.
 Proof.
-  intros; tauto.
+  intros; split; intros [? ?]; split; assumption.
 Qed.
 
 Theorem and_assoc : forall A B C : Prop, (A /\ B) /\ C <-> A /\ B /\ C.
 Proof.
-  intros; tauto.
+  intros; split; [ intros [[? ?] ?]| intros [? [? ?]]]; repeat split; assumption.
 Qed.
 
 Theorem or_cancel_l : forall A B C : Prop,
   (B -> ~ A) -> (C -> ~ A) -> ((A \/ B <-> A \/ C) <-> (B <-> C)).
 Proof.
-  intros; tauto.
+  intros ? ? ? Fl Fr; split; [ | apply or_iff_compat_l]; intros [Hl Hr]; split; intros.
+  { destruct Hl; [ right | destruct Fl | ]; assumption. }
+  { destruct Hr; [ right | destruct Fr | ]; assumption. }
 Qed.
 
 Theorem or_cancel_r : forall A B C : Prop,
   (B -> ~ A) -> (C -> ~ A) -> ((B \/ A <-> C \/ A) <-> (B <-> C)).
 Proof.
-  intros; tauto.
+  intros ? ? ? Fl Fr; split; [ | apply or_iff_compat_r]; intros [Hl Hr]; split; intros.
+  { destruct Hl; [ left | | destruct Fl ]; assumption. }
+  { destruct Hr; [ left | | destruct Fr ]; assumption. }
 Qed.
 
 Theorem or_comm : forall A B : Prop, (A \/ B) <-> (B \/ A).
 Proof.
-  intros; tauto.
+  intros; split; (intros [? | ?]; [ right | left ]; assumption).
 Qed.
 
 Theorem or_assoc : forall A B C : Prop, (A \/ B) \/ C <-> A \/ B \/ C.
 Proof.
-  intros; tauto.
+  intros; split; [ intros [[?|?]|?]| intros [?|[?|?]]].
+  + left; assumption.
+  + right; left; assumption.
+  + right; right; assumption.
+  + left; left; assumption.
+  + left; right; assumption.
+  + right; assumption.
 Qed.
-
-(** Backward direction of the equivalences above does not need assumptions *)
-
-Theorem and_iff_compat_l : forall A B C : Prop,
-  (B <-> C) -> (A /\ B <-> A /\ C).
-Proof.
-  intros; tauto.
-Qed.
-
-Theorem and_iff_compat_r : forall A B C : Prop,
-  (B <-> C) -> (B /\ A <-> C /\ A).
-Proof.
-  intros; tauto.
-Qed.
-
-Theorem or_iff_compat_l : forall A B C : Prop,
-  (B <-> C) -> (A \/ B <-> A \/ C).
-Proof.
-  intros; tauto.
-Qed.
-
-Theorem or_iff_compat_r : forall A B C : Prop,
-  (B <-> C) -> (B \/ A <-> C \/ A).
-Proof.
-  intros; tauto.
-Qed.
-
 Lemma iff_and : forall A B : Prop, (A <-> B) -> (A -> B) /\ (B -> A).
 Proof.
   intros A B []; split; trivial.
@@ -178,7 +202,7 @@ Qed.
 
 Lemma iff_to_and : forall A B : Prop, (A <-> B) <-> (A -> B) /\ (B -> A).
 Proof.
-  intros; tauto.
+  intros; split; intros [Hl Hr]; (split; intros; [ apply Hl | apply Hr]); assumption.
 Qed.
 
 (** [(IF_then_else P Q R)], written [IF P then Q else R] denotes
@@ -297,19 +321,16 @@ Section Logic_lemmas.
     Proof.
       destruct 1; trivial.
     Defined.
-    Opaque eq_sym.
 
     Theorem eq_trans : x = y -> y = z -> x = z.
     Proof.
       destruct 2; trivial.
     Defined.
-    Opaque eq_trans.
 
     Theorem f_equal : x = y -> f x = f y.
     Proof.
       destruct 1; trivial.
     Defined.
-    Opaque f_equal.
 
     Theorem not_eq_sym : x <> y -> y <> x.
     Proof.
@@ -336,12 +357,39 @@ End Logic_lemmas.
 
 Module EqNotations.
   Notation "'rew' H 'in' H'" := (eq_rect _ _ H' _ H)
-    (at level 10, H' at level 10).
+    (at level 10, H' at level 10,
+     format "'[' 'rew'  H  in  '/' H' ']'").
+  Notation "'rew' [ P ] H 'in' H'" := (eq_rect _ P H' _ H)
+    (at level 10, H' at level 10,
+     format "'[' 'rew'  [ P ]  '/    ' H  in  '/' H' ']'").
   Notation "'rew' <- H 'in' H'" := (eq_rect_r _ H' H)
-    (at level 10, H' at level 10).
+    (at level 10, H' at level 10,
+     format "'[' 'rew'  <-  H  in  '/' H' ']'").
+  Notation "'rew' <- [ P ] H 'in' H'" := (eq_rect_r P H' H)
+    (at level 10, H' at level 10,
+     format "'[' 'rew'  <-  [ P ]  '/    ' H  in  '/' H' ']'").
   Notation "'rew' -> H 'in' H'" := (eq_rect _ _ H' _ H)
     (at level 10, H' at level 10, only parsing).
+  Notation "'rew' -> [ P ] H 'in' H'" := (eq_rect _ P H' _ H)
+    (at level 10, H' at level 10, only parsing).
+
 End EqNotations.
+
+Import EqNotations.
+
+Lemma rew_opp_r : forall A (P:A->Type) (x y:A) (H:x=y) (a:P y), rew H in rew <- H in a = a.
+Proof.
+intros.
+destruct H.
+reflexivity.
+Defined.
+
+Lemma rew_opp_l : forall A (P:A->Type) (x y:A) (H:x=y) (a:P x), rew <- H in rew H in a = a.
+Proof.
+intros.
+destruct H.
+reflexivity.
+Defined.
 
 Theorem f_equal2 :
   forall (A1 A2 B:Type) (f:A1 -> A2 -> B) (x1 y1:A1)
@@ -375,6 +423,45 @@ Theorem f_equal5 :
 Proof.
   destruct 1; destruct 1; destruct 1; destruct 1; destruct 1; reflexivity.
 Qed.
+
+Theorem f_equal_compose : forall A B C (a b:A) (f:A->B) (g:B->C) (e:a=b),
+  f_equal g (f_equal f e) = f_equal (fun a => g (f a)) e.
+Proof.
+  destruct e. reflexivity.
+Defined.
+
+(** The goupoid structure of equality *)
+
+Theorem eq_trans_refl_l : forall A (x y:A) (e:x=y), eq_trans eq_refl e = e.
+Proof.
+  destruct e. reflexivity.
+Defined.
+
+Theorem eq_trans_refl_r : forall A (x y:A) (e:x=y), eq_trans e eq_refl = e.
+Proof.
+  destruct e. reflexivity.
+Defined.
+
+Theorem eq_sym_involutive : forall A (x y:A) (e:x=y), eq_sym (eq_sym e) = e.
+Proof.
+  destruct e; reflexivity.
+Defined.
+
+Theorem eq_trans_sym_inv_l : forall A (x y:A) (e:x=y), eq_trans (eq_sym e) e = eq_refl.
+Proof.
+  destruct e; reflexivity.
+Defined.
+
+Theorem eq_trans_sym_inv_r : forall A (x y:A) (e:x=y), eq_trans e (eq_sym e) = eq_refl.
+Proof.
+  destruct e; reflexivity.
+Defined.
+
+Theorem eq_trans_assoc : forall A (x y z t:A) (e:x=y) (e':y=z) (e'':z=t),
+  eq_trans e (eq_trans e' e'') = eq_trans (eq_trans e e') e''.
+Proof.
+  destruct e''; reflexivity.
+Defined.
 
 (* Aliases *)
 
@@ -474,7 +561,7 @@ Declare Right Step eq_trans.
 
 Lemma iff_stepl : forall A B C : Prop, (A <-> B) -> (A <-> C) -> (C <-> B).
 Proof.
-  intros; tauto.
+  intros ? ? ? [? ?] [? ?]; split; intros; auto.
 Qed.
 
 Declare Left Step iff_stepl.

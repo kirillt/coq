@@ -6,7 +6,8 @@ type target =
   | MLPACK of string (* MLLIB file : foo.mlpack -> (MLLIB "foo.mlpack") *)
   | V of string  (* V file : foo.v -> (V "foo") *)
   | Arg of string
-  | Special of string * string * string (* file, dependencies, command *)
+  | Special of string * string * bool * string
+    (* file, dependencies, is_phony, command *)
   | Subdir of string
   | Def of string * string (* X=foo -> Def ("X","foo") *)
   | Include of string
@@ -53,36 +54,40 @@ let rec process_cmd_line orig_dir ((project_file,makefile,install,opt) as opts) 
   | ("-full"|"-opt") :: r ->
     process_cmd_line orig_dir (project_file,makefile,install,true) l r
   | "-impredicative-set" :: r ->
-    Minilib.safe_prerr_endline "Please now use \"-arg -impredicative-set\" instead of \"-impredicative-set\" alone to be more uniform.";
+    Pp.msg_warning (Pp.str "Please now use \"-arg -impredicative-set\" instead of \"-impredicative-set\" alone to be more uniform.");
     process_cmd_line orig_dir opts (Arg "-impredicative-set" :: l) r
   | "-no-install" :: r ->
-    Minilib.safe_prerr_endline "Option -no-install is deprecated. Use \"-install none\" instead";
+    Pp.msg_warning (Pp.(++) (Pp.str "Option -no-install is deprecated.") (Pp.(++) (Pp.spc ()) (Pp.str "Use \"-install none\" instead")));
     process_cmd_line orig_dir (project_file,makefile,NoInstall,opt) l r
   | "-install" :: d :: r ->
-    if install <> UnspecInstall then Minilib.safe_prerr_endline "Warning: -install sets more than once.";
+    if install <> UnspecInstall then Pp.msg_warning (Pp.str "-install sets more than once.");
     let install =
       match d with
 	| "user" -> UserInstall
 	| "none" -> NoInstall
 	| "global" -> TraditionalInstall
-	| _ -> Minilib.safe_prerr_endline (String.concat "" ["Warning: invalid option '"; d; "' passed to -install."]);
+	| _ -> Pp.msg_warning (Pp.(++) (Pp.str "invalid option '") (Pp.(++) (Pp.str d) (Pp.str "' passed to -install.")));
           install
     in
     process_cmd_line orig_dir (project_file,makefile,install,opt) l r
   | "-custom" :: com :: dependencies :: file :: r ->
-    process_cmd_line orig_dir opts (Special (file,dependencies,com) :: l) r
+    process_cmd_line orig_dir opts (Special (file,dependencies,false,com) :: l) r
+  | "-extra" :: file :: dependencies :: com :: r ->
+    process_cmd_line orig_dir opts (Special (file,dependencies,false,com) :: l) r
+  | "-extra-phony" :: target :: dependencies :: com :: r ->
+    process_cmd_line orig_dir opts (Special (target,dependencies,true,com) :: l) r
   | "-I" :: d :: r ->
-    process_cmd_line orig_dir opts ((Include (Minilib.correct_path d orig_dir)) :: l) r
+    process_cmd_line orig_dir opts ((Include (CUnix.correct_path d orig_dir)) :: l) r
   | "-R" :: p :: lp :: r ->
-    process_cmd_line orig_dir opts (RInclude (Minilib.correct_path p orig_dir,lp) :: l) r
+    process_cmd_line orig_dir opts (RInclude (CUnix.correct_path p orig_dir,lp) :: l) r
   | ("-I"|"-custom") :: _ ->
     raise Parsing_error
   | "-f" :: file :: r ->
-    let file = Minilib.remove_path_dot (Minilib.correct_path file orig_dir) in
+    let file = CUnix.remove_path_dot (CUnix.correct_path file orig_dir) in
     let () = match project_file with
       | None -> ()
-      | Some _ -> Minilib.safe_prerr_endline
-	"Warning: Several features will not work with multiple project files."
+      | Some _ -> Pp.msg_warning (Pp.str
+	"Several features will not work with multiple project files.")
     in
     let (opts',l') = process_cmd_line (Filename.dirname file) (Some file,makefile,install,opt) l (parse file) in
       process_cmd_line orig_dir opts' l' r
@@ -96,7 +101,7 @@ let rec process_cmd_line orig_dir ((project_file,makefile,install,opt) as opts) 
 	let () = match makefile with
 	  |None -> ()
 	  |Some f ->
-	     Minilib.safe_prerr_endline ("Warning: Only one output file is genererated. "^f^" will not be.")
+	     Pp.msg_warning (Pp.(++) (Pp.str "Only one output file is genererated. ") (Pp.(++) (Pp.str f) (Pp.str " will not be.")))
 	in process_cmd_line orig_dir (project_file,Some file,install,opt) l r
       end
   | v :: "=" :: def :: r ->
@@ -104,7 +109,7 @@ let rec process_cmd_line orig_dir ((project_file,makefile,install,opt) as opts) 
   | "-arg" :: a :: r ->
     process_cmd_line orig_dir opts (Arg a :: l) r
   | f :: r ->
-      let f = Minilib.correct_path f orig_dir in
+      let f = CUnix.correct_path f orig_dir in
 	process_cmd_line orig_dir opts ((
           if Filename.check_suffix f ".v" then V f
 	  else if (Filename.check_suffix f ".ml") then ML f
@@ -124,32 +129,32 @@ let rec post_canonize f =
 let split_arguments =
   let rec aux = function
   | V n :: r ->
-	let (v,m,o,s),i,d = aux r in ((Minilib.remove_path_dot n::v,m,o,s),i,d)
+	let (v,m,o,s),i,d = aux r in ((CUnix.remove_path_dot n::v,m,o,s),i,d)
   | ML n :: r ->
       let (v,(mli,ml4,ml,mllib,mlpack),o,s),i,d = aux r in
-      ((v,(mli,ml4,Minilib.remove_path_dot n::ml,mllib,mlpack),o,s),i,d)
+      ((v,(mli,ml4,CUnix.remove_path_dot n::ml,mllib,mlpack),o,s),i,d)
   | MLI n :: r ->
       let (v,(mli,ml4,ml,mllib,mlpack),o,s),i,d = aux r in
-      ((v,(Minilib.remove_path_dot n::mli,ml4,ml,mllib,mlpack),o,s),i,d)
+      ((v,(CUnix.remove_path_dot n::mli,ml4,ml,mllib,mlpack),o,s),i,d)
   | ML4 n :: r ->
       let (v,(mli,ml4,ml,mllib,mlpack),o,s),i,d = aux r in
-      ((v,(mli,Minilib.remove_path_dot n::ml4,ml,mllib,mlpack),o,s),i,d)
+      ((v,(mli,CUnix.remove_path_dot n::ml4,ml,mllib,mlpack),o,s),i,d)
   | MLLIB n :: r ->
       let (v,(mli,ml4,ml,mllib,mlpack),o,s),i,d = aux r in
-      ((v,(mli,ml4,ml,Minilib.remove_path_dot n::mllib,mlpack),o,s),i,d)
+      ((v,(mli,ml4,ml,CUnix.remove_path_dot n::mllib,mlpack),o,s),i,d)
   | MLPACK n :: r ->
       let (v,(mli,ml4,ml,mllib,mlpack),o,s),i,d = aux r in
-      ((v,(mli,ml4,ml,mllib,Minilib.remove_path_dot n::mlpack),o,s),i,d)
-  | Special (n,dep,c) :: r ->
-      let (v,m,o,s),i,d = aux r in ((v,m,(n,dep,c)::o,s),i,d)
+      ((v,(mli,ml4,ml,mllib,CUnix.remove_path_dot n::mlpack),o,s),i,d)
+  | Special (n,dep,is_phony,c) :: r ->
+      let (v,m,o,s),i,d = aux r in ((v,m,(n,dep,is_phony,c)::o,s),i,d)
   | Subdir n :: r ->
       let (v,m,o,s),i,d = aux r in ((v,m,o,n::s),i,d)
   | Include p :: r ->
-      let t,(i,r),d = aux r in (t,((Minilib.remove_path_dot (post_canonize p),
-				    Minilib.canonical_path_name p)::i,r),d)
+      let t,(i,r),d = aux r in (t,((CUnix.remove_path_dot (post_canonize p),
+				    CUnix.canonical_path_name p)::i,r),d)
   | RInclude (p,l) :: r ->
-      let t,(i,r),d = aux r in (t,(i,(Minilib.remove_path_dot (post_canonize p),l,
-				      Minilib.canonical_path_name p)::r),d)
+      let t,(i,r),d = aux r in (t,(i,(CUnix.remove_path_dot (post_canonize p),l,
+				      CUnix.canonical_path_name p)::r),d)
   | Def (v,def) :: r ->
       let t,i,(args,defs) = aux r in (t,i,(args,(v,def)::defs))
   | Arg a :: r ->
@@ -162,9 +167,9 @@ let read_project_file f =
     (snd (process_cmd_line (Filename.dirname f) (Some f, None, NoInstall, true) [] (parse f)))
 
 let args_from_project file project_files default_name =
-  let is_f = Minilib.same_file file in
+  let is_f = CUnix.same_file file in
   let contains_file dir =
-      List.exists (fun x -> is_f (Minilib.correct_path x dir))
+      List.exists (fun x -> is_f (CUnix.correct_path x dir))
   in
   let build_cmd_line i_inc r_inc args =
     List.fold_right (fun (_,i) o -> "-I" :: i :: o) i_inc
@@ -182,7 +187,6 @@ let args_from_project file project_files default_name =
 	  if contains_file dir v_files
 	  then build_cmd_line i_inc r_inc args
 	  else let newdir = Filename.dirname dir in
-	    Minilib.safe_prerr_endline newdir;
 	    if dir = newdir then [] else find_project_file newdir
       with Sys_error s ->
 	let newdir = Filename.dirname dir in

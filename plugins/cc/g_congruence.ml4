@@ -6,11 +6,9 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
 open Cctac
-open Tactics
-open Tacticals
 
 (* Tactic registration *)
 

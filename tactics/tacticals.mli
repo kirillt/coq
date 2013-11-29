@@ -6,11 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Loc
 open Pp
-open Util
 open Names
 open Term
-open Sign
+open Context
 open Tacmach
 open Proof_type
 open Clenv
@@ -20,6 +20,8 @@ open Genarg
 open Tacexpr
 open Termops
 open Glob_term
+open Locus
+open Misctypes
 
 (** Tacticals i.e. functions from tactics to tactics. *)
 
@@ -52,6 +54,7 @@ val tclFAIL_lazy     : int -> std_ppcmds Lazy.t -> tactic
 val tclDO            : int -> tactic -> tactic
 val tclWEAK_PROGRESS : tactic -> tactic
 val tclPROGRESS      : tactic -> tactic
+val tclSHOWHYPS      : tactic -> tactic
 val tclNOTSAMEGOAL   : tactic -> tactic
 val tclTHENTRY       : tactic -> tactic -> tactic
 val tclMAP           : ('a -> tactic) -> 'a list -> tactic
@@ -65,90 +68,46 @@ val tclFIRST_PROGRESS_ON : ('a -> tactic) -> 'a list -> tactic
 
 (** {6 Tacticals applying to hypotheses } *)
 
-val onNthHypId       : int -> (identifier -> tactic) -> tactic
+val onNthHypId       : int -> (Id.t -> tactic) -> tactic
 val onNthHyp         : int -> (constr -> tactic) -> tactic
 val onNthDecl        : int -> (named_declaration -> tactic) -> tactic
-val onLastHypId      : (identifier -> tactic) -> tactic
+val onLastHypId      : (Id.t -> tactic) -> tactic
 val onLastHyp        : (constr -> tactic) -> tactic
 val onLastDecl       : (named_declaration -> tactic) -> tactic
-val onNLastHypsId    : int -> (identifier list -> tactic) -> tactic
+val onNLastHypsId    : int -> (Id.t list -> tactic) -> tactic
 val onNLastHyps      : int -> (constr list -> tactic) -> tactic
 val onNLastDecls     : int -> (named_context -> tactic) -> tactic
 
-val lastHypId   : goal sigma -> identifier
+val lastHypId   : goal sigma -> Id.t
 val lastHyp     : goal sigma -> constr
 val lastDecl    : goal sigma -> named_declaration
-val nLastHypsId : int -> goal sigma -> identifier list
+val nLastHypsId : int -> goal sigma -> Id.t list
 val nLastHyps   : int -> goal sigma -> constr list
 val nLastDecls  : int -> goal sigma -> named_context
 
-val afterHyp    : identifier -> goal sigma -> named_context
+val afterHyp    : Id.t -> goal sigma -> named_context
 
-val ifOnHyp     : (identifier * types -> bool) ->
-                  (identifier -> tactic) -> (identifier -> tactic) ->
-		   identifier -> tactic
+val ifOnHyp     : (Id.t * types -> bool) ->
+                  (Id.t -> tactic) -> (Id.t -> tactic) ->
+		   Id.t -> tactic
 
 val onHyps      : (goal sigma -> named_context) ->
                   (named_context -> tactic) -> tactic
 
 (** {6 Tacticals applying to goal components } *)
 
-(** A [simple_clause] is a set of hypotheses, possibly extended with
-   the conclusion (conclusion is represented by None) *)
-
-type simple_clause = identifier option list
-
 (** A [clause] denotes occurrences and hypotheses in a
    goal; in particular, it can abstractly refer to the set of
    hypotheses independently of the effective contents of the current goal *)
 
-type clause = identifier gclause
+val tryAllHyps          : (Id.t -> tactic) -> tactic
+val tryAllHypsAndConcl  : (Id.t option -> tactic) -> tactic
 
-val simple_clause_of : clause -> goal sigma -> simple_clause
+val onAllHyps           : (Id.t -> tactic) -> tactic
+val onAllHypsAndConcl   : (Id.t option -> tactic) -> tactic
 
-val allHypsAndConcl : clause
-val allHyps         : clause
-val onHyp           : identifier -> clause
-val onConcl         : clause
-
-val tryAllHyps          : (identifier -> tactic) -> tactic
-val tryAllHypsAndConcl  : (identifier option -> tactic) -> tactic
-
-val onAllHyps           : (identifier -> tactic) -> tactic
-val onAllHypsAndConcl   : (identifier option -> tactic) -> tactic
-
-val onClause   : (identifier option -> tactic) -> clause -> tactic
-val onClauseLR : (identifier option -> tactic) -> clause -> tactic
-
-(** {6 An intermediate form of occurrence clause with no mention of occurrences } *)
-
-(** A [hyp_location] is an hypothesis together with a position, in
-   body if any, in type or in both *)
-
-type hyp_location = identifier * hyp_location_flag
-
-(** A [goal_location] is either an hypothesis (together with a position, in
-   body if any, in type or in both) or the goal *)
-
-type goal_location = hyp_location option
-
-(** {6 A concrete view of occurrence clauses } *)
-
-(** [clause_atom] refers either to an hypothesis location (i.e. an
-   hypothesis with occurrences and a position, in body if any, in type
-   or in both) or to some occurrences of the conclusion *)
-
-type clause_atom =
-  | OnHyp of identifier * occurrences_expr * hyp_location_flag
-  | OnConcl of occurrences_expr
-
-(** A [concrete_clause] is an effective collection of
-  occurrences in the hypotheses and the conclusion *)
-
-type concrete_clause = clause_atom list
-
-(** This interprets an [clause] in a given [goal] context *)
-val concrete_clause_of : clause -> goal sigma -> concrete_clause
+val onClause   : (Id.t option -> tactic) -> clause -> tactic
+val onClauseLR : (Id.t option -> tactic) -> clause -> tactic
 
 (** {6 Elimination tacticals. } *)
 
@@ -169,7 +128,7 @@ type branch_assumptions = {
 (** [check_disjunctive_pattern_size loc pats n] returns an appropriate 
    error message if |pats| <> n *)
 val check_or_and_pattern_size :
-  Util.loc -> or_and_intro_pattern_expr -> int -> unit
+  Loc.t -> or_and_intro_pattern_expr -> int -> unit
 
 (** Tolerate "[]" to mean a disjunctive pattern of any length *)
 val fix_empty_or_and_pattern : int -> or_and_intro_pattern_expr ->
@@ -181,8 +140,8 @@ val compute_induction_names :
     intro_pattern_expr located list array
 
 val elimination_sort_of_goal : goal sigma -> sorts_family
-val elimination_sort_of_hyp  : identifier -> goal sigma -> sorts_family
-val elimination_sort_of_clause : identifier option -> goal sigma -> sorts_family
+val elimination_sort_of_hyp  : Id.t -> goal sigma -> sorts_family
+val elimination_sort_of_clause : Id.t option -> goal sigma -> sorts_family
 
 val general_elim_then_using :
   (inductive -> goal sigma -> constr) -> rec_flag ->
@@ -213,3 +172,106 @@ val simple_elimination_then :
 
 val elim_on_ba : (branch_assumptions -> tactic) -> branch_args  -> tactic
 val case_on_ba : (branch_assumptions -> tactic) -> branch_args  -> tactic
+
+(** Tacticals defined directly in term of Proofview *)
+
+(** The tacticals in the module [New] are the tactical of Ltac. Their
+    semantics is an extension of the tacticals in this file for the
+    multi-goal backtracking tactics. They do not have the same
+    semantics as the similarly named tacticals in [Proofview]. The
+    tactical of [Proofview] are used in the definition of the
+    tacticals of [Tacticals.New], but they are more atomic. In
+    particular [Tacticals.New.tclORELSE] sees like of progress as a
+    failure, whereas [Proofview.tclORELSE] doesn't. Additionally every
+    tactic which can catch failure ([tclOR], [tclORELSE], [tclTRY],
+    [tclREPEAt], etc…) are run into each goal independently (failures
+    and backtracks are localised to a given goal). *)
+module New : sig
+  open Proofview
+
+  (** [catch_failerror e] fails and decreases the level if [e] is an
+      Ltac error with level more than 0. Otherwise succeeds. *)
+  val catch_failerror : exn -> unit tactic
+
+  val tclTHEN : unit tactic -> unit tactic -> unit tactic
+  (* [tclFAIL n msg] fails with [msg] as an error message at level [n]
+     (meaning that it will jump over [n] error catching tacticals FROM
+     THIS MODULE. *)
+  val tclFAIL : int -> Pp.std_ppcmds -> 'a tactic
+  val tclOR : unit tactic -> unit tactic -> unit tactic
+  val tclONCE : unit tactic -> unit tactic
+  val tclEXACTLY_ONCE : unit tactic -> unit tactic
+  val tclORELSE0 : unit tactic -> unit tactic -> unit tactic
+  val tclORELSE  : unit tactic -> unit tactic -> unit tactic
+
+  (** [tclTHENS3PARTS tac1 [|t1 ; ... ; tn|] tac2 [|t'1 ; ... ; t'm|]
+      gls] applies the tactic [tac1] to [gls] then, applies [t1], ...,
+      [tn] to the first [n] resulting subgoals, [t'1], ..., [t'm] to the
+      last [m] subgoals and [tac2] to the rest of the subgoals in the
+      middle. Raises an error if the number of resulting subgoals is
+      strictly less than [n+m] *)
+  val tclTHENS3PARTS     : unit tactic -> unit tactic array -> unit tactic -> unit tactic array -> unit tactic
+  val tclTHENSFIRSTn : unit tactic -> unit tactic array -> unit tactic -> unit tactic
+  val tclTHENFIRSTn : unit tactic -> unit tactic array -> unit tactic
+  (** [tclTHENFIRST tac1 tac2 gls] applies the tactic [tac1] to [gls]
+      and [tac2] to the first resulting subgoal *)
+  val tclTHENFIRST : unit tactic -> unit tactic -> unit tactic
+  val tclTHENLASTn : unit tactic -> unit tactic array -> unit tactic
+  val tclTHENLAST  : unit tactic -> unit tactic -> unit tactic
+  (* [tclTHENS t l = t <*> tclDISPATCH l] *)
+  val tclTHENS : unit tactic -> unit tactic list -> unit tactic
+  (* [tclTHENLIST [t1;…;tn]] is [t1<*>…<*>tn] *)
+  val tclTHENLIST : unit tactic list -> unit tactic
+
+  (** [tclMAP f [x1..xn]] builds [(f x1);(f x2);...(f xn)] *)
+  val tclMAP : ('a -> unit tactic) -> 'a list -> unit tactic
+
+  val tclTRY : unit tactic -> unit tactic
+  val tclFIRST : unit tactic list -> unit tactic
+  val tclFIRST_PROGRESS_ON : ('a -> unit tactic) -> 'a list -> unit tactic
+  val tclIFTHENELSE : unit tactic -> unit tactic -> unit tactic -> unit tactic
+  val tclIFTHENSVELSE : unit tactic -> unit tactic array -> unit tactic -> unit tactic
+  val tclIFTHENTRYELSEMUST : unit tactic -> unit tactic -> unit tactic
+
+  val tclDO : int -> unit tactic -> unit tactic
+  val tclREPEAT : unit tactic -> unit tactic
+  (* Repeat on the first subgoal (no failure if no more subgoal) *)
+  val tclREPEAT_MAIN : unit tactic -> unit tactic
+  val tclCOMPLETE : 'a tactic -> 'a tactic
+  val tclSOLVE : unit tactic list -> unit tactic
+  val tclPROGRESS : unit tactic -> unit tactic
+  val tclWITHHOLES : bool -> ('a -> unit tactic) -> Evd.evar_map -> 'a -> unit tactic
+
+  val tclTIMEOUT : int -> unit tactic -> unit tactic
+
+
+  val ifOnHyp     : (identifier * types -> bool) ->
+    (identifier -> unit Proofview.tactic) -> (identifier -> unit Proofview.tactic) ->
+    identifier -> unit Proofview.tactic
+
+  val onNthHypId : int -> (identifier -> unit tactic) -> unit tactic
+  val onLastHypId      : (identifier -> unit tactic) -> unit tactic
+  val onLastHyp        : (constr -> unit tactic) -> unit tactic
+  val onLastDecl       : (named_declaration -> unit tactic) -> unit tactic
+
+  val tryAllHyps          : (identifier -> unit tactic) -> unit tactic
+  val tryAllHypsAndConcl  : (identifier option -> unit tactic) -> unit tactic
+  val onClause   : (identifier option -> unit tactic) -> clause -> unit tactic
+
+  val elimination_then :
+    (branch_args -> unit Proofview.tactic) ->
+    (arg_bindings * arg_bindings) -> constr -> unit Proofview.tactic
+
+  val case_then_using :
+    intro_pattern_expr located option -> (branch_args -> unit Proofview.tactic) ->
+    constr option -> (arg_bindings * arg_bindings) ->
+    inductive -> clausenv -> unit Proofview.tactic
+
+  val case_nodep_then_using :
+    intro_pattern_expr located option -> (branch_args -> unit Proofview.tactic) ->
+    constr option -> (arg_bindings * arg_bindings) ->
+    inductive -> clausenv -> unit Proofview.tactic
+
+  val elim_on_ba : (branch_assumptions -> unit Proofview.tactic) -> branch_args  -> unit Proofview.tactic
+  val case_on_ba : (branch_assumptions -> unit Proofview.tactic) -> branch_args  -> unit Proofview.tactic
+end

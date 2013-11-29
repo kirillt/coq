@@ -8,7 +8,6 @@
 
 open Names
 open Term
-open Conv_oracle
 open Cbytecodes
 
 external set_drawinstr : unit -> unit = "coq_set_drawinstr"
@@ -43,7 +42,6 @@ let fun_code v = tcode_of_obj (Obj.field (Obj.repr v) 0)
 
 external mkAccuCode : int -> tcode = "coq_makeaccu"
 external mkPopStopCode : int -> tcode = "coq_pushpop"
-external mkAccuCond : int -> tcode = "coq_accucond"
 
 external offset_tcode : tcode -> int -> tcode = "coq_offset_tcode"
 external int_tcode : tcode -> int -> int = "coq_int_tcode"
@@ -171,7 +169,7 @@ type whd =
 
 let rec whd_accu a stk =
   let stk =
-    if Obj.size a = 2 then stk
+    if Int.equal (Obj.size a) 2 then stk
     else Zapp (Obj.obj a) :: stk in
   let at = Obj.field a 1 in
   match Obj.tag at with
@@ -213,7 +211,7 @@ let whd_val : values -> whd =
       let tag = Obj.tag o in
       if tag = accu_tag then
 	(
-	if Obj.size o = 1 then Obj.obj o (* sort *)
+	if Int.equal (Obj.size o) 1 then Obj.obj o (* sort *)
 	else
 	  if is_accumulate (fun_code o) then whd_accu o []
 	  else (Vprod(Obj.obj o)))
@@ -224,7 +222,7 @@ let whd_val : values -> whd =
 	   | 1 -> Vfix(Obj.obj o, None)
 	   | 2 -> Vfix(Obj.obj (Obj.field o 1), Some (Obj.obj o))
 	   | 3 -> Vatom_stk(Aid(RelKey(int_tcode (fun_code o) 1)), [])
-	   | _ -> Util.anomaly "Vm.whd : kind_of_closure does not work")
+	   | _ -> Errors.anomaly ~label:"Vm.whd " (Pp.str "kind_of_closure does not work"))
 	else Vconstr_block(Obj.obj o)
 
 
@@ -251,13 +249,13 @@ let nargs : arguments -> int = fun args -> (Obj.size (Obj.repr args)) - 2
 let arg args i =
   if  0 <= i && i < (nargs args) then
     val_of_obj (Obj.field (Obj.repr args) (i+2))
-  else raise (Invalid_argument
+  else invalid_arg
 		("Vm.arg size = "^(string_of_int (nargs args))^
-		 " acces "^(string_of_int i)))
+		 " acces "^(string_of_int i))
 
 let apply_arguments vf vargs =
   let n = nargs vargs in
-  if n = 0 then vf
+  if Int.equal n 0 then vf
   else
    begin
      push_ra stop;
@@ -267,7 +265,7 @@ let apply_arguments vf vargs =
 
 let apply_vstack vf vstk =
   let n = Array.length vstk in
-  if n = 0 then vf
+  if Int.equal n 0 then vf
   else
     begin
       push_ra stop;
@@ -316,17 +314,10 @@ let val_of_idkey key =
     v
 
 let val_of_rel k = val_of_idkey (RelKey k)
-let val_of_rel_def k v = val_of_atom(Aiddef(RelKey k, v))
 
 let val_of_named id = val_of_idkey (VarKey id)
-let val_of_named_def id v = val_of_atom(Aiddef(VarKey id, v))
 
 let val_of_constant c = val_of_idkey (ConstKey c)
-let val_of_constant_def n c v =
-  let res = Obj.new_block accu_tag 2 in
-  Obj.set_field res 0 (Obj.repr (mkAccuCond n));
-  Obj.set_field res 1 (Obj.repr (Aiddef(ConstKey c, v)));
-  val_of_obj res
 
 external val_of_annot_switch : annot_switch -> values = "%identity"
 
@@ -497,7 +488,7 @@ let btag : vblock -> int = fun b -> Obj.tag (Obj.repr b)
 let bsize : vblock -> int = fun b -> Obj.size (Obj.repr b)
 let bfield b i =
   if 0 <= i && i < (bsize b) then val_of_obj (Obj.field (Obj.repr b) i)
-  else raise (Invalid_argument "Vm.bfield")
+  else invalid_arg "Vm.bfield"
 
 
 (* Functions over vswitch *)
@@ -511,7 +502,7 @@ let type_of_switch sw =
   interprete sw.sw_type_code crazy_val sw.sw_env 0
 
 let branch_arg k (tag,arity) =
-  if arity = 0 then  ((Obj.magic tag):values)
+  if Int.equal arity 0 then  ((Obj.magic tag):values)
   else
     let b = Obj.new_block tag arity in
     for i = 0 to arity - 1 do

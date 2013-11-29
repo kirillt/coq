@@ -28,9 +28,18 @@ val pr_goal : goal -> Pp.std_ppcmds
 (* [advance sigma g] returns [Some g'] if [g'] is undefined and 
     is the current avatar of [g] (for instance [g] was changed by [clear]
     into [g']). It returns [None] if [g] has been (partially) solved. *)
-open Store.Field
 val advance : Evd.evar_map -> goal -> goal option
 
+
+(* Equality function on goals. Return [true] if all of its hypotheses
+   and conclusion are equal. *)
+val equal : Evd.evar_map -> goal -> Evd.evar_map -> goal -> bool
+
+(* [partition_unifiable sigma l] partitions [l] into a pair [(u,n)]
+   where [u] is composed of the unifiable goals, i.e. the goals on
+   whose definition other goals of [l] depend, and [n] are the
+   non-unifiable goals. *)
+val partition_unifiable : Evd.evar_map -> goal list -> goal list * goal list
 
 (*** Goal tactics ***)
 
@@ -42,7 +51,9 @@ type subgoals = private { subgoals: goal list }
 type +'a sensitive
 
 (* evaluates a goal sensitive value in a given goal (knowing the current evar_map). *)
-val eval : 'a sensitive -> Environ.env -> Evd.evar_map -> goal -> 'a * Evd.evar_map
+val eval :
+  'a sensitive -> Environ.env -> Evd.evar_map -> goal ->
+    'a * Evd.evar_map
 
 (* monadic bind on sensitive expressions *)
 val bind : 'a sensitive -> ('a -> 'b sensitive) -> 'b sensitive
@@ -55,7 +66,7 @@ val return : 'a -> 'a sensitive
 (* spiwack: it is a wrapper around [Constrintern.interp_open_constr]. 
     In an ideal world, this could/should be the other way round.
     As of now, though, it seems at least quite useful to build tactics. *)
-val interp_constr : Topconstr.constr_expr -> Term.constr sensitive
+val interp_constr : Constrexpr.constr_expr -> Term.constr sensitive
 
 (* Type of constr with holes used by refine. *)
 type refinable
@@ -72,7 +83,7 @@ module Refinable : sig
   (* [with_type c typ] constrains term [c] to have type [typ].  *)
   val with_type : Term.constr -> Term.types -> Term.constr sensitive
 
-  val resolve_typeclasses : ?filter:(Evd.hole_kind -> bool) -> ?split:bool -> ?fail:bool -> unit -> unit sensitive
+  val resolve_typeclasses : ?filter:Typeclasses.evar_filter -> ?split:bool -> ?fail:bool -> unit -> unit sensitive
 
 
   (* [constr_of_raw h check_type resolve_classes] is a pretyping function.
@@ -102,17 +113,17 @@ val refine : refinable -> subgoals sensitive
 (*** Cleaning  goals ***)
 
 (* Implements the [clear] tactic *)
-val clear : Names.identifier list -> subgoals sensitive
+val clear : Names.Id.Set.t -> subgoals sensitive
 
 (* Implements the [clearbody] tactic *)
-val clear_body : Names.identifier list -> subgoals sensitive
+val clear_body : Names.Id.t list -> subgoals sensitive
 
 
 (*** Conversion in goals ***)
 
 (* Changes an hypothesis of the goal with a convertible type and body.
    Checks convertibility if the boolean argument is true. *)
-val convert_hyp : bool -> Term.named_declaration -> subgoals sensitive
+val convert_hyp : bool -> Context.named_declaration -> subgoals sensitive
 
 (* Changes the conclusion of the goal with a convertible type and body.
    Checks convertibility if the boolean argument is true. *)
@@ -121,9 +132,12 @@ val convert_concl : bool -> Term.constr -> subgoals sensitive
 (*** Bureaucracy in hypotheses ***)
 
 (* Renames a hypothesis. *)
-val rename_hyp : Names.identifier -> Names.identifier -> subgoals sensitive
+val rename_hyp : Names.Id.t -> Names.Id.t -> subgoals sensitive
 
 (*** Sensitive primitives ***)
+
+(* representation of the goal in form of an {!Evd.evar_info} *)
+val info : Evd.evar_info sensitive
 
 (* [concl] is the conclusion of the current goal *)
 val concl : Term.constr sensitive
@@ -139,40 +153,22 @@ val env : Environ.env sensitive
 (* [defs] is the [Evd.evar_map] at the current evaluation point *)
 val defs : Evd.evar_map sensitive
 
-(* These four functions serve as foundation for the goal sensitive part
-    of the tactic monad (see Proofview).
-    [here] is a special sort of [return]: [here g a] is the value [a], but
-    does not have any value (it raises an exception) if evaluated in
-    any other goal than [g].
-    [here_list] is the same, except with a list of goals rather than a single one.
-    [plus a b] is the same as [a] if [a] is defined in the current goal, otherwise
-    it is [b]. Effectively it's defined in the goals where [a] and [b] are defined.
-    [null] is defined in no goal. (it is a neutral element for [plus]). *)
-(* spiwack: these primitives are a bit hackish, but I couldn't find another way
-    to pass information between goals, like for an intro tactic which gives to
-    each goal the name of the variable it introduce.
-    In pratice, in my experience, the primitives given in Proofview (in terms of
-    [here] and [plus]) are sufficient to define any tactics, hence these might
-    be another example of communication primitives between Goal and Proofview.
-    Still, I can't see a way to prevent using the Proofview primitive to read
-    a goal sensitive value out of its valid context. *)
-val null : 'a sensitive
-
-val plus : 'a sensitive -> 'a sensitive -> 'a sensitive 
-
-val here : goal -> 'a -> 'a sensitive 
-
-val here_list : goal list -> 'a -> 'a sensitive 
+(* [enter] combines [env], [defs], [hyps] and [concl] in a single
+   primitive. *)
+val enter : (Environ.env -> Evd.evar_map -> Environ.named_context_val -> Term.constr -> goal -> 'a) -> 'a sensitive
 
 (*** Additional functions ***)
 
 (* emulates List.map for functions of type 
    [Evd.evar_map -> 'a -> 'b * Evd.evar_map] on lists of type 'a, by propagating
    new evar_map to next definition *)
-val list_map : (Evd.evar_map -> 'a -> 'b * Evd.evar_map) -> 
-                        'a list -> 
-                        Evd.evar_map -> 
-                        'b list *Evd.evar_map
+val list_map : 
+  (Evd.evar_map -> 'a -> 'b * Evd.evar_map) ->
+  'a list -> Evd.evar_map ->
+    'b list * Evd.evar_map
+
+(* emulates List.map for [sensitive] Kleisli functions. *)
+val sensitive_list_map : ('a -> 'b sensitive) -> 'a list -> 'b list sensitive
 
 (* Layer to implement v8.2 tactic engine ontop of the new architecture. 
    Types are different from what they used to be due to a change of the
@@ -182,20 +178,29 @@ module V82 : sig
   (* Old style env primitive *)
   val env : Evd.evar_map -> goal -> Environ.env
 
-  (* For printing *)
-  val unfiltered_env : Evd.evar_map -> goal -> Environ.env
+  (* same as [env], but ensures that existential variables are
+     normalised *)
+  val nf_env : Evd.evar_map -> goal -> Environ.env
 
   (* Old style hyps primitive *)
   val hyps : Evd.evar_map -> goal -> Environ.named_context_val
 
+  (* same as [hyps], but ensures that existential variables are
+     normalised. *)
+  val nf_hyps : Evd.evar_map -> goal -> Environ.named_context_val
+
   (* Access to ".evar_concl" *)
   val concl : Evd.evar_map -> goal -> Term.constr
 
+  (* same as [concl] but ensures that existential variables are
+     normalised. *)
+  val nf_concl : Evd.evar_map -> goal -> Term.constr
+
   (* Access to ".evar_extra" *)
-  val extra : Evd.evar_map -> goal -> Store.t
+  val extra : Evd.evar_map -> goal -> Evd.Store.t
 
   (* Old style filtered_context primitive *)
-  val filtered_context : Evd.evar_map -> goal -> Sign.named_context
+  val filtered_context : Evd.evar_map -> goal -> Context.named_context
 
   (* Old style mk_goal primitive, returns a new goal with corresponding 
        hypotheses and conclusion, together with a term which is precisely
@@ -203,11 +208,8 @@ module V82 : sig
   val mk_goal : Evd.evar_map -> 
                          Environ.named_context_val ->
                          Term.constr ->
-                         Store.t ->
+                         Evd.Store.t ->
                          goal * Term.constr * Evd.evar_map
-
-  (* Equality function on goals *)
-  val equal : Evd.evar_map -> goal -> goal -> bool
 
   (* Creates a dummy [goal sigma] for use in auto *)
   val dummy_goal : goal Evd.sigma
@@ -232,7 +234,7 @@ module V82 : sig
   val same_goal : Evd.evar_map -> goal -> Evd.evar_map -> goal -> bool
 
  (* Used for congruence closure *)
-  val new_goal_with : Evd.evar_map -> goal -> Sign.named_context -> goal Evd.sigma
+  val new_goal_with : Evd.evar_map -> goal -> Context.named_context -> goal Evd.sigma
 
   (* Used by the compatibility layer and typeclasses *)
   val nf_evar : Evd.evar_map -> goal -> goal * Evd.evar_map
@@ -240,4 +242,6 @@ module V82 : sig
   (* Goal represented as a type, doesn't take into account section variables *)
   val abstract_type : Evd.evar_map -> goal -> Term.types 
 
+  val to_sensitive : (goal Evd.sigma -> 'a) -> 'a sensitive
+  val change_evar_map : Evd.evar_map -> unit sensitive
 end

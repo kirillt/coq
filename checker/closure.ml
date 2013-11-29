@@ -8,8 +8,9 @@
 
 open Util
 open Pp
-open Term
 open Names
+open Cic
+open Term
 open Esubst
 open Environ
 
@@ -28,7 +29,7 @@ let reset () =
   beta := 0; delta := 0; zeta := 0; evar := 0; iota := 0; prune := 0
 
 let stop() =
-  msgnl (str "[Reds: beta=" ++ int !beta ++ str" delta=" ++ int !delta ++
+  msg_debug (str "[Reds: beta=" ++ int !beta ++ str" delta=" ++ int !delta ++
 	 str" zeta=" ++ int !zeta ++ str" evar=" ++ int !evar ++
          str" iota=" ++ int !iota ++ str" prune=" ++ int !prune ++ str"]")
 
@@ -48,11 +49,11 @@ let with_stats c =
   end else
     Lazy.force c
 
-type transparent_state = Idpred.t * Cpred.t
-let all_opaque = (Idpred.empty, Cpred.empty)
-let all_transparent = (Idpred.full, Cpred.full)
+type transparent_state = Id.Pred.t * Cpred.t
+let all_opaque = (Id.Pred.empty, Cpred.empty)
+let all_transparent = (Id.Pred.full, Cpred.full)
 
-let is_transparent_variable (ids, _) id = Idpred.mem id ids
+let is_transparent_variable (ids, _) id = Id.Pred.mem id ids
 let is_transparent_constant (_, csts) cst = Cpred.mem cst csts
 
 module type RedFlagsSig = sig
@@ -63,7 +64,7 @@ module type RedFlagsSig = sig
   val fIOTA : red_kind
   val fZETA : red_kind
   val fCONST : constant -> red_kind
-  val fVAR : identifier -> red_kind
+  val fVAR : Id.t -> red_kind
   val no_red : reds
   val red_add : reds -> red_kind -> reds
   val mkflags : red_kind list -> reds
@@ -85,7 +86,7 @@ module RedFlags = (struct
     r_iota : bool }
 
   type red_kind = BETA | DELTA | IOTA | ZETA
-	      | CONST of constant | VAR of identifier
+	      | CONST of constant | VAR of Id.t
   let fBETA = BETA
   let fDELTA = DELTA
   let fIOTA = IOTA
@@ -110,7 +111,7 @@ module RedFlags = (struct
     | ZETA -> { red with r_zeta = true }
     | VAR id ->
 	let (l1,l2) = red.r_const in
-	{ red with r_const = Idpred.add id l1, l2 }
+	{ red with r_const = Id.Pred.add id l1, l2 }
 
   let mkflags = List.fold_left red_add no_red
 
@@ -122,7 +123,7 @@ module RedFlags = (struct
 	incr_cnt c delta
     | VAR id -> (* En attendant d'avoir des kn pour les Var *)
 	let (l,_) = red.r_const in
-	let c = Idpred.mem id l in
+	let c = Id.Pred.mem id l in
 	incr_cnt c delta
     | ZETA -> incr_cnt red.r_zeta zeta
     | IOTA -> incr_cnt red.r_iota iota
@@ -150,7 +151,6 @@ let betaiotazeta = mkflags [fBETA;fIOTA;fZETA]
  *         is stored in the table.
  *  * i_rels = (4,[(1,c);(3,d)]) means there are 4 free rel variables
  *    and only those with index 1 and 3 have bodies which are c and d resp.
- *  * i_vars is the list of _defined_ named variables.
  *
  * ref_value_cache searchs in the tab, otherwise uses i_repr to
  * compute the result and store it in the table. If the constant can't
@@ -162,7 +162,7 @@ let betaiotazeta = mkflags [fBETA;fIOTA;fZETA]
 
 type table_key =
   | ConstKey of constant
-  | VarKey of identifier
+  | VarKey of Id.t
   | RelKey of int
 
 type 'a infos = {
@@ -170,7 +170,6 @@ type 'a infos = {
   i_repr : 'a infos -> constr -> 'a;
   i_env : env;
   i_rels : int * (int * constr) list;
-  i_vars : (identifier * constr) list;
   i_tab : (table_key, 'a) Hashtbl.t }
 
 let ref_value_cache info ref =
@@ -181,8 +180,8 @@ let ref_value_cache info ref =
     let body =
       match ref with
 	| RelKey n ->
-	    let (s,l) = info.i_rels in lift n (List.assoc (s-n) l)
-	| VarKey id -> List.assoc id info.i_vars
+	    let (s,l) = info.i_rels in lift n (Int.List.assoc (s-n) l)
+	| VarKey id -> raise Not_found
 	| ConstKey cst -> constant_value info.i_env cst
     in
     let v = info.i_repr info body in
@@ -192,16 +191,6 @@ let ref_value_cache info ref =
     | Not_found (* List.assoc *)
     | NotEvaluableConst _ (* Const *)
       -> None
-
-let defined_vars flags env =
-(*  if red_local_const (snd flags) then*)
-    fold_named_context
-      (fun (id,b,_) e ->
-	 match b with
-	   | None -> e
-	   | Some body -> (id, body)::e)
-       (named_context env) ~init:[]
-(*  else []*)
 
 let defined_rels flags env =
 (*  if red_local_const (snd flags) then*)
@@ -225,7 +214,6 @@ let create mk_cl flgs env =
     i_repr = mk_cl;
     i_env = env;
     i_rels = defined_rels flgs env;
-    i_vars = defined_vars flgs env;
     i_tab = Hashtbl.create 17 }
 
 
@@ -357,7 +345,7 @@ let compact_stack head stk =
 
 (* Put an update mark in the stack, only if needed *)
 let zupdate m s =
-  if !share & m.norm = Red
+  if !share && m.norm = Red
   then
     let s' = compact_stack m s in
     let _ = m.term <- FLOCKED in
@@ -369,7 +357,7 @@ let rec compact_constr (lg, subs as s) c k =
   match c with
       Rel i ->
         if i < k then c,s else
-          (try Rel (k + lg - list_index (i-k+1) subs), (lg,subs)
+          (try Rel (k + lg - List.index Int.equal (i-k+1) subs), (lg,subs)
           with Not_found -> Rel (k+lg), (lg+1, (i-k+1)::subs))
     | (Sort _|Var _|Meta _|Ind _|Const _|Construct _) -> c,s
     | Evar(ev,v) ->
@@ -413,7 +401,7 @@ and compact_vect s v k = compact_v [] s v k (Array.length v - 1)
 and compact_v acc s v k i =
   if i < 0 then
     let v' = Array.of_list acc in
-    if array_for_all2 (==) v v' then v,s else v',s
+    if Array.for_all2 (==) v v' then v,s else v',s
   else
     let (a',s') = compact_constr s v.(i) k in
     compact_v (a'::acc) s' v k (i-1)
@@ -544,7 +532,7 @@ let rec to_constr constr_fun lfts v =
         let fr = mk_clos2 env t in
         let unfv = update v (fr.norm,fr.term) in
         to_constr constr_fun lfts unfv
-    | FLOCKED -> assert false (*mkVar(id_of_string"_LOCK_")*)
+    | FLOCKED -> assert false (*mkVar(Id.of_string"_LOCK_")*)
 
 (* This function defines the correspondance between constr and
    fconstr. When we find a closure whose substitution is the identity,
@@ -553,11 +541,11 @@ let rec to_constr constr_fun lfts v =
 let term_of_fconstr =
   let rec term_of_fconstr_lift lfts v =
     match v.term with
-      | FCLOS(t,env) when is_subs_id env & is_lift_id lfts -> t
-      | FLambda(_,tys,f,e) when is_subs_id e & is_lift_id lfts ->
+      | FCLOS(t,env) when is_subs_id env && is_lift_id lfts -> t
+      | FLambda(_,tys,f,e) when is_subs_id e && is_lift_id lfts ->
           compose_lam (List.rev tys) f
-      | FFix(fx,e) when is_subs_id e & is_lift_id lfts -> Fix fx
-      | FCoFix(cfx,e) when is_subs_id e & is_lift_id lfts -> CoFix cfx
+      | FFix(fx,e) when is_subs_id e && is_lift_id lfts -> Fix fx
+      | FCoFix(cfx,e) when is_subs_id e && is_lift_id lfts -> CoFix cfx
       | _ -> to_constr term_of_fconstr_lift lfts v in
   term_of_fconstr_lift el_id
 
@@ -647,7 +635,7 @@ let rec get_args n tys f e stk =
           let eargs = Array.sub l n (na-n) in
           (Inl (subs_cons(args,e)), Zapp eargs :: s)
         else (* more lambdas *)
-          let etys = list_skipn na tys in
+          let etys = List.skipn na tys in
           get_args (n-na) etys f (subs_cons(l,e)) s
     | _ -> (Inr {norm=Cstr;term=FLambda(n,tys,f,e)}, stk)
 

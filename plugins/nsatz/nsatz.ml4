@@ -6,35 +6,15 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
-open Pp
+open Errors
 open Util
-open Names
 open Term
-open Closure
-open Environ
-open Libnames
 open Tactics
-open Glob_term
-open Tacticals
-open Tacexpr
-open Pcoq
-open Tactic
-open Constr
-open Proof_type
 open Coqlib
-open Tacmach
-open Mod_subst
-open Tacinterp
-open Libobject
-open Printer
-open Declare
-open Decl_kinds
-open Entries
 
 open Num
-open Unix
 open Utile
 
 (***********************************************************************
@@ -74,7 +54,7 @@ module BigInt = struct
   let to_int x = int_of_big_int x
   let hash x =
     try (int_of_big_int x)
-    with _-> 1
+    with Failure _ -> 1
   let puis = power_big_int_positive_int
 
   (* a et b positifs, résultat positif *)
@@ -156,7 +136,7 @@ type term =
 
 let const n =
   if eq_num n num_0 then Zero else Const n
-let pow(p,i) = if i=1 then p else Pow(p,i)
+let pow(p,i) = if Int.equal i 1 then p else Pow(p,i)
 let add = function
     (Zero,q) -> q
   | (p,Zero) -> p
@@ -212,7 +192,7 @@ let rec mkt_pos n =
     mkt_app pxI [mkt_pos (quo_num n num_2)]
 
 let mkt_n n =
-  if n=num_0
+  if Num.eq_num n num_0
   then Lazy.force nN0
   else mkt_app nNpos [mkt_pos n]
 
@@ -232,7 +212,7 @@ let rec mkt_term t  =  match t with
 | Add (t1,t2) -> mkt_app  ttadd [Lazy.force tz; mkt_term t1; mkt_term t2]
 | Sub (t1,t2) -> mkt_app  ttsub [Lazy.force tz; mkt_term t1; mkt_term t2]
 | Mul (t1,t2) -> mkt_app  ttmul [Lazy.force tz; mkt_term t1; mkt_term t2]
-| Pow (t1,n) ->  if (n = 0) then
+| Pow (t1,n) ->  if Int.equal n 0 then
     mkt_app ttconst [Lazy.force tz; mkt_z num_1]
 else
     mkt_app ttpow [Lazy.force tz; mkt_term t1; mkt_n (num_of_int n)]
@@ -331,7 +311,7 @@ let term_pol_sparse np t=
     match t with
     | Zero -> zeroP
     | Const r ->
-	if r = num_0
+	if Num.eq_num r num_0
 	then zeroP
 	else polconst d (Poly.Pint (Coef.of_num r))
     | Var v ->
@@ -385,19 +365,19 @@ let pol_sparse_to_term n2 p =
 		if m.(k)>0
 		then i0:=k
 	      done;
-	      if !i0 = 0
+	      if Int.equal !i0 0
 	      then (r,d)
 	      else if !i0 > r
 	      then (!i0, m.(!i0))
-	      else if !i0 = r && m.(!i0)<d
+	      else if Int.equal !i0 r && m.(!i0)<d
 	      then (!i0, m.(!i0))
 	      else (r,d))
 	  (0,0)
 	  p in
-      if i0=0
+      if Int.equal i0 0
       then
 	let mp = ref (polrec_to_term a) in
-        if p1=[]
+        if List.is_empty p1
 	then !mp
 	else add(!mp,aux p1)
       else (
@@ -411,7 +391,7 @@ let pol_sparse_to_term n2 p =
 	     else p2:=(a,m)::(!p2))
 	  p;
 	let vm =
-	  if e0=1
+	  if Int.equal e0 1
 	  then Var (string_of_int (i0))
 	  else pow (Var (string_of_int (i0)),e0) in
 	add(mul(vm, aux (List.rev (!p1))), aux (List.rev (!p2))))
@@ -419,13 +399,13 @@ let pol_sparse_to_term n2 p =
   aux p
 
 
-let rec remove_list_tail l i =
+let remove_list_tail l i =
   let rec aux l i =
-    if l=[]
+    if List.is_empty l
     then []
     else if i<0
     then l
-    else if i=0
+    else if Int.equal i 0
     then List.tl l
     else
       match l with
@@ -447,7 +427,7 @@ let rec remove_list_tail l i =
 let remove_zeros zero lci =
   let n = List.length (List.hd lci) in
   let m=List.length lci in
-  let u = Array.create m false in
+  let u = Array.make m false in
   let rec utiles k =
     if k>=m
     then ()
@@ -543,7 +523,7 @@ let theoremedeszeros_termes lp =
 	  let (cert,lp0,p,_lct) = theoremedeszeros lpol p in
           info "cert ok\n";
 	  let lc = cert.last_comb::List.rev cert.gb_comb in
-	  match remove_zeros (fun x -> x=zeroP) lc with
+	  match remove_zeros (fun x -> equal x zeroP) lc with
 	  | [] -> assert false
 	  | (lq::lci) ->
 	      (* lci commence par les nouveaux polynomes *)
@@ -610,7 +590,7 @@ let nsatz_compute t =
   return_term lpol
 
 TACTIC EXTEND nsatz_compute
-| [ "nsatz_compute"  constr(lt) ] -> [ nsatz_compute lt ]
+| [ "nsatz_compute"  constr(lt) ] -> [ Proofview.V82.tactic (nsatz_compute lt) ]
 END
 
 

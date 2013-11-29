@@ -7,7 +7,7 @@
 (************************************************************************)
 
 open Names
-open Sign
+open Context
 open Libnames
 open Decl_kinds
 
@@ -18,10 +18,10 @@ open Decl_kinds
 (** Registration and access to the table of variable *)
 
 type variable_data =
-    dir_path * bool (** opacity *) * Univ.constraints * logical_kind
+    DirPath.t * bool (** opacity *) * Univ.constraints * logical_kind
 
 val add_variable_data : variable -> variable_data -> unit
-val variable_path : variable -> dir_path
+val variable_path : variable -> DirPath.t
 val variable_secpath : variable -> qualid
 val variable_kind : variable -> logical_kind
 val variable_opacity : variable -> bool
@@ -40,4 +40,4 @@ val initialize_named_context_for_proof : unit -> Environ.named_context_val
 
 (** Miscellaneous functions *)
 
-val last_section_hyps : dir_path -> identifier list
+val last_section_hyps : DirPath.t -> Id.t list

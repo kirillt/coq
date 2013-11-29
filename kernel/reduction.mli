@@ -7,6 +7,7 @@
 (************************************************************************)
 
 open Term
+open Context
 open Environ
 open Closure
 
@@ -53,6 +54,9 @@ val conv_leq_vecti :
 (** option for conversion *)
 val set_vm_conv : (conv_pb -> types conversion_function) -> unit
 val vm_conv : conv_pb -> types conversion_function
+
+val set_nat_conv : (conv_pb -> types conversion_function) -> unit
+val native_conv : conv_pb -> types conversion_function
 
 val set_default_conv : (conv_pb -> ?l2r:bool -> types conversion_function) -> unit
 val default_conv     : conv_pb -> ?l2r:bool -> types conversion_function

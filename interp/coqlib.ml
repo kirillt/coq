@@ -6,28 +6,32 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Pp
 open Names
 open Term
 open Libnames
-open Pattern
+open Globnames
 open Nametab
 open Smartlocate
+
+let coq = Nameops.coq_string (* "Coq" *)
 
 (************************************************************************)
 (* Generic functions to find Coq objects *)
 
 type message = string
 
-let make_dir l = make_dirpath (List.map id_of_string (List.rev l))
+let make_dir l = DirPath.make (List.rev_map Id.of_string l)
 
 let find_reference locstr dir s =
-  let sp = Libnames.make_path (make_dir dir) (id_of_string s) in
+  let sp = Libnames.make_path (make_dir dir) (Id.of_string s) in
   try global_of_extended_global (Nametab.extended_global_of_path sp)
-  with Not_found -> anomaly (locstr^": cannot find "^(string_of_path sp))
+  with Not_found ->
+    anomaly ~label:locstr (str "cannot find " ++ Libnames.pr_path sp)
 
-let coq_reference locstr dir s = find_reference locstr ("Coq"::dir) s
+let coq_reference locstr dir s = find_reference locstr (coq::dir) s
 let coq_constant locstr dir s = constr_of_global (coq_reference locstr dir s)
 
 let gen_reference = coq_reference
@@ -44,17 +48,18 @@ let gen_constant_in_modules locstr dirs s =
   let dirs = List.map make_dir dirs in
   let qualid = qualid_of_string s in
   let all = Nametab.locate_extended_all qualid in
-  let all = list_uniquize (list_map_filter global_of_extended all) in
+  let all = List.map_filter global_of_extended all in
+  let all = List.sort_uniquize RefOrdered_env.compare all in
   let these = List.filter (has_suffix_in_dirs dirs) all in
   match these with
     | [x] -> constr_of_global x
     | [] ->
-	anomalylabstrm "" (str (locstr^": cannot find "^s^
+	anomaly ~label:locstr (str ("cannot find "^s^
 	" in module"^(if List.length dirs > 1 then "s " else " ")) ++
 	prlist_with_sep pr_comma pr_dirpath dirs)
     | l ->
-	anomalylabstrm ""
-	(str (locstr^": found more than once object of name "^s^
+	anomaly ~label:locstr
+	(str ("found more than once object of name "^s^
 	" in module"^(if List.length dirs > 1 then "s " else " ")) ++
 	prlist_with_sep pr_comma pr_dirpath dirs)
 
@@ -62,43 +67,48 @@ let gen_constant_in_modules locstr dirs s =
 (* For tactics/commands requiring vernacular libraries *)
 
 let check_required_library d =
-  let d' = List.map id_of_string d in
-  let dir = make_dirpath (List.rev d') in
-  let mp = (fst(Lib.current_prefix())) in
-  let current_dir = match mp with
-    | MPfile dp -> (dir=dp)
-    | _ -> false
-  in
-  if not (Library.library_is_loaded dir) then
-    if not current_dir then
+  let dir = make_dir d in
+  if Library.library_is_loaded dir then ()
+  else
+    let in_current_dir = match Lib.current_mp () with
+      | MPfile dp -> DirPath.equal dir dp
+      | _ -> false
+    in
+    if not in_current_dir then
 (* Loading silently ...
-    let m, prefix = list_sep_last d' in
+    let m, prefix = List.sep_last d' in
     read_library
-     (dummy_loc,make_qualid (make_dirpath (List.rev prefix)) m)
+     (Loc.ghost,make_qualid (DirPath.make (List.rev prefix)) m)
 *)
 (* or failing ...*)
-      error ("Library "^(string_of_dirpath dir)^" has to be required first.")
+      error ("Library "^(DirPath.to_string dir)^" has to be required first.")
 
 (************************************************************************)
 (* Specific Coq objects *)
 
-let init_reference dir s = gen_reference "Coqlib" ("Init"::dir) s
+let init_reference dir s =
+  let d = "Init"::dir in
+  check_required_library (coq::d); gen_reference "Coqlib" d s
 
-let init_constant dir s = gen_constant "Coqlib" ("Init"::dir) s
+let init_constant dir s =
+  let d = "Init"::dir in
+  check_required_library (coq::d); gen_constant "Coqlib" d s
 
-let logic_constant dir s = gen_constant "Coqlib" ("Logic"::dir) s
+let logic_constant dir s =
+  let d = "Logic"::dir in
+  check_required_library (coq::d); gen_constant "Coqlib" d s
 
-let arith_dir = ["Coq";"Arith"]
+let arith_dir = [coq;"Arith"]
 let arith_modules = [arith_dir]
 
-let numbers_dir = [ "Coq";"Numbers"]
-let parith_dir = ["Coq";"PArith"]
-let narith_dir = ["Coq";"NArith"]
-let zarith_dir = ["Coq";"ZArith"]
+let numbers_dir = [coq;"Numbers"]
+let parith_dir = [coq;"PArith"]
+let narith_dir = [coq;"NArith"]
+let zarith_dir = [coq;"ZArith"]
 
 let zarith_base_modules = [numbers_dir;parith_dir;narith_dir;zarith_dir]
 
-let init_dir = ["Coq";"Init"]
+let init_dir = [coq;"Init"]
 let init_modules = [
   init_dir@["Datatypes"];
   init_dir@["Logic"];
@@ -108,35 +118,38 @@ let init_modules = [
   init_dir@["Wf"]
 ]
 
-let logic_module_name = ["Coq";"Init";"Logic"]
+let prelude_module_name = init_dir@["Prelude"]
+let prelude_module = make_dir prelude_module_name
+
+let logic_module_name = init_dir@["Logic"]
 let logic_module = make_dir logic_module_name
 
-let logic_type_module_name = ["Coq";"Init";"Logic_Type"]
+let logic_type_module_name = init_dir@["Logic_Type"]
 let logic_type_module = make_dir logic_type_module_name
 
-let datatypes_module_name = ["Coq";"Init";"Datatypes"]
+let datatypes_module_name = init_dir@["Datatypes"]
 let datatypes_module = make_dir datatypes_module_name
 
-let arith_module_name = ["Coq";"Arith";"Arith"]
+let arith_module_name = arith_dir@["Arith"]
 let arith_module = make_dir arith_module_name
 
-let jmeq_module_name = ["Coq";"Logic";"JMeq"]
+let jmeq_module_name = [coq;"Logic";"JMeq"]
 let jmeq_module = make_dir jmeq_module_name
 
-(* TODO: temporary hack *)
-let make_kn dir id = Libnames.encode_mind dir id
-let make_con dir id = Libnames.encode_con dir id
+(* TODO: temporary hack. Works only if the module isn't an alias *)
+let make_ind dir id = Globnames.encode_mind dir (Id.of_string id)
+let make_con dir id = Globnames.encode_con dir (Id.of_string id)
 
 (** Identity *)
 
-let id = make_con datatypes_module (id_of_string "id")
-let type_of_id = make_con datatypes_module (id_of_string "ID")
+let id = make_con datatypes_module "id"
+let type_of_id = make_con datatypes_module "ID"
 
 let _ = Termops.set_impossible_default_clause (mkConst id,mkConst type_of_id)
 
 (** Natural numbers *)
-let nat_kn = make_kn datatypes_module (id_of_string "nat")
-let nat_path = Libnames.make_path datatypes_module (id_of_string "nat")
+let nat_kn = make_ind datatypes_module "nat"
+let nat_path = Libnames.make_path datatypes_module (Id.of_string "nat")
 
 let glob_nat = IndRef (nat_kn,0)
 
@@ -146,7 +159,7 @@ let glob_O = ConstructRef path_of_O
 let glob_S = ConstructRef path_of_S
 
 (** Booleans *)
-let bool_kn = make_kn datatypes_module (id_of_string "bool")
+let bool_kn = make_ind datatypes_module "bool"
 
 let glob_bool = IndRef (bool_kn,0)
 
@@ -156,13 +169,13 @@ let glob_true  = ConstructRef path_of_true
 let glob_false  = ConstructRef path_of_false
 
 (** Equality *)
-let eq_kn = make_kn logic_module (id_of_string "eq")
+let eq_kn = make_ind logic_module "eq"
 let glob_eq = IndRef (eq_kn,0)
 
-let identity_kn = make_kn datatypes_module (id_of_string "identity")
+let identity_kn = make_ind datatypes_module "identity"
 let glob_identity = IndRef (identity_kn,0)
 
-let jmeq_kn = make_kn jmeq_module (id_of_string "JMeq")
+let jmeq_kn = make_ind jmeq_module "JMeq"
 let glob_jmeq = IndRef (jmeq_kn,0)
 
 type coq_sigma_data = {
@@ -182,7 +195,7 @@ let build_bool_type () =
     andb_prop =  init_constant ["Datatypes"] "andb_prop";
     andb_true_intro =  init_constant ["Datatypes"] "andb_true_intro" }
 
-let build_sigma_set () = anomaly "Use build_sigma_type"
+let build_sigma_set () = anomaly (Pp.str "Use build_sigma_type")
 
 let build_sigma_type () =
   { proj1 = init_constant ["Specif"] "projT1";
@@ -277,8 +290,8 @@ let build_coq_jmeq_data () =
   congr = Lazy.force coq_jmeq_congr }
 
 let join_jmeq_types eq =
-  mkLambda(Name (id_of_string "A"),Termops.new_Type(),
-  mkLambda(Name (id_of_string "x"),mkRel 1,
+  mkLambda(Name (Id.of_string "A"),Termops.new_Type(),
+  mkLambda(Name (Id.of_string "x"),mkRel 1,
   mkApp (eq,[|mkRel 2;mkRel 1;mkRel 2|])))
 
 let build_coq_inversion_jmeq_data () =
@@ -331,6 +344,7 @@ let build_coq_inversion_eq_true_data () =
 
 (* The False proposition *)
 let coq_False  = lazy_init_constant ["Logic"] "False"
+let coq_proof_admitted = lazy_init_constant ["Logic"] "proof_admitted"
 
 (* The True proposition and its unique proof *)
 let coq_True   = lazy_init_constant ["Logic"] "True"
@@ -352,6 +366,7 @@ let build_coq_True ()  = Lazy.force coq_True
 let build_coq_I ()     = Lazy.force coq_I
 
 let build_coq_False () = Lazy.force coq_False
+let build_coq_proof_admitted () = Lazy.force coq_proof_admitted
 let build_coq_not ()   = Lazy.force coq_not
 let build_coq_and ()   = Lazy.force coq_and
 let build_coq_conj ()  = Lazy.force coq_conj
@@ -368,7 +383,7 @@ let coq_eq_ref      = lazy (init_reference ["Logic"] "eq")
 let coq_identity_ref = lazy (init_reference ["Datatypes"] "identity")
 let coq_jmeq_ref     = lazy (gen_reference "Coqlib" ["Logic";"JMeq"] "JMeq")
 let coq_eq_true_ref = lazy (gen_reference "Coqlib" ["Init";"Datatypes"] "eq_true")
-let coq_existS_ref  = lazy (anomaly "use coq_existT_ref")
+let coq_existS_ref  = lazy (anomaly (Pp.str "use coq_existT_ref"))
 let coq_existT_ref  = lazy (init_reference ["Specif"] "existT")
 let coq_exist_ref  = lazy (init_reference ["Specif"] "exist")
 let coq_not_ref     = lazy (init_reference ["Logic"] "not")

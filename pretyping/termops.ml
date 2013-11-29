@@ -7,14 +7,15 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
 open Nameops
 open Term
-open Sign
+open Vars
+open Context
 open Environ
-open Libnames
-open Nametab
+open Locus
 
 (* Sorts and sort family *)
 
@@ -59,7 +60,7 @@ let rec pr_constr c = match kind_of_term c with
       (str"(" ++ pr_constr c ++ spc() ++
        prlist_with_sep spc pr_constr (Array.to_list l) ++ str")")
   | Evar (e,l) -> hov 1
-      (str"Evar#" ++ int e ++ str"{" ++
+      (str"Evar#" ++ int (Evar.repr e) ++ str"{" ++
        prlist_with_sep spc pr_constr (Array.to_list l) ++str"}")
   | Const c -> str"Cst(" ++ pr_con c ++ str")"
   | Ind (sp,i) -> str"Ind(" ++ pr_mind sp ++ str"," ++ int i ++ str")"
@@ -142,17 +143,15 @@ let print_env env =
   in
     (sign_env ++ db_env)
 
-(*let current_module = ref empty_dirpath
+(*let current_module = ref DirPath.empty
 
 let set_module m = current_module := m*)
 
-let new_univ_level =
-  let univ_gen = ref 0 in
-  (fun sp ->
-    incr univ_gen;
-    Univ.make_universe_level (Lib.library_dp(),!univ_gen))
+let new_univ_level, set_remote_new_univ_level =
+  RemoteCounter.new_counter 0 ~incr:((+) 1)
+    ~build:(fun n -> Univ.UniverseLevel.make (Lib.library_dp()) n)
 
-let new_univ () = Univ.make_universe (new_univ_level ())
+let new_univ () = Univ.Universe.make (new_univ_level ())
 let new_Type () = mkType (new_univ ())
 let new_Type_sort () = Type (new_univ ())
 
@@ -162,7 +161,7 @@ let new_Type_sort () = Type (new_univ ())
 let refresh_universes_gen strict t =
   let modified = ref false in
   let rec refresh t = match kind_of_term t with
-    | Sort (Type u) when strict or u <> Univ.type0m_univ ->
+    | Sort (Type u) when strict || not (Univ.is_type0m_univ u) ->
 	modified := true; new_Type ()
     | Prod (na,u,v) -> mkProd (na,u,refresh v)
     | _ -> t in
@@ -208,22 +207,23 @@ let push_rels_assum assums =
 
 let push_named_rec_types (lna,typarray,_) env =
   let ctxt =
-    array_map2_i
+    Array.map2_i
       (fun i na t ->
 	 match na with
 	   | Name id -> (id, None, lift i t)
-	   | Anonymous -> anomaly "Fix declarations must be named")
+	   | Anonymous -> anomaly (Pp.str "Fix declarations must be named"))
       lna typarray in
   Array.fold_left
     (fun e assum -> push_named assum e) env ctxt
 
-let rec lookup_rel_id id sign =
-  let rec lookrec = function
-    | (n, (Anonymous,_,_)::l) -> lookrec (n+1,l)
-    | (n, (Name id',b,t)::l)  -> if id' = id then (n,b,t) else lookrec (n+1,l)
-    | (_, [])                 -> raise Not_found
+let lookup_rel_id id sign =
+  let rec lookrec n = function
+    | []                     -> raise Not_found
+    | (Anonymous, _, _) :: l -> lookrec (n + 1) l
+    | (Name id', b, t) :: l  ->
+      if Names.Id.equal id' id then (n, b, t) else lookrec (n + 1) l
   in
-  lookrec (1,sign)
+  lookrec 1 sign
 
 (* Constructs either [forall x:t, c] or [let x:=b:t in c] *)
 let mkProd_or_LetIn (na,body,t) c =
@@ -258,7 +258,7 @@ let rec strip_head_cast c = match kind_of_term c with
       let rec collapse_rec f cl2 = match kind_of_term f with
 	| App (g,cl1) -> collapse_rec g (Array.append cl1 cl2)
 	| Cast (c,_,_) -> collapse_rec c cl2
-	| _ -> if Array.length cl2 = 0 then f else mkApp (f,cl2)
+	| _ -> if Int.equal (Array.length cl2) 0 then f else mkApp (f,cl2)
       in
       collapse_rec f cl
   | Cast (c,_,_) -> strip_head_cast c
@@ -267,15 +267,15 @@ let rec strip_head_cast c = match kind_of_term c with
 let rec drop_extra_implicit_args c = match kind_of_term c with
   (* Removed trailing extra implicit arguments, what improves compatibility
      for constants with recently added maximal implicit arguments *)
-  | App (f,args) when isEvar (array_last args) ->
+  | App (f,args) when isEvar (Array.last args) ->
       drop_extra_implicit_args
-	(mkApp (f,fst (array_chop (Array.length args - 1) args)))
+	(mkApp (f,fst (Array.chop (Array.length args - 1) args)))
   | _ -> c
 
 (* Get the last arg of an application *)
 let last_arg c = match kind_of_term c with
-  | App (f,cl) -> array_last cl
-  | _ -> anomaly "last_arg"
+  | App (f,cl) -> Array.last cl
+  | _ -> anomaly (Pp.str "last_arg")
 
 (* Get the last arg of an application *)
 let decompose_app_vect c =
@@ -285,22 +285,22 @@ let decompose_app_vect c =
 
 let adjust_app_list_size f1 l1 f2 l2 =
   let len1 = List.length l1 and len2 = List.length l2 in
-  if len1 = len2 then (f1,l1,f2,l2)
+  if Int.equal len1 len2 then (f1,l1,f2,l2)
   else if len1 < len2 then
-   let extras,restl2 = list_chop (len2-len1) l2 in
+   let extras,restl2 = List.chop (len2-len1) l2 in
     (f1, l1, applist (f2,extras), restl2)
   else
-    let extras,restl1 = list_chop (len1-len2) l1 in
+    let extras,restl1 = List.chop (len1-len2) l1 in
     (applist (f1,extras), restl1, f2, l2)
 
 let adjust_app_array_size f1 l1 f2 l2 =
   let len1 = Array.length l1 and len2 = Array.length l2 in
-  if len1 = len2 then (f1,l1,f2,l2)
+  if Int.equal len1 len2 then (f1,l1,f2,l2)
   else if len1 < len2 then
-    let extras,restl2 = array_chop (len2-len1) l2 in
+    let extras,restl2 = Array.chop (len2-len1) l2 in
     (f1, l1, appvect (f2,extras), restl2)
   else
-    let extras,restl1 = array_chop (len1-len2) l1 in
+    let extras,restl1 = Array.chop (len1-len2) l1 in
     (appvect (f1,extras), restl1, f2, l2)
 
 (* [map_constr_with_named_binders g f l c] maps [f l] on the immediate
@@ -337,9 +337,20 @@ let map_constr_with_named_binders g f l c = match kind_of_term c with
    (co-)fixpoint) *)
 
 let fold_rec_types g (lna,typarray,_) e =
-  let ctxt = array_map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
+  let ctxt = Array.map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
   Array.fold_left (fun e assum -> g assum e) e ctxt
 
+let map_left2 f a g b =
+  let l = Array.length a in
+  if Int.equal l 0 then [||], [||] else begin
+    let r = Array.make l (f a.(0)) in
+    let s = Array.make l (g b.(0)) in
+    for i = 1 to l - 1 do
+      r.(i) <- f a.(i);
+      s.(i) <- g b.(i)
+    done;
+    r, s
+  end
 
 let map_constr_with_binders_left_to_right g f l c = match kind_of_term c with
   | (Rel _ | Meta _ | Var _   | Sort _ | Const _ | Ind _
@@ -362,19 +373,19 @@ let map_constr_with_binders_left_to_right g f l c = match kind_of_term c with
       let a = al.(Array.length al - 1) in
       let hd = f l (mkApp (c, Array.sub al 0 (Array.length al - 1))) in
       mkApp (hd, [| f l a |])
-  | Evar (e,al) -> mkEvar (e, array_map_left (f l) al)
+  | Evar (e,al) -> mkEvar (e, Array.map_left (f l) al)
   | Case (ci,p,c,bl) ->
       (* In v8 concrete syntax, predicate is after the term to match! *)
       let c' = f l c in
       let p' = f l p in
-      mkCase (ci, p', c', array_map_left (f l) bl)
+      mkCase (ci, p', c', Array.map_left (f l) bl)
   | Fix (ln,(lna,tl,bl as fx)) ->
       let l' = fold_rec_types g fx l in
-      let (tl',bl') = array_map_left_pair (f l) tl (f l') bl in
+      let (tl', bl') = map_left2 (f l) tl (f l') bl in
       mkFix (ln,(lna,tl',bl'))
   | CoFix(ln,(lna,tl,bl as fx)) ->
       let l' = fold_rec_types g fx l in
-      let (tl',bl') = array_map_left_pair (f l) tl (f l') bl in
+      let (tl', bl') = map_left2 (f l) tl (f l') bl in
       mkCoFix (ln,(lna,tl',bl'))
 
 (* strong *)
@@ -401,30 +412,30 @@ let map_constr_with_full_binders g f l cstr = match kind_of_term cstr with
   | App (c,al) ->
       let c' = f l c in
       let al' = Array.map (f l) al in
-      if c==c' && array_for_all2 (==) al al' then cstr else mkApp (c', al')
+      if c==c' && Array.for_all2 (==) al al' then cstr else mkApp (c', al')
   | Evar (e,al) ->
       let al' = Array.map (f l) al in
-      if array_for_all2 (==) al al' then cstr else mkEvar (e, al')
+      if Array.for_all2 (==) al al' then cstr else mkEvar (e, al')
   | Case (ci,p,c,bl) ->
       let p' = f l p in
       let c' = f l c in
       let bl' = Array.map (f l) bl in
-      if p==p' && c==c' && array_for_all2 (==) bl bl' then cstr else
+      if p==p' && c==c' && Array.for_all2 (==) bl bl' then cstr else
         mkCase (ci, p', c', bl')
   | Fix (ln,(lna,tl,bl)) ->
       let tl' = Array.map (f l) tl in
       let l' =
-        array_fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
+        Array.fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
       let bl' = Array.map (f l') bl in
-      if array_for_all2 (==) tl tl' && array_for_all2 (==) bl bl'
+      if Array.for_all2 (==) tl tl' && Array.for_all2 (==) bl bl'
       then cstr
       else mkFix (ln,(lna,tl',bl'))
   | CoFix(ln,(lna,tl,bl)) ->
       let tl' = Array.map (f l) tl in
       let l' =
-        array_fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
+        Array.fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
       let bl' = Array.map (f l') bl in
-      if array_for_all2 (==) tl tl' && array_for_all2 (==) bl bl'
+      if Array.for_all2 (==) tl tl' && Array.for_all2 (==) bl bl'
       then cstr
       else mkCoFix (ln,(lna,tl',bl'))
 
@@ -447,11 +458,11 @@ let fold_constr_with_binders g f n acc c = match kind_of_term c with
   | Case (_,p,c,bl) -> Array.fold_left (f n) (f n (f n acc p) c) bl
   | Fix (_,(lna,tl,bl)) ->
       let n' = iterate g (Array.length tl) n in
-      let fd = array_map2 (fun t b -> (t,b)) tl bl in
+      let fd = Array.map2 (fun t b -> (t,b)) tl bl in
       Array.fold_left (fun acc (t,b) -> f n' (f n acc t) b) acc fd
   | CoFix (_,(lna,tl,bl)) ->
       let n' = iterate g (Array.length tl) n in
-      let fd = array_map2 (fun t b -> (t,b)) tl bl in
+      let fd = Array.map2 (fun t b -> (t,b)) tl bl in
       Array.fold_left (fun acc (t,b) -> f n' (f n acc t) b) acc fd
 
 (* [iter_constr_with_full_binders g f acc c] iters [f acc] on the immediate
@@ -470,11 +481,11 @@ let iter_constr_with_full_binders g f l c = match kind_of_term c with
   | Evar (_,args) -> Array.iter (f l) args
   | Case (_,p,c,bl) -> f l p; f l c; Array.iter (f l) bl
   | Fix (_,(lna,tl,bl)) ->
-      let l' = array_fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
+      let l' = Array.fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
       Array.iter (f l) tl;
       Array.iter (f l') bl
   | CoFix (_,(lna,tl,bl)) ->
-      let l' = array_fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
+      let l' = Array.fold_left2 (fun l na t -> g (na,None,t) l) l lna tl in
       Array.iter (f l) tl;
       Array.iter (f l') bl
 
@@ -503,23 +514,16 @@ let occur_meta_or_existential c =
     | _ -> iter_constr occrec c
   in try occrec c; false with Occur -> true
 
-let occur_const s c =
-  let rec occur_rec c = match kind_of_term c with
-    | Const sp when sp=s -> raise Occur
-    | _ -> iter_constr occur_rec c
-  in
-  try occur_rec c; false with Occur -> true
-
 let occur_evar n c =
   let rec occur_rec c = match kind_of_term c with
-    | Evar (sp,_) when sp=n -> raise Occur
+    | Evar (sp,_) when Evar.equal sp n -> raise Occur
     | _ -> iter_constr occur_rec c
   in
   try occur_rec c; false with Occur -> true
 
 let occur_in_global env id constr =
   let vars = vars_of_global env constr in
-  if List.mem id vars then raise Occur
+  if Id.Set.mem id vars then raise Occur
 
 let occur_var env id c =
   let rec occur_rec c =
@@ -540,10 +544,10 @@ let occur_var_in_decl env hyp (_,c,typ) =
 
 let free_rels m =
   let rec frec depth acc c = match kind_of_term c with
-    | Rel n       -> if n >= depth then Intset.add (n-depth+1) acc else acc
+    | Rel n       -> if n >= depth then Int.Set.add (n-depth+1) acc else acc
     | _ -> fold_constr_with_binders succ frec depth acc c
   in
-  frec 1 Intset.empty m
+  frec 1 Int.Set.empty m
 
 (* collects all metavar occurences, in left-to-right order, preserving
  * repetitions and all. *)
@@ -551,7 +555,7 @@ let free_rels m =
 let collect_metas c =
   let rec collrec acc c =
     match kind_of_term c with
-      | Meta mv -> list_add_set mv acc
+      | Meta mv -> List.add_set Int.equal mv acc
       | _       -> fold_constr collrec acc c
   in
   List.rev (collrec [] c)
@@ -560,9 +564,9 @@ let collect_metas c =
    all section variables; for the latter, use global_vars_set *)
 let collect_vars c =
   let rec aux vars c = match kind_of_term c with
-  | Var id -> Idset.add id vars
+  | Var id -> Id.Set.add id vars
   | _ -> fold_constr aux vars c in
-  aux Idset.empty c
+  aux Id.Set.empty c
 
 (* Tests whether [m] is a subterm of [t]:
    [m] is appropriately lifted through abstractions of [t] *)
@@ -575,12 +579,12 @@ let dependent_main noevar m t =
       match kind_of_term m, kind_of_term t with
 	| App (fm,lm), App (ft,lt) when Array.length lm < Array.length lt ->
 	    deprec m (mkApp (ft,Array.sub lt 0 (Array.length lm)));
-	    Array.iter (deprec m)
+	    CArray.Fun1.iter deprec m
 	      (Array.sub lt
 		(Array.length lm) ((Array.length lt) - (Array.length lm)))
-	| _, Cast (c,_,_) when noevar & isMeta c -> ()
+	| _, Cast (c,_,_) when noevar && isMeta c -> ()
 	| _, Evar _ when noevar -> ()
-	| _ -> iter_constr_with_binders (lift 1) deprec m t
+	| _ -> iter_constr_with_binders (fun c -> lift 1 c) deprec m t
   in
   try deprec m t; false with Occur -> true
 
@@ -621,7 +625,7 @@ type meta_value_map = (metavariable * constr) list
 
 let rec subst_meta bl c =
   match kind_of_term c with
-    | Meta i -> (try List.assoc i bl with Not_found -> c)
+    | Meta i -> (try Int.List.assoc i bl with Not_found -> c)
     | _ -> map_constr (subst_meta bl) c
 
 (* First utilities for avoiding telescope computation for subst_term *)
@@ -691,19 +695,10 @@ let replace_term = replace_term_gen eq_constr
    occurrence except the ones in l and b=false, means all occurrences
    except the ones in l *)
 
-type hyp_location_flag = (* To distinguish body and type of local defs *)
-  | InHyp
-  | InHypTypeOnly
-  | InHypValueOnly
-
-type occurrences = bool * int list
-let all_occurrences = (false,[])
-let no_occurrences_in_set = (true,[])
-
 let error_invalid_occurrence l =
-  let l = list_uniquize (List.sort Pervasives.compare l) in
+  let l = List.sort_uniquize Int.compare l in
   errorlabstrm ""
-    (str ("Invalid occurrence " ^ plural (List.length l) "number" ^": ") ++
+    (str ("Invalid occurrence " ^ String.plural (List.length l) "number" ^": ") ++
      prlist_with_sep spc int l ++ str ".")
 
 let pr_position (cl,pos) =
@@ -714,7 +709,7 @@ let pr_position (cl,pos) =
     | Some (id,InHypValueOnly) -> str " of the body of hypothesis " ++ pr_id id in
   int pos ++ clpos
 
-let error_cannot_unify_occurrences nested (cl2,pos2,t2) (cl1,pos1,t1) (nowhere_except_in,locs) =
+let error_cannot_unify_occurrences nested (cl2,pos2,t2) (cl1,pos1,t1) =
   let s = if nested then "Found nested occurrences of the pattern"
     else "Found incompatible occurrences of the pattern" in
   errorlabstrm ""
@@ -725,20 +720,17 @@ let error_cannot_unify_occurrences nested (cl2,pos2,t2) (cl1,pos1,t1) (nowhere_e
      quote (print_constr t1) ++ strbrk " at position " ++ 
      pr_position (cl1,pos1) ++ str ".")
 
-let is_selected pos (nowhere_except_in,locs) =
-  nowhere_except_in && List.mem pos locs ||
-  not nowhere_except_in && not (List.mem pos locs)
-
 exception NotUnifiable
 
 type 'a testing_function = {
   match_fun : constr -> 'a;
   merge_fun : 'a -> 'a -> 'a;
   mutable testing_state : 'a;
-  mutable last_found : ((identifier * hyp_location_flag) option * int * constr) option
+  mutable last_found : ((Id.t * hyp_location_flag) option * int * constr) option
 }
 
-let subst_closed_term_occ_gen_modulo (nowhere_except_in,locs as plocs) test cl occ t =
+let subst_closed_term_occ_gen_modulo occs test cl occ t =
+  let (nowhere_except_in,locs) = Locusops.convert_occs occs in
   let maxocc = List.fold_right max locs 0 in
   let pos = ref occ in
   let nested = ref false in
@@ -748,12 +740,12 @@ let subst_closed_term_occ_gen_modulo (nowhere_except_in,locs as plocs) test cl o
       test.last_found <- Some (cl,!pos,t)
     with NotUnifiable ->
       let lastpos = Option.get test.last_found in
-      error_cannot_unify_occurrences !nested (cl,!pos,t) lastpos plocs in
+      error_cannot_unify_occurrences !nested (cl,!pos,t) lastpos in
   let rec substrec k t =
-    if nowhere_except_in & !pos > maxocc then t else
+    if nowhere_except_in && !pos > maxocc then t else
     try
       let subst = test.match_fun t in
-      if is_selected !pos plocs then
+      if Locusops.is_selected !pos occs then
         (add_subst t subst; incr pos;
          (* Check nested matching subterms *)
          nested := true; ignore (subst_below k t); nested := false;
@@ -769,20 +761,22 @@ let subst_closed_term_occ_gen_modulo (nowhere_except_in,locs as plocs) test cl o
   let t' = substrec 1 t in
   (!pos, t')
 
-let is_nowhere (nowhere_except_in,locs) = nowhere_except_in && locs = [] 
-
 let check_used_occurrences nbocc (nowhere_except_in,locs) =
   let rest = List.filter (fun o -> o >= nbocc) locs in
-  if rest <> [] then error_invalid_occurrence rest
+  match rest with
+  | [] -> ()
+  | _ -> error_invalid_occurrence rest
 
-let proceed_with_occurrences f plocs x =
-  if is_nowhere plocs then (* optimization *) x else
-  begin
+let proceed_with_occurrences f occs x =
+  match occs with
+  | NoOccurrences -> x
+  | _ ->
+    (* TODO FINISH ADAPTING WITH HUGO *)
+    let plocs = Locusops.convert_occs occs in
     assert (List.for_all (fun x -> x >= 0) (snd plocs));
     let (nbocc,x) = f 1 x in
     check_used_occurrences nbocc plocs;
     x
-  end
 
 let make_eq_test c = {
   match_fun = (fun c' -> if eq_constr c c' then () else raise NotUnifiable);
@@ -791,16 +785,17 @@ let make_eq_test c = {
   last_found = None
 } 
 
-let subst_closed_term_occ_gen plocs pos c t =
-  subst_closed_term_occ_gen_modulo plocs (make_eq_test c) None pos t
+let subst_closed_term_occ_gen occs pos c t =
+  subst_closed_term_occ_gen_modulo occs (make_eq_test c) None pos t
 
-let subst_closed_term_occ plocs c t =
-  proceed_with_occurrences (fun occ -> subst_closed_term_occ_gen plocs occ c)
-    plocs t
-
-let subst_closed_term_occ_modulo plocs test cl t =
+let subst_closed_term_occ occs c t =
   proceed_with_occurrences
-    (subst_closed_term_occ_gen_modulo plocs test cl) plocs t
+    (fun occ -> subst_closed_term_occ_gen occs occ c)
+    occs t
+
+let subst_closed_term_occ_modulo occs test cl t =
+  proceed_with_occurrences
+    (subst_closed_term_occ_gen_modulo occs test cl) occs t
 
 let map_named_declaration_with_hyploc f hyploc acc (id,bodyopt,typ) =
   let f = f (Some (id,hyploc)) in
@@ -830,40 +825,40 @@ let subst_closed_term_occ_decl_modulo (plocs,hyploc) test d =
 
 let vars_of_env env =
   let s =
-    Sign.fold_named_context (fun (id,_,_) s -> Idset.add id s)
-      (named_context env) ~init:Idset.empty in
-  Sign.fold_rel_context
-    (fun (na,_,_) s -> match na with Name id -> Idset.add id s | _ -> s)
+    Context.fold_named_context (fun (id,_,_) s -> Id.Set.add id s)
+      (named_context env) ~init:Id.Set.empty in
+  Context.fold_rel_context
+    (fun (na,_,_) s -> match na with Name id -> Id.Set.add id s | _ -> s)
     (rel_context env) ~init:s
 
 let add_vname vars = function
-    Name id -> Idset.add id vars
+    Name id -> Id.Set.add id vars
   | _ -> vars
 
 (*************************)
 (*   Names environments  *)
 (*************************)
-type names_context = name list
+type names_context = Name.t list
 let add_name n nl = n::nl
 let lookup_name_of_rel p names =
   try List.nth names (p-1)
   with Invalid_argument _ | Failure _ -> raise Not_found
-let rec lookup_rel_of_name id names =
+let lookup_rel_of_name id names =
   let rec lookrec n = function
     | Anonymous :: l  -> lookrec (n+1) l
-    | (Name id') :: l -> if id' = id then n else lookrec (n+1) l
+    | (Name id') :: l -> if Id.equal id' id then n else lookrec (n+1) l
     | []            -> raise Not_found
   in
   lookrec 1 names
 let empty_names_context = []
 
 let ids_of_rel_context sign =
-  Sign.fold_rel_context
+  Context.fold_rel_context
     (fun (na,_,_) l -> match na with Name id -> id::l | Anonymous -> l)
     sign ~init:[]
 
 let ids_of_named_context sign =
-  Sign.fold_named_context (fun (id,_,_) idl -> id::idl) sign ~init:[]
+  Context.fold_named_context (fun (id,_,_) idl -> id::idl) sign ~init:[]
 
 let ids_of_context env =
   (ids_of_rel_context (rel_context env))
@@ -889,8 +884,8 @@ let has_polymorphic_type c =
 
 let base_sort_cmp pb s0 s1 =
   match (s0,s1) with
-    | (Prop c1, Prop c2) -> c1 = Null or c2 = Pos  (* Prop <= Set *)
-    | (Prop c1, Type u)  -> pb = Reduction.CUMUL
+    | (Prop c1, Prop c2) -> c1 == Null || c2 == Pos  (* Prop <= Set *)
+    | (Prop c1, Type u)  -> pb == Reduction.CUMUL
     | (Type u1, Type u2) -> true
     | _ -> false
 
@@ -899,45 +894,48 @@ let compare_constr_univ f cv_pb t1 t2 =
   match kind_of_term t1, kind_of_term t2 with
       Sort s1, Sort s2 -> base_sort_cmp cv_pb s1 s2
     | Prod (_,t1,c1), Prod (_,t2,c2) ->
-	f Reduction.CONV t1 t2 & f cv_pb c1 c2
-    | _ -> compare_constr (f Reduction.CONV) t1 t2
+	f Reduction.CONV t1 t2 && f cv_pb c1 c2
+    | _ -> compare_constr (fun t1 t2 -> f Reduction.CONV t1 t2) t1 t2
 
 let rec constr_cmp cv_pb t1 t2 = compare_constr_univ constr_cmp cv_pb t1 t2
 
-let eq_constr = constr_cmp Reduction.CONV
+let eq_constr t1 t2 = constr_cmp Reduction.CONV t1 t2
 
 (* App(c,[t1,...tn]) -> ([c,t1,...,tn-1],tn)
    App(c,[||]) -> ([],c) *)
 let split_app c = match kind_of_term c with
     App(c,l) ->
       let len = Array.length l in
-      if len=0 then ([],c) else
+      if Int.equal len 0 then ([],c) else
 	let last = Array.get l (len-1) in
 	let prev = Array.sub l 0 (len-1) in
 	c::(Array.to_list prev), last
   | _ -> assert false
 
-let hdtl l = List.hd l, List.tl l
-
-type subst = (rel_context*constr) Intmap.t
+type subst = (rel_context*constr) Evar.Map.t
 
 exception CannotFilter
 
 let filtering env cv_pb c1 c2 =
-  let evm = ref Intmap.empty in
+  let evm = ref Evar.Map.empty in
   let define cv_pb e1 ev c1 =
-    try let (e2,c2) = Intmap.find ev !evm in
+    try let (e2,c2) = Evar.Map.find ev !evm in
     let shift = List.length e1 - List.length e2 in
     if constr_cmp cv_pb c1 (lift shift c2) then () else raise CannotFilter
     with Not_found ->
-      evm := Intmap.add ev (e1,c1) !evm
+      evm := Evar.Map.add ev (e1,c1) !evm
   in
   let rec aux env cv_pb c1 c2 =
     match kind_of_term c1, kind_of_term c2 with
       | App _, App _ ->
-	  let ((p1,l1),(p2,l2)) = (split_app c1),(split_app c2) in
-	  aux env cv_pb l1 l2; if p1=[] & p2=[] then () else
-	      aux env cv_pb (applist (hdtl p1)) (applist (hdtl p2))
+        let ((p1,l1),(p2,l2)) = (split_app c1),(split_app c2) in
+        let () = aux env cv_pb l1 l2 in
+        begin match p1, p2 with
+        | [], [] -> ()
+        | (h1 :: p1), (h2 :: p2) ->
+          aux env cv_pb (applistc h1 p1) (applistc h2 p2)
+        | _ -> assert false
+        end
       | Prod (n,t1,c1), Prod (_,t2,c2) ->
 	  aux env cv_pb t1 t2;
 	  aux ((n,None,t1)::env) cv_pb c1 c2
@@ -963,7 +961,7 @@ let align_prod_letin c a : rel_context * constr =
   let (lc,_,_) = decompose_prod_letin c in
   let (la,l,a) = decompose_prod_letin a in
   if not (la >= lc) then invalid_arg "align_prod_letin";
-  let (l1,l2) = Util.list_chop lc l in
+  let (l1,l2) = Util.List.chop lc l in
   l2,it_mkProd_or_LetIn a l1
 
 (* On reduit une serie d'eta-redex de tete ou rien du tout  *)
@@ -976,12 +974,12 @@ let rec eta_reduce_head c =
 	(match kind_of_term (eta_reduce_head c') with
            | App (f,cl) ->
                let lastn = (Array.length cl) - 1 in
-               if lastn < 1 then anomaly "application without arguments"
+               if lastn < 1 then anomaly (Pp.str "application without arguments")
                else
                  (match kind_of_term cl.(lastn) with
                     | Rel 1 ->
 			let c' =
-                          if lastn = 1 then f
+                          if Int.equal lastn 1 then f
 			  else mkApp (f, Array.sub cl 0 lastn)
 			in
 			if noccurn 1 c'
@@ -992,24 +990,15 @@ let rec eta_reduce_head c =
     | _ -> c
 
 
-(* alpha-eta conversion : ignore print names and casts *)
-let eta_eq_constr =
-  let rec aux t1 t2 =
-    let t1 = eta_reduce_head (strip_head_cast t1)
-    and t2 = eta_reduce_head (strip_head_cast t2) in
-    t1=t2 or compare_constr aux t1 t2
-  in aux
-
-
 (* iterator on rel context *)
 let process_rel_context f env =
   let sign = named_context_val env in
   let rels = rel_context env in
   let env0 = reset_with_named_context sign env in
-  Sign.fold_rel_context f rels ~init:env0
+  Context.fold_rel_context f rels ~init:env0
 
 let assums_of_rel_context sign =
-  Sign.fold_rel_context
+  Context.fold_rel_context
     (fun (na,c,t) l ->
       match c with
           Some _ -> l
@@ -1054,37 +1043,37 @@ let adjust_subst_to_rel_context sign l =
     | (_,Some c,_)::sign', args' ->
 	aux (substl (List.rev subst) c :: subst) sign' args'
     | [], [] -> List.rev subst
-    | _ -> anomaly "Instance and signature do not match"
+    | _ -> anomaly (Pp.str "Instance and signature do not match")
   in aux [] (List.rev sign) l
 
-let fold_named_context_both_sides f l ~init = list_fold_right_and_left f l init
+let fold_named_context_both_sides f l ~init = List.fold_right_and_left f l init
 
 let rec mem_named_context id = function
-  | (id',_,_) :: _ when id=id' -> true
+  | (id',_,_) :: _ when Id.equal id id' -> true
   | _ :: sign -> mem_named_context id sign
   | [] -> false
 
 let clear_named_body id env =
-  let rec aux _ = function
-  | (id',Some c,t) when id = id' -> push_named (id,None,t)
+  let aux _ = function
+  | (id',Some c,t) when Id.equal id id' -> push_named (id,None,t)
   | d -> push_named d in
   fold_named_context aux env ~init:(reset_context env)
 
-let global_vars env ids = Idset.elements (global_vars_set env ids)
+let global_vars env ids = Id.Set.elements (global_vars_set env ids)
 
 let global_vars_set_of_decl env = function
   | (_,None,t) -> global_vars_set env t
   | (_,Some c,t) ->
-      Idset.union (global_vars_set env t)
+      Id.Set.union (global_vars_set env t)
         (global_vars_set env c)
 
 let dependency_closure env sign hyps =
-  if Idset.is_empty hyps then [] else
+  if Id.Set.is_empty hyps then [] else
     let (_,lh) =
-      Sign.fold_named_context_reverse
+      Context.fold_named_context_reverse
         (fun (hs,hl) (x,_,_ as d) ->
-          if Idset.mem x hs then
-            (Idset.union (global_vars_set_of_decl env d) (Idset.remove x hs),
+          if Id.Set.mem x hs then
+            (Id.Set.union (global_vars_set_of_decl env d) (Id.Set.remove x hs),
             x::hl)
           else (hs,hl))
         ~init:(hyps,[])
@@ -1104,13 +1093,13 @@ let context_chop k ctx =
     | (0, l2) -> (List.rev acc, l2)
     | (n, ((_,Some _,_ as h)::t)) -> chop_aux (h::acc) (n, t)
     | (n, (h::t)) -> chop_aux (h::acc) (pred n, t)
-    | (_, []) -> anomaly "context_chop"
+    | (_, []) -> anomaly (Pp.str "context_chop")
   in chop_aux [] (k,ctx)
 
 (* Do not skip let-in's *)
 let env_rel_context_chop k env =
   let rels = rel_context env in
-  let ctx1,ctx2 = list_chop k rels in
+  let ctx1,ctx2 = List.chop k rels in
   push_rel_context ctx2 (reset_with_named_context (named_context_val env) env),
   ctx1
 
@@ -1122,8 +1111,8 @@ let impossible_default_case = ref None
 let set_impossible_default_clause c = impossible_default_case := Some c
 
 let coq_unit_judge =
-  let na1 = Name (id_of_string "A") in
-  let na2 = Name (id_of_string "H") in
+  let na1 = Name (Id.of_string "A") in
+  let na2 = Name (Id.of_string "H") in
   fun () ->
     match !impossible_default_case with
     | Some (id,type_of_id) ->

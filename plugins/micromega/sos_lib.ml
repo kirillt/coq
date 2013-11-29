@@ -6,9 +6,8 @@
 (*   independent bits                                                        *)
 (* - Frédéric Besson (fbesson@irisa.fr) is using it to feed  micromega       *)
 (* ========================================================================= *)
-open Sos_types
+
 open Num
-open List
 
 let debugging = ref false;;
 
@@ -53,7 +52,7 @@ let gcd_num n1 n2 =
   num_of_big_int(Big_int.gcd_big_int (big_int_of_num n1) (big_int_of_num n2));;
 
 let lcm_num x y =
-  if x =/ num_0 & y =/ num_0 then num_0
+  if x =/ num_0 && y =/ num_0 then num_0
   else abs_num((x */ y) // gcd_num x y);;
 
 
@@ -62,7 +61,7 @@ let lcm_num x y =
 (* ------------------------------------------------------------------------- *)
 
 let rec el n l =
-  if n = 0 then hd l else el (n - 1) (tl l);;
+  if n = 0 then List.hd l else el (n - 1) (List.tl l);;
 
 
 (* ------------------------------------------------------------------------- *)
@@ -141,7 +140,7 @@ let rec (--) = fun m n -> if m > n then [] else m::((m + 1) -- n);;
 let rec forall p l =
   match l with
     [] -> true
-  | h::t -> p(h) & forall p t;;
+  | h::t -> p(h) && forall p t;;
 
 let rec tryfind f l =
   match l with
@@ -162,14 +161,14 @@ let index x =
 let rec mem x lis =
   match lis with
     [] -> false
-  | (h::t) -> x =? h or mem x t;;
+  | (h::t) -> x =? h || mem x t;;
 
 let insert x l =
   if mem x l then l else x::l;;
 
 let union l1 l2 = itlist insert l1 l2;;
 
-let subtract l1 l2 = filter (fun x -> not (mem x l2)) l1;;
+let subtract l1 l2 = List.filter (fun x -> not (mem x l2)) l1;;
 
 (* ------------------------------------------------------------------------- *)
 (* Merging and bottom-up mergesort.                                          *)
@@ -224,7 +223,7 @@ let rec sort cmp lis =
   match lis with
     [] -> []
   | piv::rest ->
-      let r,l = partition (cmp piv) rest in
+      let r,l = List.partition (cmp piv) rest in
       (sort cmp l) @ (piv::(sort cmp r));;
 
 (* ------------------------------------------------------------------------- *)
@@ -416,7 +415,7 @@ let (|=>) = fun x y -> (x |-> y) undefined;;
 let rec choose t =
   match t with
     Empty -> failwith "choose: completely undefined function"
-  | Leaf(h,l) -> hd l
+  | Leaf(h,l) -> List.hd l
   | Branch(b,p,t1,t2) -> choose t1;;
 
 (* ------------------------------------------------------------------------- *)
@@ -547,7 +546,7 @@ let fix err prs input =
   try prs input
   with Noparse -> failwith (err ^ " expected");;
 
-let rec listof prs sep err =
+let listof prs sep err =
   prs ++ many (sep ++ fix err prs >> snd) >> (fun (h,t) -> h::t);;
 
 let possibly prs input =
@@ -583,7 +582,7 @@ let strings_of_file filename =
   let rec suck_lines acc =
     try let l = Pervasives.input_line fd in
         suck_lines (l::acc)
-    with End_of_file -> rev acc in
+    with End_of_file -> List.rev acc in
   let data = suck_lines [] in
   (Pervasives.close_in fd; data);;
 

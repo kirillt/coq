@@ -6,17 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Compat
 open Pp
+open Errors
 open Util
-open Term
-open Termops
-open Sign
 open Evd
-open Sign
 open Environ
-open Reductionops
-open Type_errors
 open Proof_type
 open Logic
 
@@ -29,47 +23,20 @@ let project x = x.sigma
 let pf_env gls = Global.env_of_context (Goal.V82.hyps (project gls) (sig_it gls))
 let pf_hyps gls = named_context_of_val (Goal.V82.hyps (project gls) (sig_it gls))
 
-let abstract_operation syntax semantics =
-  semantics
+let refiner pr goal_sigma =
+  let (sgl,sigma') = prim_refiner pr goal_sigma.sigma goal_sigma.it in
+  { it = sgl; sigma = sigma'; }
 
-let abstract_tactic_expr ?(dflt=false) te tacfun gls =
-  abstract_operation (Tactic(te,dflt)) tacfun gls
-
-let abstract_tactic ?(dflt=false) te =
-  !abstract_tactic_box := Some te;
-  abstract_tactic_expr ~dflt (Tacexpr.TacAtom (dummy_loc,te))
-
-let abstract_extended_tactic ?(dflt=false) s args =
-  abstract_tactic ~dflt (Tacexpr.TacExtend (dummy_loc, s, args))
-
-let refiner = function
-  | Prim pr ->
-      let prim_fun = prim_refiner pr in
-	(fun goal_sigma ->
-          let (sgl,sigma') = prim_fun goal_sigma.sigma goal_sigma.it in
-	  {it=sgl; sigma = sigma'})
-
-
-  | Nested (_,_) | Decl_proof _ ->
-      failwith "Refiner: should not occur"
-
-	(* Daimon is a canonical unfinished proof *)
-
-  | Daimon ->
-      fun gls ->
-	{it=[];sigma=gls.sigma}
-
-
-let norm_evar_tac gl = refiner (Prim Change_evars) gl
+let norm_evar_tac gl = refiner (Change_evars) gl
 
 (*********************)
 (*   Tacticals       *)
 (*********************)
 
 
-let unpackage glsig = (ref (glsig.sigma)),glsig.it
+let unpackage glsig = (ref (glsig.sigma)), glsig.it
 
-let repackage r v = {it=v;sigma = !r}
+let repackage r v = {it = v; sigma = !r; }
 
 let apply_sig_tac r tac g =
   check_for_interrupt (); (* Breakpoint *)
@@ -78,7 +45,7 @@ let apply_sig_tac r tac g =
   glsigma.it
 
 (* [goal_goal_list : goal sigma -> goal list sigma] *)
-let goal_goal_list gls = {it=[gls.it];sigma=gls.sigma}
+let goal_goal_list gls = {it=[gls.it]; sigma=gls.sigma; }
 
 (* forces propagation of evar constraints *)
 let tclNORMEVAR = norm_evar_tac
@@ -88,7 +55,7 @@ let tclIDTAC gls = goal_goal_list gls
 
 (* the message printing identity tactic *)
 let tclIDTAC_MESSAGE s gls =
-  msg (hov 0 s); tclIDTAC gls
+  pp (hov 0 s); pp_flush (); tclIDTAC gls
 
 (* General failure tactic *)
 let tclFAIL_s s gls = errorlabstrm "Refiner.tclFAIL_s" (str s)
@@ -102,8 +69,8 @@ let tclFAIL lvl s g = raise (FailError (lvl,lazy s))
 let tclFAIL_lazy lvl s g = raise (FailError (lvl,s))
 
 let start_tac gls =
-  let (sigr,g) = unpackage gls in
-  (sigr,[g])
+  let sigr, g = unpackage gls in
+  (sigr, [g])
 
 let finish_tac (sigr,gl) = repackage sigr gl
 
@@ -115,7 +82,7 @@ let thens3parts_tac tacfi tac tacli (sigr,gs) =
   let ng = List.length gs in
   if ng<nf+nl then errorlabstrm "Refiner.thensn_tac" (str "Not enough subgoals.");
   let gll =
-      (list_map_i (fun i ->
+      (List.map_i (fun i ->
         apply_sig_tac sigr (if i<nf then tacfi.(i) else if i>=ng-nl then tacli.(nl-ng+i) else tac))
 	0 gs) in
     (sigr,List.flatten gll)
@@ -123,13 +90,10 @@ let thens3parts_tac tacfi tac tacli (sigr,gs) =
 (* Apply [taci.(i)] on the first n subgoals and [tac] on the others *)
 let thensf_tac taci tac = thens3parts_tac taci tac [||]
 
-(* Apply [taci.(i)] on the last n subgoals and [tac] on the others *)
-let thensl_tac tac taci = thens3parts_tac [||] tac taci
-
 (* Apply [tac i] on the ith subgoal (no subgoals number check) *)
 let thensi_tac tac (sigr,gs) =
   let gll =
-    list_map_i (fun i -> apply_sig_tac sigr (tac i)) 1 gs in
+    List.map_i (fun i -> apply_sig_tac sigr (tac i)) 1 gs in
   (sigr, List.flatten gll)
 
 let then_tac tac = thensf_tac [||] tac
@@ -137,18 +101,6 @@ let then_tac tac = thensf_tac [||] tac
 let non_existent_goal n =
   errorlabstrm ("No such goal: "^(string_of_int n))
     (str"Trying to apply a tactic to a non existent goal")
-
-(* Apply tac on the i-th goal (if i>0). If i<0, then start counting from
-   the last goal (i=-1). *)
-let theni_tac i tac ((_,gl) as subgoals) =
-  let nsg = List.length gl in
-  let k = if i < 0 then nsg + i + 1 else i in
-  if nsg < 1 then errorlabstrm "theni_tac" (str"No more subgoals.")
-  else if k >= 1 & k <= nsg then
-    thensf_tac
-      (Array.init k (fun i -> if i+1 = k then tac else tclIDTAC)) tclIDTAC
-      subgoals
-  else non_existent_goal k
 
 (* [tclTHENS3PARTS tac1 [|t1 ; ... ; tn|] tac2 [|t'1 ; ... ; t'm|] gls]
    applies the tactic [tac1] to [gls] then, applies [t1], ..., [tn] to
@@ -236,19 +188,47 @@ let tclNOTSAMEGOAL (tac : tactic) goal =
       (str"Tactic generated a subgoal identical to the original goal.")
   else rslt
 
+(* Execute tac and show the names of hypothesis create by tac in
+   the "as" format. The resulting goals are printed *after* the
+   as-expression, which forces pg to some gymnastic. TODO: Have
+   something similar (better?) in the xml protocol. *)
+let tclSHOWHYPS (tac : tactic) (goal: Goal.goal Evd.sigma)
+    :Proof_type.goal list Evd.sigma =
+  let oldhyps:Context.named_context = pf_hyps goal in
+  let rslt:Proof_type.goal list Evd.sigma = tac goal in
+  let { it = gls; sigma = sigma; } = rslt in
+  let hyps:Context.named_context list =
+    List.map (fun gl -> pf_hyps { it = gl; sigma=sigma; }) gls in
+  let newhyps =
+    List.map
+      (fun hypl -> List.subtract Context.eq_named_declaration hypl oldhyps)
+      hyps
+  in
+  let emacs_str s =
+    if !Flags.print_emacs then s else "" in
+  let s = 
+    let frst = ref true in
+    List.fold_left
+    (fun acc lh -> acc ^ (if !frst then (frst:=false;"") else " | ")
+      ^ (List.fold_left
+	   (fun acc (nm,_,_) -> (Names.Id.to_string nm) ^ " " ^ acc)
+	   "" lh))
+    "" newhyps in
+  pp (str (emacs_str "<infoH>")
+      ++  (hov 0 (str s))
+      ++  (str (emacs_str "</infoH>")) ++ fnl());
+  rslt;;
+
+
 let catch_failerror e =
   if catchable_exception e then check_for_interrupt ()
   else match e with
-  | FailError (0,_) | Loc.Exc_located(_, FailError (0,_))
-  | Loc.Exc_located(_, LtacLocated (_,FailError (0,_)))  ->
+  | FailError (0,_) ->
       check_for_interrupt ()
-  | FailError (lvl,s) -> raise (FailError (lvl - 1, s))
-  | Loc.Exc_located(s,FailError (lvl,s')) ->
-      raise (Loc.Exc_located(s,FailError (lvl - 1, s')))
-  | Loc.Exc_located(s,LtacLocated (s'',FailError (lvl,s')))  ->
-      raise
-       (Loc.Exc_located(s,LtacLocated (s'',FailError (lvl - 1,s'))))
+  | FailError (lvl,s) ->
+    raise (Exninfo.copy e (FailError (lvl - 1, s)))
   | e -> raise e
+  (** FIXME: do we need to add a [Errors.push] here? *)
 
 (* ORELSE0 t1 t2 tries to apply t1 and if it fails, applies t2 *)
 let tclORELSE0 t1 t2 g =
@@ -271,7 +251,7 @@ let tclORELSE_THEN t1 t2then t2else gls =
   with
     | None -> t2else gls
     | Some sgl ->
-        let (sigr,gl) = unpackage sgl in
+        let sigr, gl = unpackage sgl in
         finish_tac (then_tac t2then  (sigr,gl))
 
 (* TRY f tries to apply f, and if it fails, leave the goal unchanged *)
@@ -327,32 +307,11 @@ let tclDO n t =
   let rec dorec k =
     if k < 0 then errorlabstrm "Refiner.tclDO"
       (str"Wrong argument : Do needs a positive integer.");
-    if k = 0 then tclIDTAC
-    else if k = 1 then t else (tclTHEN t (dorec (k-1)))
+    if Int.equal k 0 then tclIDTAC
+    else if Int.equal k 1 then t else (tclTHEN t (dorec (k-1)))
   in
   dorec n
 
-(* Fails if a tactic hasn't finished after a certain amount of time *)
-
-exception TacTimeout
-
-let tclTIMEOUT n t g =
-  let timeout_handler _ = raise TacTimeout in
-  let psh = Sys.signal Sys.sigalrm (Sys.Signal_handle timeout_handler) in
-  ignore (Unix.alarm n);
-  let restore_timeout () =
-    ignore (Unix.alarm 0);
-    Sys.set_signal Sys.sigalrm psh
-  in
-  try
-    let res = t g in
-    restore_timeout ();
-    res
-  with
-    | TacTimeout | Loc.Exc_located(_,TacTimeout) ->
-      restore_timeout ();
-      errorlabstrm "Refiner.tclTIMEOUT" (str"Timeout!")
-    | reraise -> restore_timeout (); raise reraise
 
 (* Beware: call by need of CAML, g is needed *)
 let rec tclREPEAT t g =
@@ -362,7 +321,7 @@ let tclAT_LEAST_ONCE t = (tclTHEN t (tclREPEAT t))
 
 (* Repeat on the first subgoal (no failure if no more subgoal) *)
 let rec tclREPEAT_MAIN t g =
-  (tclORELSE (tclTHEN_i t (fun i -> if i = 1 then (tclREPEAT_MAIN t) else
+  (tclORELSE (tclTHEN_i t (fun i -> if Int.equal i 1 then (tclREPEAT_MAIN t) else
     tclIDTAC)) tclIDTAC) g
 
 (*s Tactics handling a list of goals. *)
@@ -378,13 +337,14 @@ let tclIDTAC_list gls = gls
 
 let first_goal gls =
   let gl = gls.it and sig_0 = gls.sigma in
-  if gl = [] then error "first_goal";
-  { it = List.hd gl; sigma = sig_0 }
+  if List.is_empty gl then error "first_goal";
+  { it = List.hd gl; sigma = sig_0; }
 
 (* goal_goal_list : goal sigma -> goal list sigma *)
 
 let goal_goal_list gls =
-  let gl = gls.it and sig_0 = gls.sigma in { it = [gl]; sigma = sig_0 }
+  let gl = gls.it and sig_0 = gls.sigma in 
+  { it = [gl]; sigma = sig_0; }
 
 (* tactic -> tactic_list : Apply a tactic to the first goal in the list *)
 
@@ -417,26 +377,30 @@ let set_info_printer f = pp_info := f
 
 (* Check that holes in arguments have been resolved *)
 
-let check_evars env sigma extsigma gl =
-  let origsigma = gl.sigma in
+let check_evars env sigma extsigma origsigma =
   let rest =
     Evd.fold_undefined (fun evk evi acc ->
-      if Evd.is_undefined extsigma evk & not (Evd.mem origsigma evk) then
+      if Evd.is_undefined extsigma evk && not (Evd.mem origsigma evk) then
 	evi::acc
       else
 	acc)
       sigma []
   in
-  if rest <> [] then
-    let evi = List.hd rest in
+  match rest with
+  | [] -> ()
+  | evi :: _ ->
     let (loc,k) = evi.evar_source in
     let evi = Evarutil.nf_evar_info sigma evi in
     Pretype_errors.error_unsolvable_implicit loc env sigma evi k None
+
+let gl_check_evars env sigma extsigma gl =
+  let origsigma = gl.sigma in
+  check_evars env sigma extsigma origsigma
 
 let tclWITHHOLES accept_unresolved_holes tac sigma c gl =
   if sigma == project gl then tac c gl
   else
     let res = tclTHEN (tclEVARS sigma) (tac c) gl in
     if not accept_unresolved_holes then
-      check_evars (pf_env gl) (res).sigma sigma gl;
+      gl_check_evars (pf_env gl) (res).sigma sigma gl;
     res

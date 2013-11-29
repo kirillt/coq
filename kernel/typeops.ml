@@ -6,12 +6,14 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
 open Univ
 open Term
+open Vars
+open Context
 open Declarations
-open Sign
 open Environ
 open Entries
 open Reduction
@@ -21,7 +23,7 @@ open Type_errors
 let conv_leq l2r = default_conv CUMUL ~l2r
 
 let conv_leq_vecti env v1 v2 =
-  array_fold_left2_i
+  Array.fold_left2_i
     (fun i c t1 t2 ->
       let c' =
         try default_conv CUMUL env t1 t2
@@ -91,33 +93,20 @@ let judge_of_variable env id =
 
 (* Management of context of variables. *)
 
-(* Checks if a context of variable can be instantiated by the
+(* Checks if a context of variables can be instantiated by the
    variables of the current env *)
 (* TODO: check order? *)
-let rec check_hyps_inclusion env sign =
-  Sign.fold_named_context
+let check_hyps_inclusion env c sign =
+  Context.fold_named_context
     (fun (id,_,ty1) () ->
-      let ty2 = named_type id env in
-      if not (eq_constr ty2 ty1) then
-        error "types do not match")
+      try
+        let ty2 = named_type id env in
+        if not (eq_constr ty2 ty1) then raise Exit
+      with Not_found | Exit ->
+        error_reference_variables env id c)
     sign
     ~init:()
 
-
-let check_args env c hyps =
-  try check_hyps_inclusion env hyps
-  with UserError _ | Not_found ->
-    error_reference_variables env c
-
-
-(* Checks if the given context of variables [hyps] is included in the
-   current context of [env]. *)
-(*
-let check_hyps id env hyps =
-  let hyps' = named_context env in
-  if not (hyps_inclusion env hyps hyps') then
-    error_reference_variables env id
-*)
 (* Instantiation of terms on real arguments. *)
 
 (* Make a type polymorphic if an arity *)
@@ -126,9 +115,12 @@ let extract_level env p =
   let _,c = dest_prod_assum env p in
   match kind_of_term c with Sort (Type u) -> Some u | _ -> None
 
-let extract_context_levels env =
-  List.fold_left
-    (fun l (_,b,p) -> if b=None then extract_level env p::l else l) []
+let extract_context_levels env l =
+  let fold l (_, b, p) = match b with
+  | None -> extract_level env p :: l
+  | _ -> l
+  in
+  List.fold_left fold [] l
 
 let make_polymorphic_if_constant_for_ind env {uj_val = c; uj_type = t} =
   let params, ccl = dest_prod_assum env t in
@@ -159,8 +151,8 @@ let type_of_constant env cst =
 let judge_of_constant_knowing_parameters env cst jl =
   let c = mkConst cst in
   let cb = lookup_constant cst env in
-  let _ = check_args env c cb.const_hyps in
-  let paramstyp = Array.map (fun j -> j.uj_type) jl in
+  let _ = check_hyps_inclusion env c cb.const_hyps in
+  let paramstyp = Array.map (fun j -> lazy j.uj_type) jl in
   let t = type_of_constant_knowing_parameters env cb.const_type paramstyp in
   make_judge c t
 
@@ -227,12 +219,14 @@ let sort_of_product env domsort rangsort =
     | (Prop _,  Prop Pos) -> rangsort
     (* Product rule (Type,Set,?) *)
     | (Type u1, Prop Pos) ->
-        if engagement env = Some ImpredicativeSet then
+        begin match engagement env with
+        | Some ImpredicativeSet ->
           (* Rule is (Type,Set,Set) in the Set-impredicative calculus *)
           rangsort
-        else
+        | _ ->
           (* Rule is (Type_i,Set,Type_i) in the Set-predicative calculus *)
           Type (sup u1 type0_univ)
+        end
     (* Product rule (Prop,Type_i,Type_i) *)
     | (Prop Pos,  Type u2)  -> Type (sup type0_univ u2)
     (* Product rule (Prop,Type_i,Type_i) *)
@@ -275,7 +269,11 @@ let judge_of_cast env cj k tj =
           conv_leq false env cj.uj_type expected_type
       | REVERTcast ->
           cj.uj_val,
-          conv_leq true env cj.uj_type expected_type in
+          conv_leq true env cj.uj_type expected_type
+      | NATIVEcast ->
+          mkCast (cj.uj_val, k, expected_type),
+          native_conv CUMUL env cj.uj_type expected_type
+    in
     { uj_val = c;
       uj_type = expected_type },
     cst
@@ -299,8 +297,8 @@ let judge_of_cast env cj k tj =
 let judge_of_inductive_knowing_parameters env ind jl =
   let c = mkInd ind in
   let (mib,mip) = lookup_mind_specif env ind in
-  check_args env c mib.mind_hyps;
-  let paramstyp = Array.map (fun j -> j.uj_type) jl in
+  check_hyps_inclusion env c mib.mind_hyps;
+  let paramstyp = Array.map (fun j -> lazy j.uj_type) jl in
   let t = Inductive.type_of_inductive_knowing_parameters env mip paramstyp in
   make_judge c t
 
@@ -314,7 +312,7 @@ let judge_of_constructor env c =
   let _ =
     let ((kn,_),_) = c in
     let mib = lookup_mind kn env in
-    check_args env constr mib.mind_hyps in
+    check_hyps_inclusion env constr mib.mind_hyps in
   let specif = lookup_mind_specif env (inductive_of_constructor c) in
   make_judge constr (type_of_constructor c specif)
 
@@ -348,7 +346,7 @@ let judge_of_case env ci pj cj lfj =
 
 let type_fixpoint env lna lar vdefj =
   let lt = Array.length vdefj in
-  assert (Array.length lar = lt);
+  assert (Int.equal (Array.length lar) lt);
   try
     conv_leq_vecti env (Array.map j_type vdefj) (Array.map (fun ty -> lift lt ty) lar)
   with NotConvertibleVect i ->
@@ -457,10 +455,10 @@ let rec execute env cstr cu =
 
     (* Partial proofs: unsupported by the kernel *)
     | Meta _ ->
-	anomaly "the kernel does not support metavariables"
+	anomaly (Pp.str "the kernel does not support metavariables")
 
     | Evar _ ->
-	anomaly "the kernel does not support existential variables"
+	anomaly (Pp.str "the kernel does not support existential variables")
 
 and execute_type env constr cu =
   let (j,cu1) = execute env constr cu in
@@ -476,7 +474,7 @@ and execute_recdef env (names,lar,vdef) i cu =
   univ_combinator cu2
     ((lara.(i),(names,lara,vdefv)),cst)
 
-and execute_array env = array_fold_map' (execute env)
+and execute_array env = Array.fold_map' (execute env)
 
 (* Derived functions *)
 let infer env constr =

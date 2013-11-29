@@ -6,17 +6,24 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
-open Util
+open Names
+open Misctypes
 open Tacexpr
+open Geninterp
 open Quote
 
-let make_cont k x =
-  let k = TacDynamic(dummy_loc, Tacinterp.tactic_in (fun _ -> k)) in
-  let x = TacDynamic(dummy_loc, Pretyping.constr_in x) in
-  let tac = <:tactic<let cont := $k in cont $x>> in
-  Tacinterp.interp tac
+let loc = Loc.ghost
+let cont = (loc, Id.of_string "cont")
+let x = (loc, Id.of_string "x")
+
+let make_cont (k : glob_tactic_expr) (c : Constr.t) =
+  let c = Tacinterp.Value.of_constr c in
+  let tac = TacCall (loc, ArgVar cont, [Reference (ArgVar x)]) in
+  let tac = TacLetIn (false, [(cont, Tacexp k)], TacArg (loc, tac)) in
+  let ist = { lfun = Id.Map.singleton (snd x) c; extra = TacStore.empty; } in
+  Tacinterp.eval_tactic_ist ist tac
 
 TACTIC EXTEND quote
   [ "quote" ident(f) ] -> [ quote f [] ]

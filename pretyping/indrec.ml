@@ -11,23 +11,23 @@
 (* This file builds various inductive schemes *)
 
 open Pp
+open Errors
 open Util
 open Names
 open Libnames
+open Globnames
 open Nameops
 open Term
+open Vars
+open Context
 open Namegen
 open Declarations
-open Entries
+open Declareops
 open Inductive
 open Inductiveops
 open Environ
 open Reductionops
-open Typeops
-open Type_errors
-open Safe_typing
 open Nametab
-open Sign
 
 type dep_flag = bool
 
@@ -39,7 +39,7 @@ type recursion_scheme_error =
 exception RecursionSchemeError of recursion_scheme_error
 
 let make_prod_dep dep env = if dep then mkProd_name env else mkProd
-let mkLambda_string s t c = mkLambda (Name (id_of_string s), t, c)
+let mkLambda_string s t c = mkLambda (Name (Id.of_string s), t, c)
 
 (*******************************************)
 (* Building curryfied elimination          *)
@@ -55,7 +55,7 @@ let mis_make_case_com dep env sigma ind (mib,mip as specif) kind =
     mib.mind_params_ctxt
   in
 
-  if not (List.mem kind (elim_sorts specif)) then
+  if not (Sorts.List.mem kind (elim_sorts specif)) then
     raise
       (RecursionSchemeError
 	 (NotAllowedCaseAnalysis (false, Termops.new_sort_in_family kind, ind)));
@@ -70,7 +70,7 @@ let mis_make_case_com dep env sigma ind (mib,mip as specif) kind =
   let constrs = get_constructors env indf in
 
   let rec add_branch env k =
-    if k = Array.length mip.mind_consnames then
+    if Int.equal k (Array.length mip.mind_consnames) then
       let nbprod = k+1 in
 
       let indf' = lift_inductive_family nbprod indf in
@@ -137,7 +137,7 @@ let type_rec_branch is_rec dep env sigma (vargs,depPvect,decP) tyi cs recargs =
 	    let d = (n,Some b,t) in
 	    mkLetIn (n,b,t,prec (push_rel d env) (i+1) (d::sign) c)
      	| Ind (_,_) ->
-	    let realargs = list_skipn nparams largs in
+	    let realargs = List.skipn nparams largs in
 	    let base = applist (lift i pk,realargs) in
             if depK then
 	      Reduction.beta_appvect
@@ -158,7 +158,7 @@ let type_rec_branch is_rec dep env sigma (vargs,depPvect,decP) tyi cs recargs =
                   (match dest_recarg ra with
 	            | Mrec (_,j) when is_rec -> (depPvect.(j),rest)
 	            | Imbr _  ->
-		        Flags.if_warn msg_warning (str "Ignoring recursive call");
+		        msg_warning (strbrk "Ignoring recursive call");
 		        (None,rest)
                     | _ -> (None, rest))
 	  in
@@ -172,7 +172,7 @@ let type_rec_branch is_rec dep env sigma (vargs,depPvect,decP) tyi cs recargs =
 		 let nP = lift (i+1+decP) p in
                  let env' = push_rel (n,None,t) env in
 		 let t_0 = process_pos env' dep' nP (lift 1 t) in
-		 make_prod_dep (dep or dep') env
+		 make_prod_dep (dep || dep') env
                    (n,t,
 		    mkArrow t_0
 		      (process_constr
@@ -186,7 +186,7 @@ let type_rec_branch is_rec dep env sigma (vargs,depPvect,decP) tyi cs recargs =
       | _ -> assert false
     else
       if dep then
-	let realargs = List.map (fun k -> mkRel (i-k)) (List.rev li) in
+	let realargs = List.rev_map (fun k -> mkRel (i-k)) li in
         let params = List.map (lift i) vargs in
         let co = applist (mkConstruct cs.cs_cstr,params@realargs) in
 	Reduction.beta_appvect c [|co|]
@@ -212,7 +212,7 @@ let make_rec_branch_arg env sigma (nparrec,fvect,decF) f cstr recargs =
 	    let d = (n,Some b,t) in
 	    mkLetIn (n,b,t,prec (push_rel d env) (i+1) (d::hyps) c)
      	| Ind _ ->
-            let realargs = list_skipn nparrec largs
+            let realargs = List.skipn nparrec largs
             and arg = appvect (mkRel (i+1), Termops.extended_rel_vect 0 hyps) in
             applist(lift i fk,realargs@[arg])
      	| _ -> assert false
@@ -248,7 +248,7 @@ let make_rec_branch_arg env sigma (nparrec,fvect,decF) f cstr recargs =
 	   process_constr (push_rel d env) (i+1) (lift 1 f)
 	     (cprest,rest))
     | [],[] -> f
-    | _,[] | [],_ -> anomaly "process_constr"
+    | _,[] | [],_ -> anomaly (Pp.str "process_constr")
 
   in
   process_constr env 0 f (List.rev cstr.cs_args, recargs)
@@ -273,7 +273,7 @@ let mis_make_indrec env sigma listdepkind mib =
     context_chop (nparams-nparrec) mib.mind_params_ctxt in
   let nrec = List.length listdepkind in
   let depPvec =
-    Array.create mib.mind_ntypes (None : (bool * constr) option) in
+    Array.make mib.mind_ntypes (None : (bool * constr) option) in
   let _ =
     let rec
 	assign k = function
@@ -287,7 +287,7 @@ let mis_make_indrec env sigma listdepkind mib =
     Array.map (fun mip -> mip.mind_recargs) mib.mind_packets in
   (* recarg information for non recursive parameters *)
   let rec recargparn l n =
-    if n = 0 then l else recargparn (mk_norec::l) (n-1) in
+    if Int.equal n 0 then l else recargparn (mk_norec::l) (n-1) in
   let recargpar = recargparn [] (nparams-nparrec) in
   let make_one_rec p =
     let makefix nbconstruct =
@@ -324,7 +324,7 @@ let mis_make_indrec env sigma listdepkind mib =
 		(fun f -> appvect (f, Termops.extended_rel_vect ndepar lnonparrec))
 		fi
 	      in
-		array_map3
+		Array.map3
 		  (make_rec_branch_arg env sigma
 		      (nparrec,depPvec,larsign))
                   vecfi constrs (dest_subterms recargsvec.(tyi))
@@ -383,7 +383,7 @@ let mis_make_indrec env sigma listdepkind mib =
 	    let fixn = Array.of_list (List.rev ln) in
             let fixtyi = Array.of_list (List.rev ltyp) in
             let fixdef = Array.of_list (List.rev ldef) in
-            let names = Array.create nrec (Name(id_of_string "F")) in
+            let names = Array.make nrec (Name(Id.of_string "F")) in
 	      mkFix ((fixn,p),(names,fixtyi,fixdef))
       in
 	mrec 0 [] [] []
@@ -393,7 +393,7 @@ let mis_make_indrec env sigma listdepkind mib =
           let tyi = snd indi in
 	  let nconstr = Array.length mipi.mind_consnames in
 	  let rec onerec env j =
-	    if j = nconstr then
+	    if Int.equal j nconstr then
 	      make_branch env (i+j) rest
 	    else
 	      let recarg = (dest_subterms recargsvec.(tyi)).(j) in
@@ -434,7 +434,7 @@ let mis_make_indrec env sigma listdepkind mib =
 	mis_make_case_com dep env sigma indi (mibi,mipi) kind
   in
     (* Body of mis_make_indrec *)
-    list_tabulate make_one_rec nrec
+    List.init nrec make_one_rec
 
 (**********************************************************************)
 (* This builds elimination predicate for Case tactic *)
@@ -445,7 +445,10 @@ let build_case_analysis_scheme env sigma ity dep kind =
 
 let build_case_analysis_scheme_default env sigma ity kind =
   let (mib,mip) = lookup_mind_specif env ity in
-  let dep = inductive_sort_family mip <> InProp in
+  let dep = match inductive_sort_family mip with
+  | InProp -> false
+  | _ -> true
+  in
   mis_make_case_com dep env sigma ity (mib,mip) kind
 
 
@@ -468,12 +471,12 @@ let modify_sort_scheme sort =
   let rec drec npar elim =
     match kind_of_term elim with
       | Lambda (n,t,c) ->
-	  if npar = 0 then
+	  if Int.equal npar 0 then
 	    mkLambda (n, change_sort_arity sort t, c)
 	  else
 	    mkLambda (n, t, drec (npar-1) c)
       | LetIn (n,b,t,c) -> mkLetIn (n,b,t,drec npar c)
-      | _ -> anomaly "modify_sort_scheme: wrong elimination type"
+      | _ -> anomaly ~label:"modify_sort_scheme" (Pp.str "wrong elimination type")
   in
   drec
 
@@ -483,7 +486,7 @@ let weaken_sort_scheme sort npars term =
   let rec drec np elim =
     match kind_of_term elim with
       | Prod (n,t,c) ->
-	  if np = 0 then
+	  if Int.equal np 0 then
             let t' = change_sort_arity sort t in
             mkProd (n, t', c),
             mkLambda (n, t', mkApp(term,Termops.rel_vect 0 (npars+1)))
@@ -492,7 +495,7 @@ let weaken_sort_scheme sort npars term =
 	    mkProd (n, t, c'), mkLambda (n, t, term')
       | LetIn (n,b,t,c) -> let c',term' = drec np c in
            mkLetIn (n,b,t,c'), mkLetIn (n,b,t,term')
-      | _ -> anomaly "weaken_sort_scheme: wrong elimination type"
+      | _ -> anomaly ~label:"weaken_sort_scheme" (Pp.str "wrong elimination type")
   in
   drec npars
 
@@ -505,10 +508,10 @@ let check_arities listdepkind =
   let _ = List.fold_left
     (fun ln ((_,ni as mind),mibi,mipi,dep,kind) ->
        let kelim = elim_sorts (mibi,mipi) in
-       if not (List.exists ((=) kind) kelim) then raise
+       if not (Sorts.List.mem kind kelim) then raise
 	 (RecursionSchemeError
 	   (NotAllowedCaseAnalysis (true, Termops.new_sort_in_family kind,mind)))
-       else if List.mem ni ln then raise
+       else if Int.List.mem ni ln then raise
 	 (RecursionSchemeError (NotMutualInScheme (mind,mind)))
        else ni::ln)
 	    [] listdepkind
@@ -523,7 +526,7 @@ let build_mutual_induction_scheme env sigma = function
     	(List.map
 	   (function (mind',dep',s') ->
 	      let (sp',_) = mind' in
-	      if sp=sp' then
+	      if eq_mind sp sp' then
                 let (mibi',mipi') = lookup_mind_specif env mind' in
 		(mind',mibi',mipi',dep',s')
 	      else
@@ -532,7 +535,7 @@ let build_mutual_induction_scheme env sigma = function
       in
       let _ = check_arities listdepkind in
       mis_make_indrec env sigma listdepkind mib
-  | _ -> anomaly "build_induction_scheme expects a non empty list of inductive types"
+  | _ -> anomaly (Pp.str "build_induction_scheme expects a non empty list of inductive types")
 
 let build_induction_scheme env sigma ind dep kind =
   let (mib,mip) = lookup_mind_specif env ind in
@@ -559,7 +562,7 @@ let lookup_eliminator ind_sp s =
   (* Try first to get an eliminator defined in the same section as the *)
   (* inductive type *)
   try
-    let cst =Global.constant_of_delta_kn (make_kn mp dp (label_of_id id)) in
+    let cst =Global.constant_of_delta_kn (make_kn mp dp (Label.of_id id)) in
     let _ = Global.lookup_constant cst in
       mkConst cst
   with Not_found ->
@@ -570,6 +573,6 @@ let lookup_eliminator ind_sp s =
     errorlabstrm "default_elim"
       (strbrk "Cannot find the elimination combinator " ++
        pr_id id ++ strbrk ", the elimination of the inductive definition " ++
-       pr_global_env Idset.empty (IndRef ind_sp) ++
+       pr_global_env Id.Set.empty (IndRef ind_sp) ++
        strbrk " on sort " ++ Termops.pr_sort_family s ++
        strbrk " is probably not allowed.")

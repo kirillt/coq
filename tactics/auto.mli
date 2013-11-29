@@ -9,16 +9,18 @@
 open Util
 open Names
 open Term
-open Sign
+open Context
 open Proof_type
 open Tacmach
 open Clenv
 open Pattern
 open Environ
 open Evd
-open Libnames
+open Globnames
 open Vernacexpr
 open Mod_subst
+open Misctypes
+open Pp
 
 (** Auto and related automation tactics *)
 
@@ -87,7 +89,7 @@ module Hint_db :
     val add_cut : hints_path -> t -> t
     val cut : t -> hints_path
 
-    val unfolds : t -> Idset.t * Cset.t
+    val unfolds : t -> Id.Set.t * Cset.t
   end
 
 type hint_db_name = string
@@ -95,8 +97,8 @@ type hint_db_name = string
 type hint_db = Hint_db.t
 
 type hints_entry =
-  | HintsResolveEntry of (int option * bool * hints_path_atom * constr) list
-  | HintsImmediateEntry of (hints_path_atom * constr) list
+  | HintsResolveEntry of (int option * bool * hints_path_atom * global_reference_or_constr) list
+  | HintsImmediateEntry of (hints_path_atom * global_reference_or_constr) list
   | HintsCutEntry of hints_path
   | HintsUnfoldEntry of evaluable_global_reference list
   | HintsTransparencyEntry of evaluable_global_reference list * bool
@@ -116,7 +118,7 @@ val create_hint_db : bool -> hint_db_name -> transparent_state -> bool -> unit
 
 val remove_hints : bool -> hint_db_name list -> global_reference list -> unit
 
-val current_db_names : unit -> hint_db_name list
+val current_db_names : unit -> String.Set.t
 
 val interp_hints : hints_expr -> hints_entry
 
@@ -124,15 +126,11 @@ val add_hints : locality_flag -> hint_db_name list -> hints_entry -> unit
 
 val prepare_hint : env -> open_constr -> constr
 
-val print_searchtable : unit -> unit
-
-val print_applicable_hint : unit -> unit
-
-val print_hint_ref : global_reference -> unit
-
-val print_hint_db_by_name : hint_db_name -> unit
-
-val print_hint_db : Hint_db.t -> unit
+val pr_searchtable : unit -> std_ppcmds
+val pr_applicable_hint : unit -> std_ppcmds
+val pr_hint_ref : global_reference -> std_ppcmds
+val pr_hint_db_by_name : hint_db_name -> std_ppcmds
+val pr_hint_db : Hint_db.t -> std_ppcmds
 
 (** [make_exact_entry pri (c, ctyp)].
    [c] is the term given as an exact proof to solve the goal;
@@ -176,16 +174,14 @@ val make_extern :
   int -> constr_pattern option -> Tacexpr.glob_tactic_expr
       -> hint_entry
 
-val set_extern_interp :
-  (patvar_map -> Tacexpr.glob_tactic_expr -> tactic) -> unit
+val extern_interp :
+  (patvar_map -> Tacexpr.glob_tactic_expr -> unit Proofview.tactic) Hook.t
 
-val set_extern_intern_tac :
-  (patvar list -> Tacexpr.raw_tactic_expr -> Tacexpr.glob_tactic_expr)
-  -> unit
+val extern_intern_tac :
+  (patvar list -> Tacexpr.raw_tactic_expr -> Tacexpr.glob_tactic_expr) Hook.t
 
-val set_extern_subst_tactic :
-  (substitution -> Tacexpr.glob_tactic_expr -> Tacexpr.glob_tactic_expr)
-  -> unit
+val extern_subst_tactic :
+  (substitution -> Tacexpr.glob_tactic_expr -> Tacexpr.glob_tactic_expr) Hook.t
 
 (** Create a Hint database from the pairs (name, constr).
    Useful to take the current goal hypotheses as hints;
@@ -209,7 +205,7 @@ val unify_resolve : Unification.unify_flags -> (constr * clausenv) -> tactic
    [Pattern.somatches], then replace [?1] [?2] metavars in tacast by the
    right values to build a tactic *)
 
-val conclPattern : constr -> constr_pattern option -> Tacexpr.glob_tactic_expr -> tactic
+val conclPattern : constr -> constr_pattern option -> Tacexpr.glob_tactic_expr -> unit Proofview.tactic
 
 (** The Auto tactic *)
 
@@ -219,50 +215,55 @@ val conclPattern : constr -> constr_pattern option -> Tacexpr.glob_tactic_expr -
 val make_db_list : hint_db_name list -> hint_db list
 
 val auto : ?debug:Tacexpr.debug ->
-  int -> open_constr list -> hint_db_name list -> tactic
+  int -> open_constr list -> hint_db_name list -> unit Proofview.tactic
 
 (** Auto with more delta. *)
 
 val new_auto : ?debug:Tacexpr.debug ->
-  int -> open_constr list -> hint_db_name list -> tactic
+  int -> open_constr list -> hint_db_name list -> unit Proofview.tactic
 
 (** auto with default search depth and with the hint database "core" *)
-val default_auto : tactic
+val default_auto : unit Proofview.tactic
 
 (** auto with all hint databases except the "v62" compatibility database *)
 val full_auto : ?debug:Tacexpr.debug ->
-  int -> open_constr list -> tactic
+  int -> open_constr list -> unit Proofview.tactic
 
 (** auto with all hint databases except the "v62" compatibility database
    and doing delta *)
 val new_full_auto : ?debug:Tacexpr.debug ->
-  int -> open_constr list -> tactic
+  int -> open_constr list -> unit Proofview.tactic
 
 (** auto with default search depth and with all hint databases
    except the "v62" compatibility database *)
-val default_full_auto : tactic
+val default_full_auto : unit Proofview.tactic
 
 (** The generic form of auto (second arg [None] means all bases) *)
 val gen_auto : ?debug:Tacexpr.debug ->
-  int option -> open_constr list -> hint_db_name list option -> tactic
+  int option -> open_constr list -> hint_db_name list option -> unit Proofview.tactic
 
 (** The hidden version of auto *)
 val h_auto   : ?debug:Tacexpr.debug ->
-  int option -> open_constr list -> hint_db_name list option -> tactic
+  int option -> open_constr list -> hint_db_name list option -> unit Proofview.tactic
 
 (** Trivial *)
 
 val trivial : ?debug:Tacexpr.debug ->
-  open_constr list -> hint_db_name list -> tactic
+  open_constr list -> hint_db_name list -> unit Proofview.tactic
 val gen_trivial : ?debug:Tacexpr.debug ->
-  open_constr list -> hint_db_name list option -> tactic
+  open_constr list -> hint_db_name list option -> unit Proofview.tactic
 val full_trivial : ?debug:Tacexpr.debug ->
-  open_constr list -> tactic
+  open_constr list -> unit Proofview.tactic
 val h_trivial : ?debug:Tacexpr.debug ->
-  open_constr list -> hint_db_name list option -> tactic
+  open_constr list -> hint_db_name list option -> unit Proofview.tactic
 
 val pr_autotactic : 'a auto_tactic -> Pp.std_ppcmds
 
 (** Hook for changing the initialization of auto *)
 
 val add_auto_init : (unit -> unit) -> unit
+
+(** Pre-created hint databases *)
+
+val typeclasses_db : hint_db_name
+val rewrite_db : hint_db_name

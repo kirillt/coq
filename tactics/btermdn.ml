@@ -6,11 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Util
 open Term
 open Names
-open Termdn
 open Pattern
-open Libnames
+open Globnames
 
 (* Discrimination nets with bounded depth.
    See the module dn.ml for further explanations.
@@ -74,7 +74,7 @@ struct
       | Const c -> if Cpred.mem c cpred then Dn.Everything else Dn.Label(Term_dn.GRLabel (ConstRef c),l)
       | Ind ind_sp -> Dn.Label(Term_dn.GRLabel (IndRef ind_sp),l)
       | Construct cstr_sp -> Dn.Label(Term_dn.GRLabel (ConstructRef cstr_sp),l)
-      | Var id when not (Idpred.mem id idpred) -> Dn.Label(Term_dn.GRLabel (VarRef id),l)
+      | Var id when not (Id.Pred.mem id idpred) -> Dn.Label(Term_dn.GRLabel (VarRef id),l)
       | Prod (n, d, c) -> Dn.Label(Term_dn.ProdLabel, [d; c])
       | Lambda (n, d, c) -> Dn.Label(Term_dn.LambdaLabel, [d; c] @ l)
       | Sort _ -> Dn.Label(Term_dn.SortLabel, [])
@@ -82,7 +82,7 @@ struct
       | _ -> Dn.Nothing
 
   let bounded_constr_pat_discr_st st (t,depth) =
-    if depth = 0 then 
+    if Int.equal depth 0 then 
       None 
     else
       match Term_dn.constr_pat_discr_st st t with
@@ -90,7 +90,7 @@ struct
 	| Some (c,l) -> Some(c,List.map (fun c -> (c,depth-1)) l)
 	    
   let bounded_constr_val_discr_st st (t,depth) =
-    if depth = 0 then 
+    if Int.equal depth 0 then 
       Dn.Nothing 
     else
       match constr_val_discr_st st t with
@@ -99,7 +99,7 @@ struct
 	| Dn.Everything -> Dn.Everything
 
   let bounded_constr_pat_discr (t,depth) =
-    if depth = 0 then 
+    if Int.equal depth 0 then 
       None 
     else
       match Term_dn.constr_pat_discr t with
@@ -107,7 +107,7 @@ struct
 	| Some (c,l) -> Some(c,List.map (fun c -> (c,depth-1)) l)
 	    
   let bounded_constr_val_discr (t,depth) =
-    if depth = 0 then 
+    if Int.equal depth 0 then 
       Dn.Nothing 
     else
       match constr_val_discr t with

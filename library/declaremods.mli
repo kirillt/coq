@@ -6,72 +6,37 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
 open Names
-open Entries
-open Environ
-open Libnames
-open Libobject
-open Lib
-
-(** This modules provides official functions to declare modules and
-  module types *)
-
-(** Rigid / flexible signature *)
-
-type 'a module_signature =
-  | Enforce of 'a (** ... : T *)
-  | Check of 'a list (** ... <: T1 <: T2, possibly empty *)
-
-(** Should we adapt a few scopes during functor application ? *)
-
-type scope_subst = (string * string) list
-
-val subst_scope : string -> string
-
-(** Which inline annotations should we honor, either None or the ones
-   whose level is less or equal to the given integer *)
-
-type inline =
-  | NoInline
-  | DefaultInline
-  | InlineAt of int
-
-(** The type of annotations for functor applications *)
-
-type funct_app_annot =
-  { ann_inline : inline;
-    ann_scope_subst : scope_subst }
-
-type 'a annotated = ('a * funct_app_annot)
+open Vernacexpr
 
 (** {6 Modules } *)
 
-(** [declare_module interp_modtype interp_modexpr id fargs typ expr]
-   declares module [id], with type constructed by [interp_modtype]
-   from functor arguments [fargs] and [typ] and with module body
-   constructed by [interp_modtype] from functor arguments [fargs] and
-   by [interp_modexpr] from [expr]. At least one of [typ], [expr] must
-   be non-empty.
+type 'modast module_interpretor =
+  Environ.env -> Misctypes.module_kind -> 'modast ->
+    Entries.module_struct_entry * Misctypes.module_kind
 
-   The [bool] in [typ] tells if the module must be abstracted [true]
-   with respect to the module type or merely matched without any
-   restriction [false].
-*)
+type 'modast module_params =
+  (Id.t Loc.located list * ('modast * inline)) list
+
+(** [declare_module interp_modast id fargs typ exprs]
+   declares module [id], with structure constructed by [interp_modast]
+   from functor arguments [fargs], with final type [typ].
+   [exprs] is usually of length 1 (Module definition with a concrete
+   body), but it could also be empty ("Declare Module", with non-empty [typ]),
+   or multiple (body of the shape M <+ N <+ ...). *)
 
 val declare_module :
-  (env -> 'modast -> module_struct_entry) ->
-  (env -> 'modast -> module_struct_entry) ->
-  (env -> 'modast -> module_struct_entry * bool) ->
-  identifier ->
-  (identifier located list * ('modast annotated)) list ->
-  ('modast annotated) module_signature ->
-  ('modast annotated) list -> module_path
+  'modast module_interpretor ->
+  Id.t ->
+  'modast module_params ->
+  ('modast * inline) module_signature ->
+  ('modast * inline) list -> module_path
 
-val start_module : (env -> 'modast -> module_struct_entry) ->
-  bool option -> identifier ->
-  (identifier located list * ('modast annotated)) list ->
-  ('modast annotated) module_signature -> module_path
+val start_module :
+  'modast module_interpretor ->
+  bool option -> Id.t ->
+  'modast module_params ->
+  ('modast * inline) module_signature -> module_path
 
 val end_module : unit -> module_path
 
@@ -79,31 +44,29 @@ val end_module : unit -> module_path
 
 (** {6 Module types } *)
 
-val declare_modtype : (env -> 'modast -> module_struct_entry) ->
-  (env -> 'modast -> module_struct_entry * bool) ->
-  identifier ->
-  (identifier located list * ('modast annotated)) list ->
-  ('modast annotated) list ->
-  ('modast annotated) list ->
+(** [declare_modtype interp_modast id fargs typs exprs]
+    Similar to [declare_module], except that the types could be multiple *)
+
+val declare_modtype :
+  'modast module_interpretor ->
+  Id.t ->
+  'modast module_params ->
+  ('modast * inline) list ->
+  ('modast * inline) list ->
   module_path
 
-val start_modtype : (env -> 'modast -> module_struct_entry) ->
-  identifier -> (identifier located list * ('modast annotated)) list ->
-  ('modast annotated) list -> module_path
+val start_modtype :
+  'modast module_interpretor ->
+  Id.t ->
+  'modast module_params ->
+  ('modast * inline) list -> module_path
 
 val end_modtype : unit -> module_path
 
 
-(** {6 ... } *)
-(** Objects of a module. They come in two lists: the substitutive ones
-  and the other *)
-
-val module_objects : module_path -> library_segment
-
-
 (** {6 Libraries i.e. modules on disk } *)
 
-type library_name = dir_path
+type library_name = DirPath.t
 
 type library_objects
 
@@ -111,17 +74,18 @@ val register_library :
   library_name ->
     Safe_typing.compiled_library -> library_objects -> Digest.t -> unit
 
+val get_library_symbols_tbl : library_name -> Nativecode.symbol array
+
 val start_library : library_name -> unit
 
 val end_library :
-  library_name -> Safe_typing.compiled_library * library_objects
-
-(** set a function to be executed at end_library *)
-val set_end_library_hook : (unit -> unit) -> unit
+  library_name ->
+    Safe_typing.compiled_library * library_objects * Safe_typing.native_library
 
 (** [really_import_module mp] opens the module [mp] (in a Caml sense).
    It modifies Nametab and performs the [open_object] function for
-   every object of the module. *)
+   every object of the module. Raises [Not_found] when [mp] is unknown
+   or when [mp] corresponds to a functor. *)
 
 val really_import_module : module_path -> unit
 
@@ -133,8 +97,8 @@ val import_module : bool -> module_path -> unit
 
 (** Include  *)
 
-val declare_include : (env -> 'struct_expr -> module_struct_entry * bool) ->
-  ('struct_expr annotated) list -> unit
+val declare_include :
+  'modast module_interpretor -> ('modast * inline) list -> unit
 
 (** {6 ... } *)
 (** [iter_all_segments] iterate over all segments, the modules'
@@ -142,17 +106,16 @@ val declare_include : (env -> 'struct_expr -> module_struct_entry * bool) ->
     in an arbitrary order. The given function is applied to all leaves
     (together with their section path). *)
 
-val iter_all_segments : (object_name -> obj -> unit) -> unit
+val iter_all_segments :
+  (Libnames.object_name -> Libobject.obj -> unit) -> unit
 
 
 val debug_print_modtab : unit -> Pp.std_ppcmds
 
-(*i val debug_print_modtypetab : unit -> Pp.std_ppcmds i*)
+(** For printing modules, [process_module_binding] adds names of
+    bound module (and its components) to Nametab. It also loads
+    objects associated to it. It may raise a [Failure] when the
+    bound module hasn't an atomic type. *)
 
-(** For translator *)
-val process_module_bindings : module_ident list ->
-  (mod_bound_id * (module_struct_entry annotated)) list -> unit
-
-(** For Printer *)
-val process_module_seb_binding :
-  mod_bound_id -> Declarations.struct_expr_body -> unit
+val process_module_binding :
+  MBId.t -> Declarations.module_alg_expr -> unit

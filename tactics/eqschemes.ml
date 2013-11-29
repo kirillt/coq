@@ -44,9 +44,12 @@
    natural expectation of the user.
 *)
 
+open Errors
 open Util
 open Names
 open Term
+open Vars
+open Context
 open Declarations
 open Environ
 open Inductive
@@ -56,13 +59,13 @@ open Inductiveops
 open Ind_tables
 open Indrec
 
-let hid = id_of_string "H"
-let xid = id_of_string "X"
+let hid = Id.of_string "H"
+let xid = Id.of_string "X"
 let default_id_of_sort = function InProp | InSet -> hid | InType -> xid
 let fresh env id = next_global_ident_away id []
 
 let build_dependent_inductive ind (mib,mip) =
-  let realargs,_ = list_chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
+  let realargs,_ = List.chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
   applist
     (mkInd ind,
        extended_rel_list mip.mind_nrealargs_ctxt mib.mind_params_ctxt
@@ -75,7 +78,7 @@ let my_it_mkLambda_or_LetIn_name s c =
 
 let get_coq_eq () =
   try
-    let eq = Libnames.destIndRef Coqlib.glob_eq in
+    let eq = Globnames.destIndRef Coqlib.glob_eq in
     let _ = Global.lookup_inductive eq in
     (* Do not force the lazy if they are not defined *)
     mkInd eq, Coqlib.build_coq_eq_refl ()
@@ -93,22 +96,23 @@ let get_coq_eq () =
 
 let get_sym_eq_data env ind =
   let (mib,mip as specif) = lookup_mind_specif env ind in
-  if Array.length mib.mind_packets <> 1 or Array.length mip.mind_nf_lc <> 1 then
+  if not (Int.equal (Array.length mib.mind_packets) 1) ||
+    not (Int.equal (Array.length mip.mind_nf_lc) 1) then
     error "Not an inductive type with a single constructor.";
-  let realsign,_ = list_chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
-  if List.exists (fun (_,b,_) -> b <> None) realsign then
+  let realsign,_ = List.chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
+  if List.exists (fun (_,b,_) -> not (Option.is_empty b)) realsign then
     error "Inductive equalities with local definitions in arity not supported.";
   let constrsign,ccl = decompose_prod_assum mip.mind_nf_lc.(0) in
   let _,constrargs = decompose_app ccl in
-  if rel_context_length constrsign<>rel_context_length mib.mind_params_ctxt then
+  if not (Int.equal (rel_context_length constrsign) (rel_context_length mib.mind_params_ctxt)) then
     error "Constructor must have no arguments"; (* This can be relaxed... *)
-  let params,constrargs = list_chop mib.mind_nparams constrargs in
+  let params,constrargs = List.chop mib.mind_nparams constrargs in
   if mip.mind_nrealargs > mib.mind_nparams then
     error "Constructors arguments must repeat the parameters.";
-  let _,params2 = list_chop (mib.mind_nparams-mip.mind_nrealargs) params in
+  let _,params2 = List.chop (mib.mind_nparams-mip.mind_nrealargs) params in
   let paramsctxt1,_ =
-    list_chop (mib.mind_nparams-mip.mind_nrealargs) mib.mind_params_ctxt in
-  if not (list_equal eq_constr params2 constrargs) then
+    List.chop (mib.mind_nparams-mip.mind_nrealargs) mib.mind_params_ctxt in
+  if not (List.equal eq_constr params2 constrargs) then
     error "Constructors arguments must repeat the parameters.";
   (* nrealargs_ctxt and nrealargs are the same here *)
   (specif,mip.mind_nrealargs,realsign,mib.mind_params_ctxt,paramsctxt1)
@@ -125,16 +129,17 @@ let get_sym_eq_data env ind =
 
 let get_non_sym_eq_data env ind =
   let (mib,mip as specif) = lookup_mind_specif env ind in
-  if Array.length mib.mind_packets <> 1 or Array.length mip.mind_nf_lc <> 1 then
+  if not (Int.equal (Array.length mib.mind_packets) 1) ||
+    not (Int.equal (Array.length mip.mind_nf_lc) 1) then
     error "Not an inductive type with a single constructor.";
-  let realsign,_ = list_chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
-  if List.exists (fun (_,b,_) -> b <> None) realsign then
+  let realsign,_ = List.chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
+  if List.exists (fun (_,b,_) -> not (Option.is_empty b)) realsign then
     error "Inductive equalities with local definitions in arity not supported";
   let constrsign,ccl = decompose_prod_assum mip.mind_nf_lc.(0) in
   let _,constrargs = decompose_app ccl in
-  if rel_context_length constrsign<>rel_context_length mib.mind_params_ctxt then
+  if not (Int.equal (rel_context_length constrsign) (rel_context_length mib.mind_params_ctxt)) then
     error "Constructor must have no arguments";
-  let _,constrargs = list_chop mib.mind_nparams constrargs in
+  let _,constrargs = List.chop mib.mind_nparams constrargs in
   (specif,constrargs,realsign,mip.mind_nrealargs)
 
 (**********************************************************************)
@@ -175,7 +180,7 @@ let build_sym_scheme env ind =
 
 let sym_scheme_kind =
   declare_individual_scheme_object "_sym_internal"
-  (fun ind -> build_sym_scheme (Global.env() (* side-effect! *)) ind)
+  (fun ind -> build_sym_scheme (Global.env() (* side-effect! *)) ind, Declareops.no_seff)
 
 (**********************************************************************)
 (* Build the involutivity of symmetry for an inductive type           *)
@@ -196,7 +201,8 @@ let sym_scheme_kind =
 let build_sym_involutive_scheme env ind =
   let (mib,mip as specif),nrealargs,realsign,paramsctxt,paramsctxt1 =
     get_sym_eq_data env ind in
-  let sym = mkConst (find_scheme sym_scheme_kind ind) in
+  let c, eff = find_scheme sym_scheme_kind ind in
+  let sym = mkConst c in
   let (eq,eqrefl) = get_coq_eq () in
   let cstr n = mkApp (mkConstruct(ind,1),extended_rel_vect n paramsctxt) in
   let varH = fresh env (default_id_of_sort (snd (mind_arity mip))) in
@@ -231,7 +237,8 @@ let build_sym_involutive_scheme env ind =
 	       [|mkRel 1|]])|]]);
 	 mkRel 1|])),
      mkRel 1 (* varH *),
-       [|mkApp(eqrefl,[|applied_ind_C;cstr (nrealargs+1)|])|]))))
+       [|mkApp(eqrefl,[|applied_ind_C;cstr (nrealargs+1)|])|])))),
+  eff
 
 let sym_involutive_scheme_kind =
   declare_individual_scheme_object "_sym_involutive"
@@ -300,16 +307,18 @@ let sym_involutive_scheme_kind =
 let build_l2r_rew_scheme dep env ind kind =
   let (mib,mip as specif),nrealargs,realsign,paramsctxt,paramsctxt1 =
     get_sym_eq_data env ind in
-  let sym = mkConst (find_scheme sym_scheme_kind ind) in
-  let sym_involutive = mkConst (find_scheme sym_involutive_scheme_kind ind) in
+  let c, eff = find_scheme sym_scheme_kind ind in
+  let sym = mkConst c in
+  let c, eff' = find_scheme sym_involutive_scheme_kind ind in
+  let sym_involutive = mkConst c in
   let (eq,eqrefl) = get_coq_eq () in
   let cstr n p =
     mkApp (mkConstruct(ind,1),
       Array.concat [extended_rel_vect n paramsctxt1;
                     rel_vect p nrealargs]) in
   let varH = fresh env (default_id_of_sort (snd (mind_arity mip))) in
-  let varHC = fresh env (id_of_string "HC") in
-  let varP = fresh env (id_of_string "P") in
+  let varHC = fresh env (Id.of_string "HC") in
+  let varP = fresh env (Id.of_string "P") in
   let applied_ind = build_dependent_inductive ind specif in
   let applied_ind_P =
     mkApp (mkInd ind, Array.concat
@@ -379,7 +388,8 @@ let build_l2r_rew_scheme dep env ind kind =
          Array.append (extended_rel_vect 3 mip.mind_arity_ctxt) [|mkVar varH|]),
        [|main_body|])
    else
-     main_body))))))
+     main_body)))))),
+  Declareops.union_side_effects eff' eff
 
 (**********************************************************************)
 (* Build the left-to-right rewriting lemma for hypotheses associated  *)
@@ -415,8 +425,8 @@ let build_l2r_forward_rew_scheme dep env ind kind =
       Array.concat [extended_rel_vect n paramsctxt1;
                     rel_vect p nrealargs]) in
   let varH = fresh env (default_id_of_sort (snd (mind_arity mip))) in
-  let varHC = fresh env (id_of_string "HC") in
-  let varP = fresh env (id_of_string "P") in
+  let varHC = fresh env (Id.of_string "HC") in
+  let varP = fresh env (Id.of_string "P") in
   let applied_ind = build_dependent_inductive ind specif in
   let applied_ind_P =
     mkApp (mkInd ind, Array.concat
@@ -501,8 +511,8 @@ let build_r2l_forward_rew_scheme dep env ind kind =
     mkApp (mkConstruct(ind,1),extended_rel_vect n mib.mind_params_ctxt) in
   let constrargs_cstr = constrargs@[cstr 0] in
   let varH = fresh env (default_id_of_sort (snd (mind_arity mip))) in
-  let varHC = fresh env (id_of_string "HC") in
-  let varP = fresh env (id_of_string "P") in
+  let varHC = fresh env (Id.of_string "HC") in
+  let varP = fresh env (Id.of_string "P") in
   let applied_ind = build_dependent_inductive ind specif in
   let realsign_ind =
     name_context env ((Name varH,None,applied_ind)::realsign) in
@@ -560,7 +570,7 @@ let fix_r2l_forward_rew_scheme c =
 	      (Reductionops.whd_beta Evd.empty
 		(applist (c,
 	          extended_rel_list 3 indargs @ [mkRel 1;mkRel 3;mkRel 2]))))))
-  | _ -> anomaly "Ill-formed non-dependent left-to-right rewriting scheme"
+  | _ -> anomaly (Pp.str "Ill-formed non-dependent left-to-right rewriting scheme")
 
 (**********************************************************************)
 (* Build the right-to-left rewriting lemma for conclusion associated  *)
@@ -608,7 +618,7 @@ let rew_l2r_dep_scheme_kind =
 (**********************************************************************)
 let rew_r2l_dep_scheme_kind =
   declare_individual_scheme_object "_rew_dep"
-  (fun ind -> build_r2l_rew_scheme true (Global.env()) ind InType)
+  (fun ind -> build_r2l_rew_scheme true (Global.env()) ind InType,Declareops.no_seff)
 
 (**********************************************************************)
 (* Dependent rewrite from right-to-left in hypotheses                 *)
@@ -618,7 +628,7 @@ let rew_r2l_dep_scheme_kind =
 (**********************************************************************)
 let rew_r2l_forward_dep_scheme_kind =
   declare_individual_scheme_object "_rew_fwd_dep"
-  (fun ind -> build_r2l_forward_rew_scheme true (Global.env()) ind InType)
+  (fun ind -> build_r2l_forward_rew_scheme true (Global.env()) ind InType,Declareops.no_seff)
 
 (**********************************************************************)
 (* Dependent rewrite from left-to-right in hypotheses                 *)
@@ -628,7 +638,7 @@ let rew_r2l_forward_dep_scheme_kind =
 (**********************************************************************)
 let rew_l2r_forward_dep_scheme_kind =
   declare_individual_scheme_object "_rew_fwd_r_dep"
-  (fun ind -> build_l2r_forward_rew_scheme true (Global.env()) ind InType)
+  (fun ind -> build_l2r_forward_rew_scheme true (Global.env()) ind InType,Declareops.no_seff)
 
 (**********************************************************************)
 (* Non-dependent rewrite from either left-to-right in conclusion or   *)
@@ -642,7 +652,7 @@ let rew_l2r_forward_dep_scheme_kind =
 let rew_l2r_scheme_kind =
   declare_individual_scheme_object "_rew_r"
   (fun ind -> fix_r2l_forward_rew_scheme
-      (build_r2l_forward_rew_scheme false (Global.env()) ind InType))
+     (build_r2l_forward_rew_scheme false (Global.env()) ind InType), Declareops.no_seff)
 
 (**********************************************************************)
 (* Non-dependent rewrite from either right-to-left in conclusion or   *)
@@ -652,7 +662,7 @@ let rew_l2r_scheme_kind =
 (**********************************************************************)
 let rew_r2l_scheme_kind =
   declare_individual_scheme_object "_rew"
-  (fun ind -> build_r2l_rew_scheme false (Global.env()) ind InType)
+  (fun ind -> build_r2l_rew_scheme false (Global.env()) ind InType, Declareops.no_seff)
 
 (* End of rewriting schemes *)
 
@@ -673,24 +683,24 @@ let rew_r2l_scheme_kind =
 
 let build_congr env (eq,refl) ind =
   let (mib,mip) = lookup_mind_specif env ind in
-  if Array.length mib.mind_packets <> 1 or Array.length mip.mind_nf_lc <> 1 then
+  if not (Int.equal (Array.length mib.mind_packets) 1) || not (Int.equal (Array.length mip.mind_nf_lc) 1) then
     error "Not an inductive type with a single constructor.";
-  if mip.mind_nrealargs <> 1 then
+  if not (Int.equal mip.mind_nrealargs 1) then
     error "Expect an inductive type with one predicate parameter.";
   let i = 1 in
-  let realsign,_ = list_chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
-  if List.exists (fun (_,b,_) -> b <> None) realsign then
+  let realsign,_ = List.chop mip.mind_nrealargs_ctxt mip.mind_arity_ctxt in
+  if List.exists (fun (_,b,_) -> not (Option.is_empty b)) realsign then
     error "Inductive equalities with local definitions in arity not supported.";
   let env_with_arity = push_rel_context mip.mind_arity_ctxt env in
   let (_,_,ty) = lookup_rel (mip.mind_nrealargs - i + 1) env_with_arity in
   let constrsign,ccl = decompose_prod_assum mip.mind_nf_lc.(0) in
   let _,constrargs = decompose_app ccl in
-  if rel_context_length constrsign<>rel_context_length mib.mind_params_ctxt then
+  if Int.equal (rel_context_length constrsign) (rel_context_length mib.mind_params_ctxt) then
     error "Constructor must have no arguments";
   let b = List.nth constrargs (i + mib.mind_nparams - 1) in
-  let varB = fresh env (id_of_string "B") in
-  let varH = fresh env (id_of_string "H") in
-  let varf = fresh env (id_of_string "f") in
+  let varB = fresh env (Id.of_string "B") in
+  let varH = fresh env (Id.of_string "H") in
+  let varf = fresh env (Id.of_string "f") in
   let ci = make_case_info (Global.env()) ind RegularStyle in
   my_it_mkLambda_or_LetIn mib.mind_params_ctxt
      (mkNamedLambda varB (new_Type ())
@@ -723,4 +733,4 @@ let build_congr env (eq,refl) ind =
 let congr_scheme_kind = declare_individual_scheme_object "_congr"
   (fun ind ->
     (* May fail if equality is not defined *)
-    build_congr (Global.env()) (get_coq_eq ()) ind)
+          build_congr (Global.env()) (get_coq_eq ()) ind, Declareops.no_seff)

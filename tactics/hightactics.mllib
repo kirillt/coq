@@ -1,8 +1,9 @@
-Refine
 Extraargs
 Extratactics
 Eauto
 Class_tactics
+G_class
 Rewrite
+G_rewrite
 Tauto
 Eqdecide

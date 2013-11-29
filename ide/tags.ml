@@ -15,25 +15,33 @@ let make_tag (tt:GText.tag_table) ~name prop =
 
 let processed_color = ref "light green"
 let processing_color = ref "light blue"
+let error_color = ref "#FFCCCC"
 
 module Script =
 struct
   let table = GText.tag_table ()
-  let kwd = make_tag table ~name:"kwd" [`FOREGROUND "blue"]
-  let qed = make_tag table ~name:"qed" [`FOREGROUND "blue"]
-  let decl = make_tag table ~name:"decl" [`FOREGROUND "orange red"]
-  let proof_decl = make_tag table ~name:"proof_decl" [`FOREGROUND "orange red"]
-  let comment = make_tag table ~name:"comment" [`FOREGROUND "brown"]
-  let reserved = make_tag table ~name:"reserved" [`FOREGROUND "dark red"]
-  let error = make_tag table ~name:"error" [`UNDERLINE `DOUBLE ; `FOREGROUND "red"]
-  let to_process = make_tag table ~name:"to_process" [`BACKGROUND !processing_color ;`EDITABLE false]
-  let processed = make_tag table ~name:"processed" [`BACKGROUND !processed_color;`EDITABLE false]
-  let unjustified = make_tag table ~name:"unjustified" [`UNDERLINE `SINGLE; `FOREGROUND "red"; `BACKGROUND "gold";`EDITABLE false]
+  let comment = make_tag table ~name:"comment" []
+  let error = make_tag table ~name:"error" [`UNDERLINE `SINGLE ; `FOREGROUND "red"]
+  let error_bg = make_tag table ~name:"error_bg" [`BACKGROUND !error_color]
+  let to_process = make_tag table ~name:"to_process" [`BACKGROUND !processing_color]
+  let processed = make_tag table ~name:"processed" [`BACKGROUND !processed_color]
+  let unjustified = make_tag table ~name:"unjustified" [`BACKGROUND "gold"]
   let found = make_tag table ~name:"found" [`BACKGROUND "blue"; `FOREGROUND "white"]
-  let hidden = make_tag table ~name:"hidden" [`INVISIBLE true; `EDITABLE false]
-  let folded = make_tag table ~name:"locked" [`EDITABLE false; `BACKGROUND "light grey"]
-  let paren = make_tag table ~name:"paren" [`BACKGROUND "purple"]
   let sentence = make_tag table ~name:"sentence" []
+  let tooltip = make_tag table ~name:"tooltip" [] (* debug:`BACKGROUND "blue" *)
+
+  let all =
+     [comment; error; error_bg; to_process; processed; unjustified;
+     found; sentence; tooltip]
+
+  let edit_zone =
+    let t = make_tag table ~name:"edit_zone" [`UNDERLINE `SINGLE] in
+    t#set_priority (List.length all);
+    t
+  let all = edit_zone :: all
+  
+  let read_only = make_tag table ~name:"read_only" [`EDITABLE false ]
+
 end
 module Proof =
 struct
@@ -46,6 +54,8 @@ module Message =
 struct
   let table = GText.tag_table ()
   let error = make_tag table ~name:"error" [`FOREGROUND "red"]
+  let warning = make_tag table ~name:"warning" [`FOREGROUND "orange"]
+  let item = make_tag table ~name:"item" [`WEIGHT `BOLD]
 end
 
 let string_of_color clr =
@@ -72,3 +82,10 @@ let set_processing_color clr =
   let s = string_of_color clr in
   processing_color := s;
   Script.to_process#set_property (`BACKGROUND s)
+
+let get_error_color () = color_of_string !error_color
+
+let set_error_color clr =
+  let s = string_of_color clr in
+  error_color := s;
+  Script.error_bg#set_property (`BACKGROUND s)

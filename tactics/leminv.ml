@@ -7,32 +7,28 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
-open Nameops
 open Term
+open Vars
 open Termops
 open Namegen
-open Sign
+open Context
 open Evd
 open Printer
 open Reductionops
-open Declarations
 open Entries
 open Inductiveops
 open Environ
 open Tacmach
-open Proof_type
 open Pfedit
-open Evar_refiner
 open Clenv
 open Declare
 open Tacticals
 open Tactics
-open Inv
-open Vernacexpr
-open Safe_typing
 open Decl_kinds
+open Proofview.Notations
 
 let no_inductive_inconstr env constr =
   (str "Cannot recognize an inductive predicate in " ++
@@ -146,7 +142,7 @@ let rec add_prods_sign env sigma t =
 let compute_first_inversion_scheme env sigma ind sort dep_option =
   let indf,realargs = dest_ind_type ind in
   let allvars = ids_of_context env in
-  let p = next_ident_away (id_of_string "P") allvars in
+  let p = next_ident_away (Id.of_string "P") allvars in
   let pty,goal =
     if dep_option  then
       let pty = make_arity env true indf sort in
@@ -161,7 +157,7 @@ let compute_first_inversion_scheme env sigma ind sort dep_option =
       let revargs,ownsign =
 	fold_named_context
 	  (fun env (id,_,_ as d) (revargs,hyps) ->
-             if List.mem id ivars then
+             if Id.List.mem id ivars then
 	       ((mkVar id)::revargs,add_named_decl d hyps)
 	     else
 	       (revargs,hyps))
@@ -193,15 +189,18 @@ let inversion_scheme env sigma t sort dep_option inv_op =
     compute_first_inversion_scheme env sigma ind sort dep_option
   in
   assert
-    (list_subset
+    (List.subset
        (global_vars env invGoal)
        (ids_of_named_context (named_context invEnv)));
   (*
     errorlabstrm "lemma_inversion"
     (str"Computed inversion goal was not closed in initial signature.");
   *)
-  let pf = Proof.start [invEnv,invGoal] in
-  Proof.run_tactic env (Proofview.V82.tactic (tclTHEN intro (onLastHypId inv_op))) pf;
+  let pf = Proof.start Evd.empty [invEnv,invGoal] in
+  let pf =
+    fst (Proof.run_tactic env (
+      Tacticals.New.tclTHEN intro (Tacticals.New.onLastHypId inv_op)) pf)
+  in
   let pfterm = List.hd (Proof.partial_proof pf) in
   let global_named_context = Global.named_context () in
   let ownSign = ref begin
@@ -216,7 +215,7 @@ let inversion_scheme env sigma t sort dep_option inv_op =
   let rec fill_holes c =
     match kind_of_term c with
     | Evar (e,args) ->
-	let h = next_ident_away (id_of_string "H") !avoid in
+	let h = next_ident_away (Id.of_string "H") !avoid in
 	let ty,inst = Evarutil.generalize_evar_over_rels sigma (e,args) in
 	avoid := h::!avoid;
 	ownSign := add_named_decl (h,None,ty) !ownSign;
@@ -231,23 +230,23 @@ let inversion_scheme env sigma t sort dep_option inv_op =
 
 let add_inversion_lemma name env sigma t sort dep inv_op =
   let invProof = inversion_scheme env sigma t sort dep inv_op in
-  let _ =
-    declare_constant name
-    (DefinitionEntry
-       { const_entry_body = invProof;
-         const_entry_secctx = None;
-         const_entry_type = None;
-         const_entry_opaque = false },
-     IsProof Lemma)
-  in ()
+  let entry = {
+    const_entry_body = Future.from_val (invProof,Declareops.no_seff);
+    const_entry_secctx = None;
+    const_entry_type = None;
+    const_entry_opaque = false;
+    const_entry_inline_code = false;
+  } in
+  let _ = declare_constant name (DefinitionEntry entry, IsProof Lemma) in
+  ()
 
 (* inv_op = Inv (derives de complete inv. lemma)
  * inv_op = InvNoThining (derives de semi inversion lemma) *)
 
 let inversion_lemma_from_goal n na (loc,id) sort dep_option inv_op =
   let pts = get_pftreestate() in
-  let { it=gls ; sigma=sigma } = Proof.V82.subgoals pts in
-  let gl = { it = List.nth gls (n-1) ; sigma=sigma } in
+  let { it=gls ; sigma=sigma; } = Proof.V82.subgoals pts in
+  let gl = { it = List.nth gls (n-1) ; sigma=sigma; } in
   let t =
     try pf_get_hyp_typ gl id
     with Not_found -> Pretype_errors.error_var_not_found_loc loc id in
@@ -282,19 +281,22 @@ let lemInv id c gls =
 	   (str "Cannot refine current goal with the lemma " ++
 	      pr_lconstr_env (Global.env()) c)
 
-let lemInv_gen id c = try_intros_until (fun id -> lemInv id c) id
+let lemInv_gen id c = try_intros_until (fun id -> Proofview.V82.tactic (lemInv id c)) id
 
-let lemInvIn id c ids gls =
-  let hyps = List.map (pf_get_hyp gls) ids in
-  let intros_replace_ids gls =
-    let nb_of_new_hyp  = nb_prod (pf_concl gls) - List.length ids in
-    if nb_of_new_hyp < 1  then
-      intros_replacing ids gls
-    else
-      (tclTHEN (tclDO nb_of_new_hyp intro) (intros_replacing ids)) gls
-  in
-  ((tclTHEN (tclTHEN (bring_hyps hyps) (lemInv id c))
-    (intros_replace_ids)) gls)
+let lemInvIn id c ids =
+  Proofview.Goal.enter begin fun gl ->
+    let hyps = List.map (fun id -> Tacmach.New.pf_get_hyp id gl) ids in
+    let intros_replace_ids =
+      let concl = Proofview.Goal.concl gl in
+      let nb_of_new_hyp  = nb_prod concl - List.length ids in
+      if nb_of_new_hyp < 1  then
+        intros_replacing ids
+      else
+        (Tacticals.New.tclTHEN (Tacticals.New.tclDO nb_of_new_hyp intro) (intros_replacing ids))
+    in
+    ((Tacticals.New.tclTHEN (Proofview.V82.tactic (tclTHEN (bring_hyps hyps) (lemInv id c)))
+        (intros_replace_ids)))
+  end
 
 let lemInvIn_gen id c l = try_intros_until (fun id -> lemInvIn id c l) id
 

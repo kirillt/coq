@@ -6,9 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Term
 open Names
-open Libnames
+open Term
+open Context
+open Globnames
 
 val qflag : bool ref
 

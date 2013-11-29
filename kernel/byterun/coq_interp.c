@@ -922,26 +922,6 @@ value coq_interprete
       }
 
       /* Special operations for reduction of open term */
-      Instruct(ACCUMULATECOND) {
-	int i, num;
-	print_instr("ACCUMULATECOND");
-	num = *pc;
-	pc++;
-	if (Field(coq_global_boxed, num) == Val_false || coq_all_transp) {
-	  /*	  printf ("false\n");
-		  printf ("tag = %d", Tag_val(Field(accu,1))); */
-	  num = Wosize_val(coq_env);
-	  for(i = 2; i < num; i++) *--sp = Field(accu,i);
-	  coq_extra_args = coq_extra_args + (num - 2);
-	  coq_env = Field(Field(accu,1),1);
-	  pc = Code_val(coq_env);
-	  accu = coq_env;
-	  /*	  printf ("end\n"); */
-	  Next;
-	};
-	/*	printf ("true\n"); */
-      }
-      
       Instruct(ACCUMULATE) {
 	mlsize_t i, size;
 	print_instr("ACCUMULATE");
@@ -1373,7 +1353,29 @@ value coq_interprete
         Next;
       }
 
+      Instruct (ORINT31) {
+	/* returns the bitwise or */
+	print_instr("ORINT31");
+        accu =
+	  value_of_uint32((uint32_of_value(accu)) | (uint32_of_value(*sp++)));
+	Next;
+      }
 
+      Instruct (ANDINT31) {
+	/* returns the bitwise and */
+	print_instr("ANDINT31");
+        accu =
+	  value_of_uint32((uint32_of_value(accu)) & (uint32_of_value(*sp++)));
+	Next;
+      }
+
+      Instruct (XORINT31) {
+	/* returns the bitwise xor */
+	print_instr("XORINT31");
+        accu =
+	  value_of_uint32((uint32_of_value(accu)) ^ (uint32_of_value(*sp++)));
+	Next;
+      }
 
       /*  /spiwack   */
 

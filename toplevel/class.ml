@@ -6,26 +6,24 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Pp
 open Names
-open Nameops
 open Term
+open Vars
 open Termops
-open Inductive
-open Declarations
 open Entries
 open Environ
-open Inductive
-open Lib
 open Classops
 open Declare
-open Libnames
+open Globnames
 open Nametab
 open Decl_kinds
-open Safe_typing
 
-let strength_min l = if List.mem Local l then Local else Global
+let strength_min l = if List.mem `LOCAL l then `LOCAL else `GLOBAL
+
+let loc_of_bool b = if b then `LOCAL else `GLOBAL
 
 (* Errors *)
 
@@ -38,7 +36,6 @@ type coercion_error_kind =
   | NoTarget
   | WrongTarget of cl_typ * cl_typ
   | NotAClass of global_reference
-  | NotEnoughClassArgs of cl_typ
 
 exception CoercionError of coercion_error_kind
 
@@ -65,8 +62,6 @@ let explain_coercion_error g = function
   | NotAClass ref ->
       (str "Type of " ++ Printer.pr_global ref ++
          str " does not end with a sort")
-  | NotEnoughClassArgs cl ->
-      (str"Wrong number of parameters for " ++ pr_class cl)
 
 (* Verifications pour l'ajout d'une classe *)
 
@@ -84,7 +79,7 @@ let check_arity = function
 
 (* check that the computed target is the provided one *)
 let check_target clt = function
-  | Some cl when cl <> clt -> raise (CoercionError (WrongTarget(clt,cl)))
+  | Some cl when not (cl_typ_eq cl clt) -> raise (CoercionError (WrongTarget(clt,cl)))
   | _ -> ()
 
 (* condition d'heritage uniforme *)
@@ -94,7 +89,7 @@ let uniform_cond nargs lt =
     | (0,[]) -> true
     | (n,t::l) ->
       let t = strip_outer_cast t in
-      isRel t && destRel t = n && aux ((n-1),l)
+      isRel t && Int.equal (destRel t) n && aux ((n-1),l)
     | _ -> false
   in
   aux (nargs,lt)
@@ -135,7 +130,7 @@ let get_source lp source =
 	  | t1::lt ->
 	      try
 		let cl1,lv1 = find_class_type Evd.empty t1 in
-		if cl = cl1 then cl1,lv1,(List.length lt+1)
+		if cl_typ_eq cl cl1 then cl1,lv1,(List.length lt+1)
 		else raise Not_found
               with Not_found -> aux lt
 	in aux (List.rev lp)
@@ -155,9 +150,13 @@ let prods_of t =
   aux [] t
 
 let strength_of_cl = function
-  | CL_CONST kn -> Global
-  | CL_SECVAR id -> Local
-  | _ -> Global
+  | CL_CONST kn -> `GLOBAL
+  | CL_SECVAR id -> `LOCAL
+  | _ -> `GLOBAL
+
+let strength_of_global = function
+  | VarRef _ -> `LOCAL
+  | _ -> `GLOBAL
 
 let get_strength stre ref cls clt =
   let stres = strength_of_cl cls in
@@ -168,9 +167,9 @@ let get_strength stre ref cls clt =
 let ident_key_of_class = function
   | CL_FUN -> "Funclass"
   | CL_SORT -> "Sortclass"
-  | CL_CONST sp -> string_of_label (con_label sp)
-  | CL_IND (sp,_) -> string_of_label (mind_label sp)
-  | CL_SECVAR id -> string_of_id id
+  | CL_CONST sp -> Label.to_string (con_label sp)
+  | CL_IND (sp,_) -> Label.to_string (mind_label sp)
+  | CL_SECVAR id -> Id.to_string id
 
 (* coercion identité *)
 
@@ -189,7 +188,7 @@ let build_id_coercion idf_opt source =
   let lams,t = decompose_lam_assum c in
   let val_f =
     it_mkLambda_or_LetIn
-      (mkLambda (Name (id_of_string "x"),
+      (mkLambda (Name (Id.of_string "x"),
 		 applistc vs (extended_rel_list 0 lams),
 		 mkRel 1))
        lams
@@ -213,16 +212,20 @@ let build_id_coercion idf_opt source =
       | Some idf -> idf
       | None ->
 	  let cl,_ = find_class_type Evd.empty t in
-	  id_of_string ("Id_"^(ident_key_of_class source)^"_"^
+	  Id.of_string ("Id_"^(ident_key_of_class source)^"_"^
                         (ident_key_of_class cl))
   in
   let constr_entry = (* Cast is necessary to express [val_f] is identity *)
     DefinitionEntry
-      { const_entry_body = mkCast (val_f, DEFAULTcast, typ_f);
+      { const_entry_body = Future.from_val 
+          (mkCast (val_f, DEFAULTcast, typ_f),Declareops.no_seff);
         const_entry_secctx = None;
 	const_entry_type = Some typ_f;
-        const_entry_opaque = false } in
-  let kn = declare_constant idf (constr_entry,IsDefinition IdentityCoercion) in
+        const_entry_opaque = false;
+	const_entry_inline_code = true
+      } in
+  let decl = (constr_entry, IsDefinition IdentityCoercion) in
+  let kn = declare_constant idf decl in
   ConstRef kn
 
 let check_source = function
@@ -246,7 +249,7 @@ let add_new_coercion_core coef stre source target isid =
   if coercion_exists coef then raise (CoercionError AlreadyExists);
   let tg,lp = prods_of t in
   let llp = List.length lp in
-  if llp = 0 then raise (CoercionError NotAFunction);
+  if Int.equal llp 0 then raise (CoercionError NotAFunction);
   let (cls,lvs,ind) =
     try
       get_source lp source
@@ -255,7 +258,7 @@ let add_new_coercion_core coef stre source target isid =
   in
   check_source (Some cls);
   if not (uniform_cond (llp-ind) lvs) then
-    warning (Pp.string_of_ppcmds (explain_coercion_error coef NotUniform));
+    msg_warning (explain_coercion_error coef NotUniform);
   let clt =
     try
       get_target tg ind
@@ -265,38 +268,50 @@ let add_new_coercion_core coef stre source target isid =
   check_target clt target;
   check_arity cls;
   check_arity clt;
-  let stre' = get_strength stre coef cls clt in
-  declare_coercion coef stre' ~isid ~src:cls ~target:clt ~params:(List.length lvs)
+  let local = match get_strength stre coef cls clt with
+  | `LOCAL -> true
+  | `GLOBAL -> false
+  in
+  declare_coercion coef ~local ~isid ~src:cls ~target:clt ~params:(List.length lvs)
 
-let try_add_new_coercion_core ref b c d e =
-  try add_new_coercion_core ref b c d e
+let try_add_new_coercion_core ref ~local c d e =
+  try add_new_coercion_core ref (loc_of_bool local) c d e
   with CoercionError e ->
       errorlabstrm "try_add_new_coercion_core"
         (explain_coercion_error ref e ++ str ".")
 
-let try_add_new_coercion ref stre =
-  try_add_new_coercion_core ref stre None None false
+let try_add_new_coercion ref ~local =
+  try_add_new_coercion_core ref ~local None None false
 
-let try_add_new_coercion_subclass cl stre =
+let try_add_new_coercion_subclass cl ~local =
   let coe_ref = build_id_coercion None cl in
-  try_add_new_coercion_core coe_ref stre (Some cl) None true
+  try_add_new_coercion_core coe_ref ~local (Some cl) None true
 
-let try_add_new_coercion_with_target ref stre ~source ~target =
-  try_add_new_coercion_core ref stre (Some source) (Some target) false
+let try_add_new_coercion_with_target ref ~local ~source ~target =
+  try_add_new_coercion_core ref ~local (Some source) (Some target) false
 
-let try_add_new_identity_coercion id stre ~source ~target =
+let try_add_new_identity_coercion id ~local ~source ~target =
   let ref = build_id_coercion (Some id) source in
-  try_add_new_coercion_core ref stre (Some source) (Some target) true
+  try_add_new_coercion_core ref ~local (Some source) (Some target) true
 
-let try_add_new_coercion_with_source ref stre ~source =
-  try_add_new_coercion_core ref stre (Some source) None false
+let try_add_new_coercion_with_source ref ~local ~source =
+  try_add_new_coercion_core ref ~local (Some source) None false
 
-let add_coercion_hook stre ref =
-  try_add_new_coercion ref stre;
-  Flags.if_verbose message
-    (string_of_qualid (shortest_qualid_of_global Idset.empty ref)
-    ^ " is now a coercion")
+let add_coercion_hook local ref =
+  let stre = match local with
+  | Local -> true
+  | Global -> false
+  | Discharge -> assert false
+  in
+  let () = try_add_new_coercion ref stre in
+  let msg = pr_global_env Id.Set.empty ref ++ str " is now a coercion" in
+  Flags.if_verbose msg_info msg
 
-let add_subclass_hook stre ref =
+let add_subclass_hook local ref =
+  let stre = match local with
+  | Local -> true
+  | Global -> false
+  | Discharge -> assert false
+  in
   let cl = class_of_global ref in
   try_add_new_coercion_subclass cl stre

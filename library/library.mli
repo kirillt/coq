@@ -6,7 +6,8 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Loc
+open Pp
 open Names
 open Libnames
 open Libobject
@@ -23,9 +24,9 @@ open Libobject
 (** Require = load in the environment + open (if the optional boolean
     is not [None]); mark also for export if the boolean is [Some true] *)
 val require_library : qualid located list -> bool option -> unit
-val require_library_from_dirpath : (dir_path * string) list -> bool option -> unit
+val require_library_from_dirpath : (DirPath.t * string) list -> bool option -> unit
 val require_library_from_file :
-  identifier option -> System.physical_path -> bool option -> unit
+  Id.t option -> CUnix.physical_path -> bool option -> unit
 
 (** {6 ... } *)
 (** Open a module (or a library); if the boolean is true then it's also
@@ -33,41 +34,29 @@ val require_library_from_file :
 val import_module : bool -> qualid located -> unit
 
 (** {6 Start the compilation of a library } *)
-val start_library : string -> dir_path * string
+val start_library : string -> DirPath.t * string
 
 (** {6 End the compilation of a library and save it to a ".vo" file } *)
-val save_library_to : dir_path -> string -> unit
+val save_library_to : DirPath.t -> string -> unit
 
 (** {6 Interrogate the status of libraries } *)
 
   (** - Tell if a library is loaded or opened *)
-val library_is_loaded : dir_path -> bool
-val library_is_opened : dir_path -> bool
+val library_is_loaded : DirPath.t -> bool
+val library_is_opened : DirPath.t -> bool
 
   (** - Tell which libraries are loaded or imported *)
-val loaded_libraries : unit -> dir_path list
-val opened_libraries : unit -> dir_path list
+val loaded_libraries : unit -> DirPath.t list
+val opened_libraries : unit -> DirPath.t list
 
   (** - Return the full filename of a loaded library. *)
-val library_full_filename : dir_path -> string
+val library_full_filename : DirPath.t -> string
 
   (** - Overwrite the filename of all libraries (used when restoring a state) *)
 val overwrite_library_filenames : string -> unit
 
 (** {6 Hook for the xml exportation of libraries } *)
-val set_xml_require : (dir_path -> unit) -> unit
-
-(** {6 ... } *)
-(** Global load paths: a load path is a physical path in the file
-    system; to each load path is associated a Coq [dir_path] (the "logical"
-    path of the physical path) *)
-
-val get_load_paths : unit -> System.physical_path list
-val get_full_load_paths : unit -> (System.physical_path * dir_path) list
-val add_load_path : bool -> System.physical_path * dir_path -> unit
-val remove_load_path : System.physical_path -> unit
-val find_logical_path : System.physical_path -> dir_path
-val is_in_load_paths : System.physical_path -> bool
+val xml_require : (DirPath.t -> unit) Hook.t
 
 (** {6 Locate a library in the load paths } *)
 exception LibUnmappedDir
@@ -75,8 +64,8 @@ exception LibNotFound
 type library_location = LibLoaded | LibInPath
 
 val locate_qualified_library :
-  bool -> qualid -> library_location * dir_path * System.physical_path
-val try_locate_qualified_library : qualid located -> dir_path * string
+  bool -> qualid -> library_location * DirPath.t * CUnix.physical_path
+val try_locate_qualified_library : qualid located -> DirPath.t * string
 
 (** {6 Statistics: display the memory use of a library. } *)
-val mem : dir_path -> Pp.std_ppcmds
+val mem : DirPath.t -> Pp.std_ppcmds

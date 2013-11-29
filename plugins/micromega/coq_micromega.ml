@@ -16,6 +16,7 @@
 (*                                                                      *)
 (************************************************************************)
 
+open Pp
 open Mutils
 
 (**
@@ -65,7 +66,7 @@ type 'cst formula =
   | C of 'cst formula * 'cst formula
   | D of 'cst formula * 'cst formula
   | N of 'cst formula
-  | I of 'cst formula * Names.identifier option * 'cst formula
+  | I of 'cst formula * Names.Id.t option * 'cst formula
 
 (**
   * Formula pretty-printer.
@@ -82,7 +83,7 @@ let rec pp_formula o f =
     | I(f1,n,f2) -> Printf.fprintf o "I(%a%s,%a)"
 	pp_formula f1
 	  (match n with
-	    | Some id -> Names.string_of_id id
+	    | Some id -> Names.Id.to_string id
 	    | None -> "") pp_formula f2
     | N(f) -> Printf.fprintf o "N(%a)" pp_formula f
 
@@ -242,7 +243,7 @@ let rec add_term  t0 = function
   * MODULE: Ordered set of integers.
   *)
 
-module ISet = Set.Make(struct type t = int let compare : int -> int -> int = Pervasives.compare end)
+module ISet = Set.Make(Int)
 
 (**
   * Given a set of integers s={i0,...,iN} and a list m, return the list of
@@ -275,10 +276,10 @@ struct
     *)
 
   let logic_dir = ["Coq";"Logic";"Decidable"]
-  let coq_modules =
-   init_modules @
-    [logic_dir] @ arith_modules @ zarith_base_modules @
-    [ ["Coq";"Lists";"List"];
+
+  let mic_modules = 
+    [ 
+      ["Coq";"Lists";"List"];
       ["ZMicromega"];
       ["Tauto"];
       ["RingMicromega"];
@@ -292,6 +293,10 @@ struct
       ["Coq";"Reals" ; "Rdefinitions"];
       ["Coq";"Reals" ; "Rpow_def"];
       ["LRing_normalise"]]
+
+  let coq_modules =
+   init_modules @
+    [logic_dir] @ arith_modules @ zarith_base_modules @ mic_modules
 
   let bin_module = [["Coq";"Numbers";"BinNums"]]
 
@@ -312,7 +317,7 @@ struct
   let bin_constant = gen_constant_in_modules "ZMicromega" bin_module
   let r_constant = gen_constant_in_modules "ZMicromega" r_modules
   let z_constant = gen_constant_in_modules "ZMicromega" z_modules
-  (* let constant = gen_constant_in_modules "Omicron" coq_modules *)
+  let m_constant = gen_constant_in_modules "ZMicromega" mic_modules
 
   let coq_and = lazy (init_constant "and")
   let coq_or = lazy (init_constant "or")
@@ -354,15 +359,15 @@ struct
   let coq_Qmake = lazy (constant "Qmake")
 
   let coq_Rcst = lazy (constant "Rcst")
-  let coq_C0   = lazy (constant "C0")
-  let coq_C1   = lazy (constant "C1")
-  let coq_CQ   = lazy (constant "CQ")
-  let coq_CZ   = lazy (constant "CZ")
-  let coq_CPlus = lazy (constant "CPlus")
-  let coq_CMinus = lazy (constant "CMinus")
-  let coq_CMult  = lazy (constant "CMult")
-  let coq_CInv   = lazy (constant "CInv")
-  let coq_COpp   = lazy (constant "COpp")
+  let coq_C0   = lazy (m_constant "C0")
+  let coq_C1   = lazy (m_constant "C1")
+  let coq_CQ   = lazy (m_constant "CQ")
+  let coq_CZ   = lazy (m_constant "CZ")
+  let coq_CPlus = lazy (m_constant "CPlus")
+  let coq_CMinus = lazy (m_constant "CMinus")
+  let coq_CMult  = lazy (m_constant "CMult")
+  let coq_CInv   = lazy (m_constant "CInv")
+  let coq_COpp   = lazy (m_constant "COpp")
 
 
   let coq_R0    = lazy (constant "R0")
@@ -573,7 +578,7 @@ struct
 
   let pp_positive o x = Printf.fprintf o "%i" (CoqToCaml.positive x)
 
-  let rec dump_n x =
+  let dump_n x =
    match x with
     | Mc.N0 -> Lazy.force coq_N0
     | Mc.Npos p -> Term.mkApp(Lazy.force coq_Npos,[| dump_positive p|])
@@ -586,12 +591,12 @@ struct
 
   let pp_index o x = Printf.fprintf o "%i" (CoqToCaml.index x)
 
-  let rec pp_n o x =  output_string o  (string_of_int (CoqToCaml.n x))
+  let pp_n o x =  output_string o  (string_of_int (CoqToCaml.n x))
 
   let dump_pair t1 t2 dump_t1 dump_t2 (x,y) =
    Term.mkApp(Lazy.force coq_pair,[| t1 ; t2 ; dump_t1 x ; dump_t2 y|])
 
-  let rec parse_z term =
+  let parse_z term =
    let (i,c) = get_left_construct term in
     match i with
      | 1 -> Mc.Z0
@@ -776,7 +781,7 @@ struct
         Printf.fprintf o "0" in
     pp_cone o e
 
-  let rec dump_op = function
+  let dump_op = function
    | Mc.OpEq-> Lazy.force coq_OpEq
    | Mc.OpNEq-> Lazy.force coq_OpNEq
    | Mc.OpLe -> Lazy.force coq_OpLe
@@ -897,10 +902,7 @@ struct
 
   let parse_expr parse_constant parse_exp ops_spec env term =
     if debug
-    then (Pp.pp (Pp.str "parse_expr: ");
-          Pp.pp (Printer.prterm term);
-          Pp.pp (Pp.str "\n");
-          Pp.pp_flush ());
+    then Pp.msg_debug (Pp.str "parse_expr: " ++ Printer.prterm term);
 
 (*
     let constant_or_variable env term =
@@ -937,7 +939,7 @@ struct
                            let (expr,env) = parse_expr env args.(0) in
                            let power = (parse_exp expr args.(1)) in
                              (power  , env)
-			 with e when e <> Sys.Break ->
+			 with e when Errors.noncritical e ->
                            (* if the exponent is a variable *)
                            let (env,n) = Env.compute_rank_add env term in (Mc.PEX n, env)
                        end
@@ -1017,11 +1019,7 @@ struct
 
   let rconstant term = 
     if debug
-    then (Pp.pp_flush ();
-          Pp.pp (Pp.str "rconstant: ");
-          Pp.pp (Printer.prterm  term);
-          Pp.pp (Pp.str "\n");
-          Pp.pp_flush ());
+    then Pp.msg_debug (Pp.str "rconstant: " ++ Printer.prterm term ++ fnl ());
     let res = rconstant term in
       if debug then 
 	(Printf.printf "rconstant -> %a\n" pp_Rcst res ; flush stdout) ;
@@ -1061,11 +1059,7 @@ struct
 
   let  parse_arith parse_op parse_expr env cstr =
    if debug
-   then (Pp.pp_flush ();
-         Pp.pp (Pp.str "parse_arith: ");
-         Pp.pp (Printer.prterm  cstr);
-         Pp.pp (Pp.str "\n");
-         Pp.pp_flush ());
+   then Pp.msg_debug (Pp.str "parse_arith: " ++ Printer.prterm  cstr ++ fnl ());
    match kind_of_term cstr with
     | App(op,args) ->
        let (op,lhs,rhs) = parse_op (op,args) in
@@ -1117,8 +1111,7 @@ struct
       try
         let (at,env) = parse_atom env t in
         (A(at,tg,t), env,Tag.next tg)
-      with e when e <> Sys.Break -> (X(t),env,tg)
-    in
+      with e when Errors.noncritical e -> (X(t),env,tg) in
 
     let rec xparse_formula env tg term =
      match kind_of_term term with
@@ -1173,7 +1166,7 @@ struct
     | (e::l) ->
        let (name,expr,typ) = e in
         xset (Term.mkNamedLetIn
-               (Names.id_of_string name)
+               (Names.Id.of_string name)
                expr typ acc) l in
     xset concl l
 
@@ -1195,13 +1188,13 @@ let same_proof sg cl1 cl2 =
   match sg with
    | [] -> true
    | n::sg ->
-     (try List.nth cl1 n = List.nth cl2 n with e when e <> Sys.Break -> false)
+     (try List.nth cl1 n = List.nth cl2 n with Invalid_argument _ -> false)
       && (xsame_proof sg ) in
   xsame_proof sg
 
 let tags_of_clause tgs wit clause =
  let rec xtags tgs = function
-  | Mc.PsatzIn n -> Names.Idset.union tgs
+  | Mc.PsatzIn n -> Names.Id.Set.union tgs
      (snd (List.nth clause (CoqToCaml.nat n) ))
   | Mc.PsatzMulC(e,w) -> xtags tgs w
   | Mc.PsatzMulE (w1,w2) | Mc.PsatzAdd(w1,w2) -> xtags (xtags tgs w1) w2
@@ -1210,7 +1203,7 @@ let tags_of_clause tgs wit clause =
 
 (*let tags_of_cnf wits cnf =
  List.fold_left2 (fun acc w cl -> tags_of_clause acc w cl)
-  Names.Idset.empty wits cnf *)
+  Names.Id.Set.empty wits cnf *)
 
 let find_witness prover polys1 = try_any prover polys1
 
@@ -1259,7 +1252,7 @@ let btree_of_array typ a  =
 let btree_of_array typ a =
  try
   btree_of_array typ a
- with x when x <> Sys.Break ->
+ with x when Errors.noncritical x ->
   failwith (Printf.sprintf "btree of array : %s" (Printexc.to_string x))
 
 let dump_varmap typ env =
@@ -1328,7 +1321,7 @@ let rec parse_hyps parse_arith env tg hyps =
       try
        let (c,env,tg) = parse_formula parse_arith env  tg t in
 	((i,c)::lhyps, env,tg)
-      with e when e <> Sys.Break -> 		(lhyps,env,tg)
+      with e when Errors.noncritical e -> (lhyps,env,tg)
        (*(if debug then Printf.printf "parse_arith : %s\n" x);*)
 
 
@@ -1472,7 +1465,7 @@ let compact_proofs (cnf_ff: 'cst cnf) res (cnf_ff': 'cst cnf) =
           (pp_ml_list prover.pp_f) (List.map fst new_cl)   ;
           flush stdout
       end ; *)
-    let res = try prover.compact prf remap with x when x <> Sys.Break ->
+    let res = try prover.compact prf remap with x when Errors.noncritical x ->
       if debug then Printf.fprintf stdout "Proof compaction %s" (Printexc.to_string x) ;
       (* This should not happen -- this is the recovery plan... *)
       match prover.prover (List.map fst new_cl) with
@@ -1654,8 +1647,6 @@ let micromega_gen
 		  (Term.mkApp(Lazy.force coq_list, [|spec.proof_typ|])) env ff'
 	      ]) gl
   with
-(*   | Failure x -> flush stdout ; Pp.pp_flush () ;
-      Tacticals.tclFAIL 0 (Pp.str x) gl *)
    | ParseError  -> Tacticals.tclFAIL 0 (Pp.str "Bad logical fragment") gl
    | CsdpNotFound -> flush stdout ; Pp.pp_flush () ;
       Tacticals.tclFAIL 0 (Pp.str 
@@ -1725,8 +1716,6 @@ let micromega_genr prover gl =
                 micromega_order_changer res' env (abstract_wrt_formula ff' ff)
               ]) gl
   with
-(*   | Failure x -> flush stdout ; Pp.pp_flush () ;
-      Tacticals.tclFAIL 0 (Pp.str x) gl *)
    | ParseError  -> Tacticals.tclFAIL 0 (Pp.str "Bad logical fragment") gl
    | CsdpNotFound -> flush stdout ; Pp.pp_flush () ;
       Tacticals.tclFAIL 0 (Pp.str 

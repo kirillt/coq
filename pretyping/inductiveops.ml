@@ -6,14 +6,17 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
 open Univ
 open Term
+open Vars
+open Context
 open Termops
 open Namegen
-open Sign
 open Declarations
+open Declareops
 open Environ
 open Reductionops
 
@@ -72,17 +75,17 @@ let mkAppliedInd (IndType ((ind,params), realargs)) =
 
 (* Does not consider imbricated or mutually recursive types *)
 let mis_is_recursive_subset listind rarg =
-  let rec one_is_rec rvec =
+  let one_is_rec rvec =
     List.exists
       (fun ra ->
         match dest_recarg ra with
-	  | Mrec (_,i) -> List.mem i listind
+	  | Mrec (_,i) -> Int.List.mem i listind
           | _ -> false) rvec
   in
-  array_exists one_is_rec (dest_subterms rarg)
+  Array.exists one_is_rec (dest_subterms rarg)
 
 let mis_is_recursive (ind,mib,mip) =
-  mis_is_recursive_subset (interval 0 (mib.mind_ntypes-1))
+  mis_is_recursive_subset (List.interval 0 (mib.mind_ntypes - 1))
     mip.mind_recargs
 
 let mis_nf_constructor_type (ind,mib,mip) j =
@@ -91,7 +94,7 @@ let mis_nf_constructor_type (ind,mib,mip) j =
   and nconstr = Array.length mip.mind_consnames in
   let make_Ik k = mkInd ((fst ind),ntypes-k-1) in
   if j > nconstr then error "Not enough constructors in the type.";
-  substl (list_tabulate make_Ik ntypes) specif.(j-1)
+  substl (List.init ntypes make_Ik) specif.(j-1)
 
 (* Arity of constructors excluding parameters and local defs *)
 
@@ -106,17 +109,34 @@ let mis_constr_nargs_env env (kn,i) =
   let recargs = dest_subterms mip.mind_recargs in
   Array.map List.length recargs
 
+(* Arity of constructors excluding local defs *)
+
+let mis_constructor_nargs (indsp,j) =
+  let (mib,mip) = Global.lookup_inductive indsp in
+  recarg_length mip.mind_recargs j + mib.mind_nparams
+
 let mis_constructor_nargs_env env ((kn,i),j) =
   let mib = Environ.lookup_mind kn env in
   let mip = mib.mind_packets.(i) in
   recarg_length mip.mind_recargs j + mib.mind_nparams
 
+(* Arity of constructors with arg and defs *)
+
+let mis_constructor_nhyps (indsp,j) =
+  let (mib,mip) = Global.lookup_inductive indsp in
+   mip.mind_consnrealdecls.(j-1) + rel_context_length (mib.mind_params_ctxt)
+
+let mis_constructor_nhyps_env env ((kn,i),j) =
+  let mib = Environ.lookup_mind kn env in
+  let mip = mib.mind_packets.(i) in
+   mip.mind_consnrealdecls.(j-1) + rel_context_length (mib.mind_params_ctxt)
+
 let constructor_nrealargs env (ind,j) =
   let (_,mip) = Inductive.lookup_mind_specif env ind in
   recarg_length mip.mind_recargs j
 
-let constructor_nrealhyps env (ind,j) =
-  let (mib,mip) = Inductive.lookup_mind_specif env ind in
+let constructor_nrealhyps (ind,j) =
+  let (mib,mip) = Global.lookup_inductive ind in
   mip.mind_consnrealdecls.(j-1)
 
 let get_full_arity_sign env ind =
@@ -127,9 +147,28 @@ let nconstructors ind =
   let (mib,mip) = Inductive.lookup_mind_specif (Global.env()) ind in
   Array.length mip.mind_consnames
 
+let mis_constructor_has_local_defs (indsp,j) =
+  let (mib,mip) = Global.lookup_inductive indsp in
+  let l1 = mip.mind_consnrealdecls.(j-1) + rel_context_length (mib.mind_params_ctxt) in
+  let l2 = recarg_length mip.mind_recargs j + mib.mind_nparams in
+  not (Int.equal l1 l2)
+
+let inductive_has_local_defs ind =
+  let (mib,mip) = Global.lookup_inductive ind in
+  let l1 = rel_context_length (mib.mind_params_ctxt) + mip.mind_nrealargs_ctxt in
+  let l2 = mib.mind_nparams + mip.mind_nrealargs in
+  not (Int.equal l1 l2)
+
 (* Length of arity (w/o local defs) *)
 
-let inductive_nargs env ind =
+let inductive_nparams ind =
+  (fst (Global.lookup_inductive ind)).mind_nparams
+
+let inductive_nargs ind =
+  let (mib,mip) = Global.lookup_inductive ind in
+  (rel_context_length (mib.mind_params_ctxt), mip.mind_nrealargs_ctxt)
+
+let inductive_nargs_env env ind =
   let (mib,mip) = Inductive.lookup_mind_specif env ind in
   (rel_context_length (mib.mind_params_ctxt), mip.mind_nrealargs_ctxt)
 
@@ -170,13 +209,13 @@ let instantiate_params t args sign =
     | ((_,None,_)::ctxt,a::args) ->
 	(match kind_of_term t with
 	   | Prod(_,_,t) -> inst (a::s) t (ctxt,args)
-	   | _ -> anomaly"instantiate_params: type, ctxt and args mismatch")
+	   | _ -> anomaly ~label:"instantiate_params" (Pp.str "type, ctxt and args mismatch"))
     | ((_,(Some b),_)::ctxt,args) ->
 	(match kind_of_term t with
 	   | LetIn(_,_,_,t) -> inst ((substl s b)::s) t (ctxt,args)
-	   | _ -> anomaly"instantiate_params: type, ctxt and args mismatch")
+	   | _ -> anomaly ~label:"instantiate_params" (Pp.str "type, ctxt and args mismatch"))
     | _, [] -> substl s t
-    | _ -> anomaly"instantiate_params: type, ctxt and args mismatch"
+    | _ -> anomaly ~label:"instantiate_params" (Pp.str "type, ctxt and args mismatch")
   in inst [] t (List.rev sign,args)
 
 let get_constructor (ind,mib,mip,params) j =
@@ -185,7 +224,7 @@ let get_constructor (ind,mib,mip,params) j =
   let typi = instantiate_params typi params mib.mind_params_ctxt in
   let (args,ccl) = decompose_prod_assum typi in
   let (_,allargs) = decompose_app ccl in
-  let vargs = list_skipn (List.length params) allargs in
+  let vargs = List.skipn (List.length params) allargs in
   { cs_cstr = ith_constructor_of_inductive ind j;
     cs_params = params;
     cs_nargs = rel_context_length args;
@@ -207,12 +246,12 @@ let substnl_rel_context subst n sign =
 
 let substl_rel_context subst = substnl_rel_context subst 0
 
-let rec instantiate_context sign args =
+let instantiate_context sign args =
   let rec aux subst = function
   | (_,None,_)::sign, a::args -> aux (a::subst) (sign,args)
   | (_,Some b,_)::sign, args -> aux (substl subst b::subst) (sign,args)
   | [], [] -> subst
-  | _ -> anomaly "Signature/instance mismatch in inductive family"
+  | _ -> anomaly (Pp.str "Signature/instance mismatch in inductive family")
   in aux [] (List.rev sign,args)
 
 let get_arity env (ind,params) =
@@ -223,12 +262,12 @@ let get_arity env (ind,params) =
        parameters *)
     let parsign = mib.mind_params_ctxt in
     let nnonrecparams = mib.mind_nparams - mib.mind_nparams_rec in
-    if List.length params = rel_context_nhyps parsign - nnonrecparams then
-      snd (list_chop nnonrecparams mib.mind_params_ctxt)
+    if Int.equal (List.length params) (rel_context_nhyps parsign - nnonrecparams) then
+      snd (List.chop nnonrecparams mib.mind_params_ctxt)
     else
       parsign in
   let arproperlength = List.length mip.mind_arity_ctxt - List.length parsign in
-  let arsign,_ = list_chop arproperlength mip.mind_arity_ctxt in
+  let arsign,_ = List.chop arproperlength mip.mind_arity_ctxt in
   let subst = instantiate_context parsign params in
   (substl_rel_context subst arsign, Inductive.inductive_sort_family mip)
 
@@ -291,7 +330,7 @@ let find_rectype env sigma c =
     | Ind ind ->
         let (mib,mip) = Inductive.lookup_mind_specif env ind in
         if mib.mind_nparams > List.length l then raise Not_found;
-        let (par,rargs) = list_chop mib.mind_nparams l in
+        let (par,rargs) = List.chop mib.mind_nparams l in
         IndType((ind, par),rargs)
     | _ -> raise Not_found
 
@@ -345,9 +384,12 @@ let is_predicate_explicitly_dep env pred arsign =
           check whether the predicate is actually dependent or not
           would indeed be more natural! *)
 
-	  na <> Anonymous
+          begin match na with
+          | Anonymous -> false
+          | Name _ -> true
+          end
 
-      | _ -> anomaly "Non eta-expanded dep-expanded \"match\" predicate"
+      | _ -> anomaly (Pp.str "Non eta-expanded dep-expanded \"match\" predicate")
   in
   srec env pred arsign
 
@@ -367,13 +409,13 @@ let set_pattern_names env ind brv =
         rel_context_length ((prod_assum c)) -
         mib.mind_nparams)
       mip.mind_nf_lc in
-  array_map2 (set_names env) arities brv
+  Array.map2 (set_names env) arities brv
 
 let type_case_branches_with_names env indspec p c =
   let (ind,args) = indspec in
   let (mib,mip as specif) = Inductive.lookup_mind_specif env ind in
   let nparams = mib.mind_nparams in
-  let (params,realargs) = list_chop nparams args in
+  let (params,realargs) = List.chop nparams args in
   let lbrty = Inductive.build_branches_type ind specif params p in
   (* Build case type *)
   let conclty = Reduction.beta_appvect p (Array.of_list (realargs@[c])) in

@@ -7,41 +7,34 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
-open Libnames
+open Globnames
 open Nameops
 open Term
+open Vars
 open Environ
 open Declarations
 open Entries
 open Declare
-open Nametab
 open Constrintern
-open Command
-open Inductive
-open Safe_typing
 open Decl_kinds
-open Indtypes
 open Type_errors
-open Topconstr
+open Constrexpr
+open Constrexpr_ops
 
 (********** definition d'un record (structure) **************)
-
-let interp_evars evdref env impls k typ =
-  let typ' = intern_gen true ~impls !evdref env typ in
-  let imps = Implicit_quantifiers.implicits_of_glob_constr typ' in
-    imps, Pretyping.Default.understand_tcc_evars evdref env k typ'
 
 let interp_fields_evars evars env impls_env nots l =
   List.fold_left2
     (fun (env, uimpls, params, impls) no ((loc, i), b, t) ->
-      let impl, t' = interp_evars evars env impls Pretyping.IsType t in
-      let b' = Option.map (fun x -> snd (interp_evars evars env impls (Pretyping.OfType (Some t')) x)) b in
+      let t', impl = interp_type_evars_impls evars env ~impls t in
+      let b' = Option.map (fun x -> fst (interp_casted_constr_evars_impls evars env ~impls x t')) b in
       let impls =
 	match i with
 	| Anonymous -> impls
-	| Name id -> Idmap.add id (compute_internalization_data env Constrintern.Method t' impl) impls
+	| Name id -> Id.Map.add id (compute_internalization_data env Constrintern.Method t' impl) impls
       in
       let d = (i,b',t') in
       List.iter (Metasyntax.set_notation_for_interpretation impls) no;
@@ -50,7 +43,7 @@ let interp_fields_evars evars env impls_env nots l =
 
 let binder_of_decl = function
   | Vernacexpr.AssumExpr(n,t) -> (n,None,t)
-  | Vernacexpr.DefExpr(n,c,t) -> (n,Some c, match t with Some c -> c | None -> CHole (fst n, None))
+  | Vernacexpr.DefExpr(n,c,t) -> (n,Some c, match t with Some c -> c | None -> CHole (fst n, None, None))
 
 let binders_of_decls = List.map binder_of_decl
 
@@ -59,10 +52,9 @@ let typecheck_params_and_fields id t ps nots fs =
   let evars = ref Evd.empty in
   let _ = 
     let error bk (loc, name) = 
-      match bk with
-      | Default _ ->
-	  if name = Anonymous then 
-	    user_err_loc (loc, "record", str "Record parameters must be named")
+      match bk, name with
+      | Default _, Anonymous ->
+        user_err_loc (loc, "record", str "Record parameters must be named")
       | _ -> ()
     in
       List.iter 
@@ -75,33 +67,28 @@ let typecheck_params_and_fields id t ps nots fs =
   let env2,impls,newfs,data =
     interp_fields_evars evars env_ar impls_env nots (binders_of_decls fs)
   in
-  let evars = Evarconv.consider_remaining_unif_problems env_ar !evars in
-  let evars = Typeclasses.resolve_typeclasses env_ar evars in
-  let sigma =  evars in
+  let sigma = Pretyping.solve_remaining_evars Pretyping.all_and_fail_flags env_ar Evd.empty !evars in
   let newps = Evarutil.nf_rel_context_evar sigma newps in
   let newfs = Evarutil.nf_rel_context_evar sigma newfs in
-  let ce t = Evarutil.check_evars env0 Evd.empty evars t in
-    List.iter (fun (n, b, t) -> Option.iter ce b; ce t) (List.rev newps);
-    List.iter (fun (n, b, t) -> Option.iter ce b; ce t) (List.rev newfs);
     imps, newps, impls, newfs
 
 let degenerate_decl (na,b,t) =
   let id = match na with
     | Name id -> id
-    | Anonymous -> anomaly "Unnamed record variable" in
+    | Anonymous -> anomaly (Pp.str "Unnamed record variable") in
   match b with
     | None -> (id, Entries.LocalAssum t)
     | Some b -> (id, Entries.LocalDef b)
 
 type record_error =
-  | MissingProj of identifier * identifier list
-  | BadTypedProj of identifier * env * Type_errors.type_error
+  | MissingProj of Id.t * Id.t list
+  | BadTypedProj of Id.t * env * Type_errors.type_error
 
 let warning_or_error coe indsp err =
   let st = match err with
     | MissingProj (fi,projs) ->
 	let s,have = if List.length projs > 1 then "s","were" else "","was" in
-        (str(string_of_id fi) ++
+        (str(Id.to_string fi) ++
 	   strbrk" cannot be defined because the projection" ++ str s ++ spc () ++
            prlist_with_sep pr_comma pr_id projs ++ spc () ++ str have ++
 	   strbrk " not defined.")
@@ -121,10 +108,10 @@ let warning_or_error coe indsp err =
               (pr_id fi ++ strbrk " cannot be defined because it is not typable.")
   in
   if coe then errorlabstrm "structure" st;
-  Flags.if_verbose ppnl (hov 0 (str"Warning: " ++ st))
+  Flags.if_verbose msg_warning (hov 0 st)
 
 type field_status =
-  | NoProjection of name
+  | NoProjection of Name.t
   | Projection of constr
 
 exception NotDefinable of record_error
@@ -148,7 +135,7 @@ let subst_projection fid l c =
 	    | NoProjection (Name id) -> bad_projs := id :: !bad_projs; mkRel k
 	    | NoProjection Anonymous ->
                 errorlabstrm "" (str "Field " ++ pr_id fid ++
-                  str " depends on the " ++ str (ordinal (k-depth-1)) ++ str
+                  str " depends on the " ++ pr_nth (k-depth-1) ++ str
                   " field which has no name.")
         else
 	  mkRel (k-lv)
@@ -156,12 +143,12 @@ let subst_projection fid l c =
   in
   let c' = lift 1 c in (* to get [c] defined in ctxt [[params;fields;x:ind]] *)
   let c'' = substrec 0 c' in
-  if !bad_projs <> [] then
+  if not (List.is_empty !bad_projs) then
     raise (NotDefinable (MissingProj (fid,List.rev !bad_projs)));
   c''
 
 let instantiate_possibly_recursive_type indsp paramdecls fields =
-  let subst = list_map_i (fun i _ -> mkRel i) 1 paramdecls in
+  let subst = List.map_i (fun i _ -> mkRel i) 1 paramdecls in
   Termops.substl_rel_context (subst@[mkInd indsp]) fields
 
 (* We build projections *)
@@ -176,7 +163,7 @@ let declare_projections indsp ?(kind=StructureComponent) ?name coers fieldimpls 
   let fields = instantiate_possibly_recursive_type indsp paramdecls fields in
   let lifted_fields = Termops.lift_rel_context 1 fields in
   let (_,kinds,sp_projs,_) =
-    list_fold_left3
+    List.fold_left3
       (fun (nfi,kinds,sp_projs,subst) coe (fi,optci,ti) impls ->
 	let (sp_projs,subst) =
 	  match fi with
@@ -202,13 +189,15 @@ let declare_projections indsp ?(kind=StructureComponent) ?name coers fieldimpls 
 	      let kn =
 	        try
 		  let cie = {
-		    const_entry_body = proj;
+                    const_entry_body =
+                      Future.from_val (proj,Declareops.no_seff);
                     const_entry_secctx = None;
                     const_entry_type = Some projtyp;
-                    const_entry_opaque = false } in
+                    const_entry_opaque = false;
+		    const_entry_inline_code = false } in
 		  let k = (DefinitionEntry cie,IsDefinition kind) in
 		  let kn = declare_constant ~internal:KernelSilent fid k in
-		  Flags.if_verbose message (string_of_id fid ^" is defined");
+		  Declare.definition_message fid;
 		  kn
                 with Type_errors.TypeError (ctx,te) ->
                   raise (NotDefinable (BadTypedProj (fid,ctx,te))) in
@@ -217,7 +206,7 @@ let declare_projections indsp ?(kind=StructureComponent) ?name coers fieldimpls 
 	      Impargs.maybe_declare_manual_implicits false refi impls;
 	      if coe then begin
 	        let cl = Class.class_of_global (IndRef indsp) in
-	        Class.try_add_new_coercion_with_source refi Global ~source:cl
+	        Class.try_add_new_coercion_with_source refi ~local:false ~source:cl
 	      end;
 	      let proj_args = (*Rel 1 refers to "x"*) paramargs@[mkRel 1] in
 	      let constr_fip = applist (constr_fi,proj_args) in
@@ -225,19 +214,21 @@ let declare_projections indsp ?(kind=StructureComponent) ?name coers fieldimpls 
             with NotDefinable why ->
 	      warning_or_error coe indsp why;
 	      (None::sp_projs,NoProjection fi::subst) in
-      (nfi-1,(fi, optci=None)::kinds,sp_projs,subst))
+      (nfi-1,(fi, Option.is_empty optci)::kinds,sp_projs,subst))
       (List.length fields,[],[],[]) coers (List.rev fields) (List.rev fieldimpls)
   in (kinds,sp_projs)
 
 let structure_signature ctx =
   let rec deps_to_evar evm l =
     match l with [] -> Evd.empty
-      | [(_,_,typ)] -> Evd.add evm (Evarutil.new_untyped_evar())
-	  (Evd.make_evar Environ.empty_named_context_val typ)
+      | [(_,_,typ)] ->
+        let env = Environ.empty_named_context_val in
+        let (evm, _) = Evarutil.new_pure_evar evm env typ in
+        evm
       | (_,_,typ)::tl ->
-	  let ev = Evarutil.new_untyped_evar() in
-	  let evm = Evd.add evm ev (Evd.make_evar Environ.empty_named_context_val typ) in
-	  let new_tl = Util.list_map_i
+          let env = Environ.empty_named_context_val in
+          let (evm, ev) = Evarutil.new_pure_evar evm env typ in
+	  let new_tl = Util.List.map_i
 	    (fun pos (n,c,t) -> n,c,
 	       Termops.replace_term (mkRel pos) (mkEvar(ev,[||])) t) 1 tl in
 	  deps_to_evar evm new_tl in
@@ -269,34 +260,25 @@ let declare_structure finite infer id idbuild paramimpls params arity fieldimpls
   let mie =
     { mind_entry_params = List.map degenerate_decl params;
       mind_entry_record = true;
-      mind_entry_finite = recursivity_flag_of_kind finite;
+      mind_entry_finite = finite != CoFinite;
       mind_entry_inds = [mie_ind] } in
   let kn = Command.declare_mutual_inductive_with_eliminations KernelVerbose mie [(paramimpls,[])] in
   let rsp = (kn,0) in (* This is ind path of idstruc *)
   let cstr = (rsp,1) in
   let kinds,sp_projs = declare_projections rsp ~kind ?name coers fieldimpls fields in
   let build = ConstructRef cstr in
-  if is_coe then Class.try_add_new_coercion build Global;
+  let () = if is_coe then Class.try_add_new_coercion build ~local:false in
   Recordops.declare_structure(rsp,cstr,List.rev kinds,List.rev sp_projs);
-  if infer then
-    Evd.fold (fun ev evi () -> Recordops.declare_method (ConstructRef cstr) ev sign) sign ();
   rsp
 
 let implicits_of_context ctx =
-  list_map_i (fun i name ->
+  List.map_i (fun i name ->
     let explname =
       match name with
       | Name n -> Some n
       | Anonymous -> None
     in ExplByPos (i, explname), (true, true, true))
     1 (List.rev (Anonymous :: (List.map pi1 ctx)))
-
-let declare_instance_cst glob con pri =
-  let instance = Typeops.type_of_constant (Global.env ()) con in
-  let _, r = decompose_prod_assum instance in
-    match class_of_constr r with
-      | Some (_, (tc, _)) -> add_instance (new_instance tc pri glob (ConstRef con))
-      | None -> errorlabstrm "" (Pp.strbrk "Constant does not build instances of a declared type class.")
 
 let declare_class finite def infer id idbuild paramimpls params arity fieldimpls fields
     ?(kind=StructureComponent) ?name is_coe coers priorities sign =
@@ -312,10 +294,12 @@ let declare_class finite def infer id idbuild paramimpls params arity fieldimpls
 	let class_body = it_mkLambda_or_LetIn field params in
 	let class_type = Option.map (fun ar -> it_mkProd_or_LetIn ar params) arity in
 	let class_entry =
-	  { const_entry_body = class_body;
+          { const_entry_body =
+              Future.from_val (class_body,Declareops.no_seff);
             const_entry_secctx = None;
 	    const_entry_type = class_type;
-	    const_entry_opaque = false }
+	    const_entry_opaque = false;
+	    const_entry_inline_code = false }
 	in
 	let cst = Declare.declare_constant (snd id)
 	  (DefinitionEntry class_entry, IsDefinition Definition)
@@ -324,10 +308,12 @@ let declare_class finite def infer id idbuild paramimpls params arity fieldimpls
 	let proj_type = it_mkProd_or_LetIn (mkProd(Name (snd id), inst_type, lift 1 field)) params in
 	let proj_body = it_mkLambda_or_LetIn (mkLambda (Name (snd id), inst_type, mkRel 1)) params in
 	let proj_entry =
-	  { const_entry_body = proj_body;
+          { const_entry_body =
+              Future.from_val (proj_body,Declareops.no_seff);
             const_entry_secctx = None;
 	    const_entry_type = Some proj_type;
-	    const_entry_opaque = false }
+	    const_entry_opaque = false;
+	    const_entry_inline_code = false }
 	in
 	let proj_cst = Declare.declare_constant proj_name
 	  (DefinitionEntry proj_entry, IsDefinition Definition)
@@ -336,7 +322,6 @@ let declare_class finite def infer id idbuild paramimpls params arity fieldimpls
 	Impargs.declare_manual_implicits false cref [paramimpls];
 	Impargs.declare_manual_implicits false (ConstRef proj_cst) [List.hd fieldimpls];
 	Classes.set_typeclass_transparency (EvalConstRef cst) false false;
-	if infer then Evd.fold (fun ev evi _ -> Recordops.declare_method (ConstRef cst) ev sign) sign ();
 	let sub = match List.hd coers with Some b -> Some ((if b then Backward else Forward), List.hd priorities) | None -> None in
 	  cref, [Name proj_name, sub, Some proj_cst]
     | _ ->
@@ -349,7 +334,7 @@ let declare_class finite def infer id idbuild paramimpls params arity fieldimpls
 			       Option.map (fun b -> if b then Backward, pri else Forward, pri) coe) 
 	  coers priorities 
 	in
-	  IndRef ind, (list_map3 (fun (id, _, _) b y -> (id, b, y))
+	  IndRef ind, (List.map3 (fun (id, _, _) b y -> (id, b, y))
 			 (List.rev fields) coers (Recordops.lookup_projections ind))
   in
   let ctx_context =
@@ -365,7 +350,7 @@ let declare_class finite def infer id idbuild paramimpls params arity fieldimpls
       cl_props = fields;
       cl_projs = projs }
   in
-(*     list_iter3 (fun p sub pri -> *)
+(*     List.iter3 (fun p sub pri -> *)
 (*       if sub then match p with (_, _, Some p) -> declare_instance_cst true p pri | _ -> ()) *)
 (*       k.cl_projs coers priorities; *)
   add_class k; impl
@@ -378,7 +363,6 @@ let interp_and_check_sort sort =
     else user_err_loc (constr_loc sort,"", str"Sort expected.")) sort
 
 open Vernacexpr
-open Autoinstance
 
 (* [fs] corresponds to fields and [ps] to parameters; [coers] is a
    list telling if the corresponding fields must me declared as coercions 
@@ -392,8 +376,10 @@ let definition_structure (kind,finite,infer,(is_coe,(loc,idstruc)),ps,cfs,idbuil
     | Vernacexpr.DefExpr ((_,Name id),_,_) -> id::acc
     | _ -> acc in
   let allnames =  idstruc::(List.fold_left extract_name [] fs) in
-  if not (list_distinct allnames) then error "Two objects have the same name";
-  if not (kind = Class false) && List.exists ((<>) None) priorities then
+  if not (List.distinct_f Id.compare allnames)
+  then error "Two objects have the same name";
+  let isnot_class = match kind with Class false -> false | _ -> true in
+  if isnot_class && List.exists (fun opt -> not (Option.is_empty opt)) priorities then
     error "Priorities only allowed for type class substructures";
   (* Now, younger decl in params and fields is on top *)
   let sc = interp_and_check_sort s in
@@ -405,13 +391,11 @@ let definition_structure (kind,finite,infer,(is_coe,(loc,idstruc)),ps,cfs,idbuil
     | Class def ->
 	let gr = declare_class finite def infer (loc,idstruc) idbuild
 	  implpars params sc implfs fields is_coe coers priorities sign in
-	if infer then search_record declare_class_instance gr sign;
 	gr
     | _ ->
 	let arity = Option.default (Termops.new_Type ()) sc in
 	let implfs = List.map
 	  (fun impls -> implpars @ Impargs.lift_implicits (succ (List.length params)) impls) implfs in
 	let ind = declare_structure finite infer idstruc idbuild implpars params arity implfs 
-	  fields is_coe (List.map (fun coe -> coe <> None) coers) sign in
-	if infer then search_record declare_record_instance (ConstructRef (ind,1)) sign;
+	  fields is_coe (List.map (fun coe -> not (Option.is_empty coe)) coers) sign in
 	IndRef ind

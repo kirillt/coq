@@ -6,12 +6,9 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pp
-open Util
-
 (** Error report. *)
 
-val print_loc : loc -> std_ppcmds
+val print_loc : Loc.t -> Pp.std_ppcmds
 
 (** Pre-explain a vernac interpretation error *)
 
@@ -20,5 +17,5 @@ val process_vernac_interp_error : exn -> exn
 (** General explain function. Should not be used directly now,
     see instead function [Errors.print] and variants *)
 
-val explain_exn_default : exn -> std_ppcmds
+val explain_exn_default : exn -> Pp.std_ppcmds
 

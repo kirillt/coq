@@ -6,7 +6,7 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-let _ = Coqide.ignore_break ()
+let _ = Coqide.set_signal_handlers ()
 let _ = GtkMain.Main.init ()
 
 (* We handle Gtk warning messages ourselves :
@@ -18,18 +18,25 @@ let catch_gtk_messages () =
     [`FLAG_RECURSION;`FLAG_FATAL;`ERROR;`CRITICAL;`WARNING;
      `MESSAGE;`INFO;`DEBUG]
   in
+  let log_level lvl =
+    let level_is tag = (lvl land Glib.Message.log_level tag) <> 0 in
+    if level_is `ERROR then `FATAL
+    else if level_is `CRITICAL then `ERROR
+    else if level_is `DEBUG then `DEBUG
+    else if level_is `WARNING then `WARNING
+    else if level_is `MESSAGE then `NOTICE
+    else `INFO
+  in
   let handler ~level msg =
     let header = "Coqide internal error: " in
-    let level_is tag = (level land Glib.Message.log_level tag) <> 0 in
-    if level_is `ERROR then
-      let () = GToolbox.message_box ~title:"Error" (header ^ msg) in
-      Coqide.crash_save 1
-    else if level_is `CRITICAL then
-      GToolbox.message_box ~title:"Error" (header ^ msg)
-    else if level_is `DEBUG || Sys.os_type = "Win32" then
-      Ideutils.prerr_endline msg (* no-op unless in debug mode *)
-    else
-      Printf.eprintf "%s\n" msg
+    match log_level level with
+      |`FATAL ->
+        let () = GToolbox.message_box ~title:"Error" (header ^ msg) in
+        Coqide.crash_save 1
+      |`ERROR -> GToolbox.message_box ~title:"Error" (header ^ msg)
+      |`DEBUG -> Minilib.log msg
+      |level when Sys.os_type = "Win32" -> Minilib.log ~level msg
+      |_ -> Printf.eprintf "%s\n" msg
   in
   let catch domain =
     ignore (Glib.Message.set_log_handler ~domain ~levels:all_levels handler)
@@ -38,10 +45,13 @@ let catch_gtk_messages () =
 
 let () = catch_gtk_messages ()
 
-(* We anticipate a bit the argument parsing and look for -debug *)
 
-let early_set_debug () =
-  Ideutils.debug := List.mem "-debug" (Array.to_list Sys.argv)
+
+(** System-dependent settings *)
+
+let os_specific_init () = ()
+
+(** Win32 *)
 
 (* On win32, we add the directory of coqide to the PATH at launch-time
    (this used to be done in a .bat script). *)
@@ -51,12 +61,23 @@ let set_win32_path () =
     (Filename.dirname Sys.executable_name ^ ";" ^
       (try Sys.getenv "PATH" with _ -> ""))
 
-(* On win32, in debug mode we duplicate stdout/stderr in a log file. *)
+(* On win32, since coqide is now console-free, we re-route stdout/stderr
+   to avoid Sys_error if someone writes to them. We write to a pipe which
+   is never read (by default) or to a temp log file (when in debug mode).
+*)
 
-let log_stdout_stderr () =
-  let (name,chan) = Filename.open_temp_file "coqide_" ".log" in
-  Coqide.logfile := Some name;
-  let out_descr = Unix.descr_of_out_channel chan in
+let reroute_stdout_stderr () =
+  (* We anticipate a bit the argument parsing and look for -debug *)
+  let debug = List.mem "-debug" (Array.to_list Sys.argv) in
+  Minilib.debug := debug;
+  let out_descr =
+    if debug then
+      let (name,chan) = Filename.open_temp_file "coqide_" ".log" in
+      Coqide.logfile := Some name;
+      Unix.descr_of_out_channel chan
+    else
+      snd (Unix.pipe ())
+  in
   Unix.set_close_on_exec out_descr;
   Unix.dup2 out_descr Unix.stdout;
   Unix.dup2 out_descr Unix.stderr
@@ -65,71 +86,66 @@ let log_stdout_stderr () =
 
 IFDEF WIN32 THEN
 external win32_kill : int -> unit = "win32_kill"
-external win32_interrupt_all : unit -> unit = "win32_interrupt_all"
-external win32_hide_console : unit -> unit = "win32_hide_console"
-
+external win32_interrupt : int -> unit = "win32_interrupt"
 let () =
-  set_win32_path ();
   Coq.killer := win32_kill;
-  Coq.interrupter := (fun pid -> win32_interrupt_all ());
-  early_set_debug ();
-  if !Ideutils.debug then
-    log_stdout_stderr ()
-  else
-    win32_hide_console ()
+  Coq.soft_killer := win32_kill;
+  Coq.interrupter := win32_interrupt;
+  set_win32_path ();
+  reroute_stdout_stderr ()
 END
+
+(** MacOSX *)
 
 IFDEF QUARTZ THEN
-  let osx = GosxApplication.osxapplication ()
-
-  let _ =
-    osx#connect#ns_application_open_file ~callback:(fun x -> Coqide.do_load x; true) in
-  let _ =
-    osx#connect#ns_application_block_termination ~callback:Coqide.forbid_quit_to_save in
-  ()
-END
+let osx = GosxApplication.osxapplication ()
 
 let () =
-  (try
-     let gtkrcdir = List.find
-       (fun x -> Sys.file_exists (Filename.concat x "coqide-gtk2rc"))
-       Minilib.xdg_config_dirs in
-     GtkMain.Rc.add_default_file (Filename.concat gtkrcdir "coqide-gtk2rc");
-   with Not_found -> ());
-  (* Statup preferences *)
-  begin
-    try Preferences.load_pref ()
-    with e ->
-      Ideutils.flash_info ("Could not load preferences ("^Printexc.to_string e^").");
-  end;
-(*    GtkData.AccelGroup.set_default_mod_mask
-      (Some [`CONTROL;`SHIFT;`MOD1;`MOD3;`MOD4]);*)
-  let argl = Array.to_list Sys.argv in
-  let argl = Coqide.read_coqide_args argl in
-  let files = Coq.filter_coq_opts (List.tl argl) in
-  let args = List.filter (fun x -> not (List.mem x files)) (List.tl argl) in
-  Coq.check_connection args;
-  Coqide.sup_args := args;
-  Coqide.main files;
-    if !Coq_config.with_geoproof then ignore (Thread.create Coqide.check_for_geoproof_input ())
+  let _ = osx#connect#ns_application_open_file
+    ~callback:(fun x -> Coqide.do_load x; true)
+  in
+  let _ = osx#connect#ns_application_block_termination
+    ~callback:Coqide.forbid_quit
+  in
+  let _ = osx#connect#ns_application_will_terminate
+    ~callback:Coqide.close_and_quit
+  in ()
 
-IFDEF QUARTZ THEN
-  let () =
-    GtkosxApplication.Application.set_menu_bar osx#as_osxapplication (GtkMenu.MenuShell.cast (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar")#as_widget) in
-  let () =
-    GtkosxApplication.Application.insert_app_menu_item osx#as_osxapplication (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar/Edit/Prefs")#as_widget 1 in
-  let () =
-    GtkosxApplication.Application.set_help_menu osx#as_osxapplication (Some (GtkMenu.MenuItem.cast (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar/Help")#as_widget)) in
+let os_specific_init () =
+  let () = GtkosxApplication.Application.set_menu_bar osx#as_osxapplication
+    (GtkMenu.MenuShell.cast
+       (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar")#as_widget)
+  in
+  let () = GtkosxApplication.Application.insert_app_menu_item
+    osx#as_osxapplication
+    (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar/Edit/Prefs")#as_widget 1
+  in
+  let () = GtkosxApplication.Application.set_help_menu osx#as_osxapplication
+    (Some (GtkMenu.MenuItem.cast
+             (Coqide_ui.ui_m#get_widget "/CoqIde MenuBar/Help")#as_widget))
+  in
   osx#ready ()
 END
 
-    while true do
-      try
-	GtkThread.main ()
-      with
-	| Sys.Break -> Ideutils.prerr_endline "Interrupted."
-	| e ->
-	    Minilib.safe_prerr_endline
-	      ("CoqIde unexpected error:" ^ (Printexc.to_string e));
-	    Coqide.crash_save 127
-    done
+let load_prefs () =
+  try Preferences.load_pref ()
+  with e -> Ideutils.flash_info
+    ("Could not load preferences ("^Printexc.to_string e^").")
+
+let () =
+  load_prefs ();
+  let argl = List.tl (Array.to_list Sys.argv) in
+  let argl = Coqide.read_coqide_args argl in
+  let files = Coq.filter_coq_opts argl in
+  let args = List.filter (fun x -> not (List.mem x files)) argl in
+  Coq.check_connection args;
+  Coqide.sup_args := args;
+  Coqide.main files;
+  if !Coq_config.with_geoproof then Coqide.check_for_geoproof_input ();
+  os_specific_init ();
+  try
+    GMain.main ();
+    failwith "Gtk loop ended"
+  with e ->
+    Minilib.log ("CoqIde unexpected error:" ^ Printexc.to_string e);
+    Coqide.crash_save 127

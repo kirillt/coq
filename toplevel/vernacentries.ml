@@ -9,10 +9,10 @@
 (* Concrete syntax of the mathematical vernacular MV V2.6 *)
 
 open Pp
+open Errors
 open Util
 open Flags
 open Names
-open Entries
 open Nameops
 open Term
 open Pfedit
@@ -24,32 +24,19 @@ open Tacinterp
 open Command
 open Goptions
 open Libnames
-open Nametab
+open Globnames
 open Vernacexpr
 open Decl_kinds
-open Topconstr
-open Pretyping
+open Constrexpr
 open Redexpr
-open Syntax_def
 open Lemmas
 open Declaremods
+open Misctypes
+open Locality
 
-(* Pcoq hooks *)
-
-type pcoq_hook = {
-  start_proof : unit -> unit;
-  solve : int -> unit;
-  abort : string -> unit;
-  search : searchable -> dir_path list * bool -> unit;
-  print_name : reference Genarg.or_by_notation -> unit;
-  print_check : Environ.env -> Environ.unsafe_judgment -> unit;
-  print_eval : Reductionops.reduction_function -> Environ.env -> Evd.evar_map -> constr_expr ->
-    Environ.unsafe_judgment -> unit;
-  show_goal : goal_reference -> unit
-}
-
-let pcoq = ref None
-let set_pcoq_hook f = pcoq := Some f
+let debug = false
+let prerr_endline =
+  if debug then prerr_endline else fun _ -> ()
 
 (* Misc *)
 
@@ -58,6 +45,9 @@ let cl_of_qualid = function
   | SortClass -> Classops.CL_SORT
   | RefClass r -> Class.class_of_global (Smartlocate.smart_global r)
 
+let scope_class_of_qualid qid =
+  Notation.scope_class_of_reference (Smartlocate.smart_global qid)
+
 (*******************)
 (* "Show" commands *)
 
@@ -65,77 +55,22 @@ let show_proof () =
   (* spiwack: this would probably be cooler with a bit of polishing. *)
   let p = Proof_global.give_me_the_proof () in
   let pprf = Proof.partial_proof p in
-  msgnl (Util.prlist_with_sep Pp.fnl Printer.pr_constr pprf)
+  msg_notice (Pp.prlist_with_sep Pp.fnl Printer.pr_constr pprf)
 
 let show_node () =
   (* spiwack: I'm have little clue what this function used to do. I deactivated it, 
       could, possibly, be cleaned away. (Feb. 2010) *)
   ()
 
-(* indentation code for Show Script, initially contributed
-   by D. de Rauglaudre *)
-
-let indent_script_item ((ng1,ngl1),nl,beginend,ppl) (cmd,ng) =
-  (* ng1 : number of goals remaining at the current level (before cmd)
-     ngl1 : stack of previous levels with their remaining goals
-     ng : number of goals after the execution of cmd
-     beginend : special indentation stack for { } *)
-  let ngprev = List.fold_left (+) ng1 ngl1 in
-  let new_ngl =
-    if ng > ngprev then
-      (* We've branched *)
-      (ng - ngprev + 1, ng1 - 1 :: ngl1)
-    else if ng < ngprev then
-      (* A subgoal have been solved. Let's compute the new current level
-	 by discarding all levels with 0 remaining goals. *)
-      let _ = assert (ng = ngprev - 1) in
-      let rec loop = function
-	| (0, ng2::ngl2) -> loop (ng2,ngl2)
-	| p -> p
-      in loop (ng1-1, ngl1)
-    else
-      (* Standard case, same goal number as before *)
-      (ng1, ngl1)
-  in
-  (* When a subgoal have been solved, separate this block by an empty line *)
-  let new_nl = (ng < ngprev)
-  in
-  (* Indentation depth *)
-  let ind = List.length ngl1
-  in
-  (* Some special handling of bullets and { }, to get a nicer display *)
-  let pred n = max 0 (n-1) in
-  let ind, nl, new_beginend = match cmd with
-    | VernacSubproof _ -> pred ind, nl, (pred ind)::beginend
-    | VernacEndSubproof -> List.hd beginend, false, List.tl beginend
-    | VernacBullet _ -> pred ind, nl, beginend
-    | _ -> ind, nl, beginend
-  in
-  let pp =
-    (if nl then fnl () else mt ()) ++
-    (hov (ind+1) (str (String.make ind ' ') ++ Ppvernac.pr_vernac cmd))
-  in
-  (new_ngl, new_nl, new_beginend, pp :: ppl)
-
-let show_script () =
-  let prf = Pfedit.get_current_proof_name () in
-  let cmds = Backtrack.get_script prf in
-  let _,_,_,indented_cmds =
-    List.fold_left indent_script_item ((1,[]),false,[],[]) cmds
-  in
-  let indented_cmds = List.rev (indented_cmds) in
-  msgnl (v 0 (Util.prlist_with_sep Pp.fnl (fun x -> x) indented_cmds))
-
 let show_thesis () =
-     msgnl (anomaly "TODO" )
+     msg_error (anomaly (Pp.str "TODO") )
 
 let show_top_evars () =
   (* spiwack: new as of Feb. 2010: shows goal evars in addition to non-goal evars. *)
   let pfts = get_pftreestate () in
   let gls = Proof.V82.subgoals pfts in
   let sigma = gls.Evd.sigma in
-  msg (pr_evars_int 1 (Evarutil.non_instantiated sigma))
-  
+  msg_notice (pr_evars_int 1 (Evarutil.non_instantiated sigma))
 
 let show_prooftree () =
   (* Spiwack: proof tree is currently not working *)
@@ -145,7 +80,9 @@ let enable_goal_printing = ref true
 
 let print_subgoals () =
   if !enable_goal_printing && is_verbose ()
-  then msg (pr_open_subgoals ())
+  then begin
+    msg_notice (pr_open_subgoals ())
+  end
 
 let try_print_subgoals () =
   Pp.flush_all();
@@ -156,18 +93,18 @@ let try_print_subgoals () =
 
 let show_intro all =
   let pf = get_pftreestate() in
-  let {Evd.it=gls ; sigma=sigma} = Proof.V82.subgoals pf in
-  let gl = {Evd.it=List.hd gls ; sigma = sigma} in
+  let {Evd.it=gls ; sigma=sigma; } = Proof.V82.subgoals pf in
+  let gl = {Evd.it=List.hd gls ; sigma = sigma; } in
   let l,_= decompose_prod_assum (strip_outer_cast (pf_concl gl)) in
   if all
   then
     let lid = Tactics.find_intro_names l gl in
-    msgnl (hov 0 (prlist_with_sep  spc pr_id lid))
+    msg_notice (hov 0 (prlist_with_sep  spc pr_id lid))
   else
     try
-      let n = list_last l in
-      msgnl (pr_id (List.hd (Tactics.find_intro_names [n] gl)))
-    with Failure "list_last" -> message ""
+      let n = List.last l in
+      msg_notice (pr_id (List.hd (Tactics.find_intro_names [n] gl)))
+    with Failure "List.last" -> ()
 
 (** Prepare a "match" template for a given inductive type.
     For each branch of the match, we list the constructor name
@@ -179,21 +116,21 @@ let make_cases s =
   let qualified_name = Libnames.qualid_of_string s in
   let glob_ref = Nametab.locate qualified_name in
   match glob_ref with
-    | Libnames.IndRef i ->
+    | Globnames.IndRef i ->
 	let {Declarations.mind_nparams = np}
 	    , {Declarations.mind_consnames = carr ; Declarations.mind_nf_lc = tarr }
 	      = Global.lookup_inductive i in
-	Util.array_fold_right2
+	Util.Array.fold_right2
 	  (fun consname typ l ->
-	     let al = List.rev (fst (Term.decompose_prod typ)) in
-	     let al = Util.list_skipn np al in
+	     let al = List.rev (fst (decompose_prod typ)) in
+	     let al = Util.List.skipn np al in
 	     let rec rename avoid = function
 	       | [] -> []
 	       | (n,_)::l ->
 		   let n' = Namegen.next_name_away_in_cases_pattern n avoid in
-		   string_of_id n' :: rename (n'::avoid) l in
+		   Id.to_string n' :: rename (n'::avoid) l in
 	     let al' = rename [] al in
-	     (string_of_id consname :: al') :: l)
+	     (Id.to_string consname :: al') :: l)
 	  carr tarr []
     | _ -> raise Not_found
 
@@ -201,36 +138,41 @@ let make_cases s =
 
 let show_match id =
   let patterns =
-    try make_cases (string_of_id (snd id))
+    try make_cases (Id.to_string (snd id))
     with Not_found -> error "Unknown inductive type."
   in
   let pr_branch l =
     str "| " ++ hov 1 (prlist_with_sep spc str l) ++ str " =>"
   in
-  msg (v 1 (str "match # with" ++ fnl () ++
+  msg_notice (v 1 (str "match # with" ++ fnl () ++
 	    prlist_with_sep fnl pr_branch patterns ++ fnl () ++ str "end" ++ fnl ()))
 
 (* "Print" commands *)
 
-let print_path_entry (s,l) =
-  (str (string_of_dirpath l) ++ str " " ++ tbrk (0,0) ++ str s)
+let print_path_entry p =
+  let dir = str (DirPath.to_string (Loadpath.logical p)) in
+  let path = str (Loadpath.physical p) in
+  (dir ++ str " " ++ tbrk (0, 0) ++ path)
 
 let print_loadpath dir =
-  let l = Library.get_full_load_paths () in
+  let l = Loadpath.get_load_paths () in
   let l = match dir with
-    | None -> l
-    | Some dir -> List.filter (fun (s,l) -> is_dirpath_prefix_of dir l) l in
-  msgnl (Pp.t (str "Logical Path:                 " ++
-		 tab () ++ str "Physical path:" ++ fnl () ++
-		 prlist_with_sep pr_fnl print_path_entry l))
+  | None -> l
+  | Some dir ->
+    let filter p = is_dirpath_prefix_of dir (Loadpath.logical p) in
+    List.filter filter l
+  in
+  Pp.t (str "Logical Path:                 " ++
+                tab () ++ str "Physical path:" ++ fnl () ++
+                prlist_with_sep fnl print_path_entry l)
 
 let print_modules () =
   let opened = Library.opened_libraries ()
   and loaded = Library.loaded_libraries () in
   (* we intersect over opened to preserve the order of opened since *)
   (* non-commutative operations (e.g. visibility) are done at import time *)
-  let loaded_opened = list_intersect opened loaded
-  and only_loaded = list_subtract loaded opened in
+  let loaded_opened = List.intersect DirPath.equal opened loaded
+  and only_loaded = List.subtract DirPath.equal loaded opened in
   str"Loaded and imported library files: " ++
   pr_vertical_list pr_dirpath loaded_opened ++ fnl () ++
   str"Loaded and not imported library files: " ++
@@ -243,23 +185,95 @@ let print_module r =
     let globdir = Nametab.locate_dir qid in
       match globdir with
 	  DirModule (dirpath,(mp,_)) ->
-	    msgnl (Printmod.print_module (Printmod.printable_body dirpath) mp)
+	    msg_notice (Printmod.print_module (Printmod.printable_body dirpath) mp)
 	| _ -> raise Not_found
   with
-      Not_found -> msgnl (str"Unknown Module " ++ pr_qualid qid)
+      Not_found -> msg_error (str"Unknown Module " ++ pr_qualid qid)
 
 let print_modtype r =
   let (loc,qid) = qualid_of_reference r in
   try
     let kn = Nametab.locate_modtype qid in
-    msgnl (Printmod.print_modtype kn)
+    msg_notice (Printmod.print_modtype kn)
   with Not_found ->
     (* Is there a module of this name ? If yes we display its type *)
     try
       let mp = Nametab.locate_module qid in
-      msgnl (Printmod.print_module false mp)
+      msg_notice (Printmod.print_module false mp)
     with Not_found ->
-      msgnl (str"Unknown Module Type or Module " ++ pr_qualid qid)
+      msg_error (str"Unknown Module Type or Module " ++ pr_qualid qid)
+
+let print_namespace ns =
+  let ns = List.rev (Names.DirPath.repr ns) in
+  (* [match_dirpath], [match_modulpath] are helpers for [matches]
+     which checks whether a constant is in the namespace [ns]. *)
+  let rec match_dirpath ns = function
+    | [] -> Some ns
+    | id::dir ->
+        begin match match_dirpath ns dir with
+        | Some [] as y -> y
+        | Some (a::ns') ->
+            if Names.Id.equal a id then Some ns'
+            else None
+        | None -> None
+        end
+  in
+  let rec match_modulepath ns = function
+    | MPbound _ -> None (* Not a proper namespace. *)
+    | MPfile dir -> match_dirpath ns (Names.DirPath.repr dir)
+    | MPdot (mp,lbl) ->
+        let id = Names.Label.to_id lbl in
+        begin match match_modulepath ns mp with
+        | Some [] as y -> y
+        | Some (a::ns') ->
+            if Names.Id.equal a id then Some ns'
+            else None
+        | None -> None
+        end
+  in
+  (* [qualified_minus n mp] returns a list of qualifiers representing
+     [mp] except the [n] first (in the concrete syntax order).  The
+     idea is that if [mp] matches [ns], then [qualified_minus mp
+     (length ns)] will be the correct representation of [mp] assuming
+     [ns] is imported. *)
+  (* precondition: [mp] matches some namespace of length [n] *)
+  let qualified_minus n mp =
+    let rec list_of_modulepath = function
+      | MPbound _ -> assert false (* MPbound never matches *)
+      | MPfile dir -> Names.DirPath.repr dir
+      | MPdot (mp,lbl) -> (Names.Label.to_id lbl)::(list_of_modulepath mp)
+    in
+    snd (Util.List.chop n (List.rev (list_of_modulepath mp)))
+  in
+  let print_list pr l = prlist_with_sep (fun () -> str".") pr l in
+  let print_kn kn =
+    (* spiwack: I'm ignoring the dirpath, is that bad? *)
+    let (mp,_,lbl) = Names.repr_kn kn in
+    let qn = (qualified_minus (List.length ns) mp)@[Names.Label.to_id lbl] in
+    print_list pr_id qn
+  in
+  let print_constant k body =
+    let t =
+      match body.Declarations.const_type with
+      | Declarations.PolymorphicArity (ctx,a) -> mkArity (ctx, Term.Type a.Declarations.poly_level)
+      | Declarations.NonPolymorphicType t -> t
+    in
+    print_kn k ++ str":" ++ spc() ++ Printer.pr_type t
+  in
+  let matches mp = match match_modulepath ns mp with
+  | Some [] -> true
+  | _ -> false in
+  let constants = (Environ.pre_env (Global.env ())).Pre_env.env_globals.Pre_env.env_constants in
+  let constants_in_namespace =
+    Cmap_env.fold (fun c (body,_) acc ->
+      let kn = user_con c in
+      if matches (modpath kn) then
+        acc++fnl()++hov 2 (print_constant kn body)
+      else
+        acc
+    ) constants (str"")
+  in
+  msg_notice ((print_list pr_id ns)++str":"++fnl()++constants_in_namespace)
 
 let dump_universes_gen g s =
   let output = open_out s in
@@ -293,9 +307,8 @@ let dump_universes_gen g s =
   try
     Univ.dump_universes output_constraint g;
     close ();
-    msgnl (str ("Universes written to file \""^s^"\"."))
-  with
-      reraise -> close (); raise reraise
+    msg_info (str ("Universes written to file \""^s^"\"."))
+  with reraise -> close (); raise reraise
 
 let dump_universes sorted s =
   let g = Global.universes () in
@@ -306,111 +319,129 @@ let dump_universes sorted s =
 (* "Locate" commands *)
 
 let locate_file f =
-  let _,file = System.find_file_in_path ~warn:false (Library.get_load_paths ()) f in
-  msgnl (str file)
+  let paths = Loadpath.get_paths () in
+  let _, file = System.find_file_in_path ~warn:false paths f in
+  str file
 
 let msg_found_library = function
   | Library.LibLoaded, fulldir, file ->
-      msgnl (hov 0
+      msg_info (hov 0
 	(pr_dirpath fulldir ++ strbrk " has been loaded from file " ++
 	 str file))
   | Library.LibInPath, fulldir, file ->
-      msgnl (hov 0
+      msg_info (hov 0
 	(pr_dirpath fulldir ++ strbrk " is bound to file " ++ str file))
-let msg_notfound_library loc qid = function
-  | Library.LibUnmappedDir ->
-      let dir = fst (repr_qualid qid) in
-      user_err_loc (loc,"locate_library",
-        strbrk "Cannot find a physical path bound to logical path " ++
-           pr_dirpath dir ++ str".")
-  | Library.LibNotFound ->
-      msgnl (hov 0
-	(strbrk "Unable to locate library " ++ pr_qualid qid ++ str"."))
-  | e -> assert false
+
+let err_unmapped_library loc qid =
+  let dir = fst (repr_qualid qid) in
+  user_err_loc
+    (loc,"locate_library",
+     strbrk "Cannot find a physical path bound to logical path " ++
+       pr_dirpath dir ++ str".")
+
+let err_notfound_library loc qid =
+  msg_error
+    (hov 0 (strbrk "Unable to locate library " ++ pr_qualid qid ++ str"."))
 
 let print_located_library r =
   let (loc,qid) = qualid_of_reference r in
   try msg_found_library (Library.locate_qualified_library false qid)
-  with e when Errors.noncritical e -> msg_notfound_library loc qid e
+  with
+    | Library.LibUnmappedDir -> err_unmapped_library loc qid
+    | Library.LibNotFound -> err_notfound_library loc qid
 
 let print_located_module r =
   let (loc,qid) = qualid_of_reference r in
-  let msg =
-    try
-      let dir = Nametab.full_name_module qid in
-      str "Module " ++ pr_dirpath dir
-    with Not_found ->
-      (if fst (repr_qualid qid) = empty_dirpath then
-	str "No module is referred to by basename "
-      else
-	str "No module is referred to by name ") ++ pr_qualid qid
-  in msgnl msg
+  try
+    let dir = Nametab.full_name_module qid in
+    msg_notice (str "Module " ++ pr_dirpath dir)
+  with Not_found ->
+    if DirPath.is_empty (fst (repr_qualid qid)) then
+      msg_error (str "No module is referred to by basename" ++ spc () ++ pr_qualid qid)
+    else
+      msg_error (str "No module is referred to by name" ++ spc () ++ pr_qualid qid)
 
 let print_located_tactic r =
   let (loc,qid) = qualid_of_reference r in
-  msgnl
-    (try
-      str "Ltac " ++
-      pr_path (Nametab.path_of_tactic (Nametab.locate_tactic qid))
-     with Not_found ->
-	str "No Ltac definition is referred to by " ++ pr_qualid qid)
+  try
+    let path = Nametab.path_of_tactic (Nametab.locate_tactic qid) in
+    msg_notice (str "Ltac " ++ pr_path path)
+  with Not_found ->
+    msg_error (str "No Ltac definition is referred to by " ++ pr_qualid qid)
 
 let smart_global r =
   let gr = Smartlocate.smart_global r in
-    Dumpglob.add_glob (Genarg.loc_of_or_by_notation loc_of_reference r) gr;
+    Dumpglob.add_glob (Constrarg.loc_of_or_by_notation loc_of_reference r) gr;
     gr
 
 let dump_global r =
   try
     let gr = Smartlocate.smart_global r in
-    Dumpglob.add_glob (Genarg.loc_of_or_by_notation loc_of_reference r) gr
+    Dumpglob.add_glob (Constrarg.loc_of_or_by_notation loc_of_reference r) gr
   with e when Errors.noncritical e -> ()
 (**********)
 (* Syntax *)
 
-let vernac_syntax_extension = Metasyntax.add_syntax_extension
+let vernac_syntax_extension locality local =
+  let local = enforce_module_locality locality local in
+  Metasyntax.add_syntax_extension local
 
 let vernac_delimiters = Metasyntax.add_delimiters
 
 let vernac_bind_scope sc cll =
-  List.iter (fun cl -> Metasyntax.add_class_scope sc (cl_of_qualid cl)) cll
+  Metasyntax.add_class_scope sc (List.map scope_class_of_qualid cll)
 
-let vernac_open_close_scope = Notation.open_close_scope
+let vernac_open_close_scope locality local (b,s) =
+  let local = enforce_section_locality locality local in
+  Notation.open_close_scope (local,b,s)
 
-let vernac_arguments_scope local r scl =
+let vernac_arguments_scope locality r scl =
+  let local = make_section_locality locality in
   Notation.declare_arguments_scope local (smart_global r) scl
 
-let vernac_infix = Metasyntax.add_infix
+let vernac_infix locality local =
+  let local = enforce_module_locality locality local in
+  Metasyntax.add_infix local
 
-let vernac_notation = Metasyntax.add_notation
+let vernac_notation locality local =
+  let local = enforce_module_locality locality local in
+  Metasyntax.add_notation local
 
 (***********)
 (* Gallina *)
 
 let start_proof_and_print k l hook =
-  check_locality (); (* early check, cf #2975 *)
   start_proof_com k l hook;
-  print_subgoals ();
-  if !pcoq <> None then (Option.get !pcoq).start_proof ()
+  print_subgoals ()
 
-let vernac_definition (local,k) (loc,id as lid) def hook =
-  if local = Local then Dumpglob.dump_definition lid true "var"
-  else Dumpglob.dump_definition lid false "def";
+let no_hook _ _ = ()
+
+let vernac_definition_hook = function
+| Coercion -> Class.add_coercion_hook
+| CanonicalStructure -> (fun _ -> Recordops.declare_canonical_structure)
+| SubClass -> Class.add_subclass_hook
+| _ -> no_hook
+
+let vernac_definition locality (local,k) (loc,id as lid) def =
+  let local = enforce_locality_exp locality local in
+  let hook = vernac_definition_hook k in
+  let () = match local with
+  | Discharge -> Dumpglob.dump_definition lid true "var"
+  | Local | Global -> Dumpglob.dump_definition lid false "def"
+  in
   (match def with
     | ProveBody (bl,t) ->   (* local binders, typ *)
- 	let hook _ _ = () in
  	  start_proof_and_print (local,DefinitionBody Definition)
-	    [Some lid, (bl,t,None)] hook
+	    [Some lid, (bl,t,None)] no_hook
     | DefineBody (bl,red_option,c,typ_opt) ->
  	let red_option = match red_option with
           | None -> None
           | Some r ->
 	      let (evc,env)= get_current_context () in
  		Some (snd (interp_redexp env evc r)) in
-	let ce,imps = interp_definition bl red_option c typ_opt in
-	declare_definition id (local,k) ce imps hook)
+	do_definition id (local,k) bl red_option c typ_opt hook)
 
-let vernac_start_proof kind l lettop hook =
+let vernac_start_proof kind l lettop =
   if Dumpglob.dump () then
     List.iter (fun (id, _) ->
       match id with
@@ -420,23 +451,23 @@ let vernac_start_proof kind l lettop hook =
     if lettop then
       errorlabstrm "Vernacentries.StartProof"
 	(str "Let declarations can only be used in proof editing mode.");
-  start_proof_and_print (Global, Proof kind) l hook
+  start_proof_and_print (Global, Proof kind) l no_hook
 
 let qed_display_script = ref true
+let show_script = ref (fun ?proof () -> ())
 
-let vernac_end_proof = function
+let vernac_end_proof ?proof = function
   | Admitted ->
-    Backtrack.mark_unreachable [Pfedit.get_current_proof_name ()];
-    admit ()
+    admit ();
+    Pp.feedback Interface.AddedAxiom
   | Proved (is_opaque,idopt) ->
-    let prf = Pfedit.get_current_proof_name () in
-    if is_verbose () && !qed_display_script then (show_script (); msg (fnl()));
+    if is_verbose () && !qed_display_script then !show_script ?proof ();
     begin match idopt with
-    | None -> save_named is_opaque
-    | Some ((_,id),None) -> save_anonymous is_opaque id
-    | Some ((_,id),Some kind) -> save_anonymous_with_strength kind is_opaque id
-    end;
-    Backtrack.mark_unreachable [prf]
+    | None -> save_named ?proof is_opaque
+    | Some ((_,id),None) -> save_anonymous ?proof is_opaque id
+    | Some ((_,id),Some kind) -> 
+        save_anonymous_with_strength ?proof kind is_opaque id
+    end
 
   (* A stupid macro that should be replaced by ``Exact c. Save.'' all along
      the theories [??] *)
@@ -444,20 +475,21 @@ let vernac_end_proof = function
 let vernac_exact_proof c =
   (* spiwack: for simplicity I do not enforce that "Proof proof_term" is
      called only at the begining of a proof. *)
-  let prf = Pfedit.get_current_proof_name () in
-  by (Tactics.exact_proof c);
+  let status = by (Tactics.New.exact_proof c) in
   save_named true;
-  Backtrack.mark_unreachable [prf]
+  if not status then Pp.feedback Interface.AddedAxiom
 
-let vernac_assumption kind l nl=
-  let global = fst kind = Global in
-    List.iter (fun (is_coe,(idl,c)) ->
-      if Dumpglob.dump () then
-	List.iter (fun lid ->
-	  if global then Dumpglob.dump_definition lid false "ax"
-	  else Dumpglob.dump_definition lid true "var") idl;
-      let t,imps = interp_assumption [] c in
-      declare_assumptions idl is_coe kind t imps false nl) l
+let vernac_assumption locality (local, kind) l nl =
+  let local = enforce_locality_exp locality local in
+  let global = local == Global in
+  let kind = local, kind in
+  List.iter (fun (is_coe,(idl,c)) ->
+    if Dumpglob.dump () then
+      List.iter (fun lid ->
+	if global then Dumpglob.dump_definition lid false "ax"
+	else Dumpglob.dump_definition lid true "var") idl) l;
+  let status = do_assumptions kind nl l in
+  if not status then Pp.feedback Interface.AddedAxiom
 
 let vernac_record k finite infer struc binders sort nameopt cfs =
   let const = match nameopt with
@@ -493,27 +525,29 @@ let vernac_inductive finite infer indl =
 	  (((coe', AssumExpr ((loc, Name id), ce)), None), [])
       in vernac_record (Class true) finite infer id bl c None [f]
   | [ ( id , bl , c , Class true, _), _ ] ->
-      Util.error "Definitional classes must have a single method"
+      Errors.error "Definitional classes must have a single method"
   | [ ( id , bl , c , Class false, Constructors _), _ ] ->
-      Util.error "Inductive classes not supported"
+      Errors.error "Inductive classes not supported"
   | [ ( _ , _ , _ , _, RecordDecl _ ) , _ ] ->
-      Util.error "where clause not supported for (co)inductive records"
+      Errors.error "where clause not supported for (co)inductive records"
   | _ -> let unpack = function
       | ( (_, id) , bl , c , _ , Constructors l ) , ntn  -> ( id , bl , c , l ) , ntn
-      | _ -> Util.error "Cannot handle mutually (co)inductive records."
+      | _ -> Errors.error "Cannot handle mutually (co)inductive records."
     in
     let indl = List.map unpack indl in
-    do_mutual_inductive indl (recursivity_flag_of_kind finite)
+    do_mutual_inductive indl (finite != CoFinite)
 
-let vernac_fixpoint l =
+let vernac_fixpoint locality local l =
+  let local = enforce_locality_exp locality local in
   if Dumpglob.dump () then
     List.iter (fun ((lid, _, _, _, _), _) -> Dumpglob.dump_definition lid false "def") l;
-  do_fixpoint l
+  do_fixpoint local l
 
-let vernac_cofixpoint l =
+let vernac_cofixpoint locality local l =
+  let local = enforce_locality_exp locality local in
   if Dumpglob.dump () then
     List.iter (fun ((lid, _, _, _), _) -> Dumpglob.dump_definition lid false "def") l;
-  do_cofixpoint l
+  do_cofixpoint local l
 
 let vernac_scheme l =
   if Dumpglob.dump () then
@@ -528,7 +562,7 @@ let vernac_scheme l =
 let vernac_combined_scheme lid l =
   if Dumpglob.dump () then
     (Dumpglob.dump_definition lid false "def";
-     List.iter (fun lid -> dump_global (Genarg.AN (Ident lid))) l);
+     List.iter (fun lid -> dump_global (Misctypes.AN (Ident lid))) l);
  Indschemes.do_combined_scheme lid l
 
 (**********************)
@@ -548,19 +582,18 @@ let vernac_declare_module export (loc, id) binders_ast mty_ast =
     error "Modules and Module Types are not allowed inside sections.";
   let binders_ast = List.map
    (fun (export,idl,ty) ->
-     if export <> None then
+     if not (Option.is_empty export) then
       error ("Arguments of a functor declaration cannot be exported. " ^
        "Remove the \"Export\" and \"Import\" keywords from every functor " ^
        "argument.")
      else (idl,ty)) binders_ast in
-  let mp = Declaremods.declare_module
-    Modintern.interp_modtype Modintern.interp_modexpr
-    Modintern.interp_modexpr_or_modtype
-    id binders_ast (Enforce mty_ast) []
+  let mp =
+    Declaremods.declare_module Modintern.interp_module_ast
+      id binders_ast (Enforce mty_ast) []
   in
-    Dumpglob.dump_moddef loc mp "mod";
-    if_verbose message ("Module "^ string_of_id id ^" is declared");
-    Option.iter (fun export -> vernac_import export [Ident (dummy_loc,id)]) export
+  Dumpglob.dump_moddef loc mp "mod";
+  if_verbose msg_info (str ("Module "^ Id.to_string id ^" is declared"));
+  Option.iter (fun export -> vernac_import export [Ident (Loc.ghost,id)]) export
 
 let vernac_define_module export (loc, id) binders_ast mty_ast_o mexpr_ast_l =
   (* We check the state of the system (in section, in module type)
@@ -575,40 +608,40 @@ let vernac_define_module export (loc, id) binders_ast mty_ast_o mexpr_ast_l =
          (fun (export,idl,ty) (args,argsexport) ->
            (idl,ty)::args, (List.map (fun (_,i) -> export,i)idl)@argsexport) binders_ast
              ([],[]) in
-       let mp = Declaremods.start_module Modintern.interp_modtype export
-	 id binders_ast mty_ast_o
+       let mp =
+         Declaremods.start_module Modintern.interp_module_ast
+           export id binders_ast mty_ast_o
        in
-	 Dumpglob.dump_moddef loc mp "mod";
-	 if_verbose message
-	   ("Interactive Module "^ string_of_id id ^" started") ;
-         List.iter
-           (fun (export,id) ->
-             Option.iter
-               (fun export -> vernac_import export [Ident (dummy_loc,id)]) export
-           ) argsexport
+       Dumpglob.dump_moddef loc mp "mod";
+       if_verbose msg_info
+         (str ("Interactive Module "^ Id.to_string id ^" started"));
+       List.iter
+         (fun (export,id) ->
+           Option.iter
+             (fun export -> vernac_import export [Ident (Loc.ghost,id)]) export
+         ) argsexport
     | _::_ ->
        let binders_ast = List.map
         (fun (export,idl,ty) ->
-          if export <> None then
+          if not (Option.is_empty export) then
            error ("Arguments of a functor definition can be imported only if" ^
                   " the definition is interactive. Remove the \"Export\" and " ^
                   "\"Import\" keywords from every functor argument.")
           else (idl,ty)) binders_ast in
-       let mp =	Declaremods.declare_module
-	  Modintern.interp_modtype Modintern.interp_modexpr
-          Modintern.interp_modexpr_or_modtype
-	  id binders_ast mty_ast_o mexpr_ast_l
+       let mp =
+         Declaremods.declare_module Modintern.interp_module_ast
+	   id binders_ast mty_ast_o mexpr_ast_l
        in
-	 Dumpglob.dump_moddef loc mp "mod";
-	 if_verbose message
-	   ("Module "^ string_of_id id ^" is defined");
-         Option.iter (fun export -> vernac_import export [Ident (dummy_loc,id)])
-           export
+       Dumpglob.dump_moddef loc mp "mod";
+       if_verbose msg_info
+	 (str ("Module "^ Id.to_string id ^" is defined"));
+       Option.iter (fun export -> vernac_import export [Ident (Loc.ghost,id)])
+         export
 
 let vernac_end_module export (loc,id as lid) =
   let mp = Declaremods.end_module () in
   Dumpglob.dump_modref loc mp "mod";
-  if_verbose message ("Module "^ string_of_id id ^" is defined") ;
+  if_verbose msg_info (str ("Module "^ Id.to_string id ^" is defined"));
   Option.iter (fun export -> vernac_import export [Ident lid]) export
 
 let vernac_declare_module_type (loc,id) binders_ast mty_sign mty_ast_l =
@@ -618,45 +651,48 @@ let vernac_declare_module_type (loc,id) binders_ast mty_sign mty_ast_l =
   match mty_ast_l with
     | [] ->
        check_no_pending_proofs ();
-       let binders_ast,argsexport =       
+       let binders_ast,argsexport =
 	 List.fold_right
          (fun (export,idl,ty) (args,argsexport) ->
            (idl,ty)::args, (List.map (fun (_,i) -> export,i)idl)@argsexport) binders_ast
              ([],[]) in
-       
-       let mp = Declaremods.start_modtype
-	 Modintern.interp_modtype id binders_ast mty_sign in
-        Dumpglob.dump_moddef loc mp "modtype";
-	if_verbose message
-	  ("Interactive Module Type "^ string_of_id id ^" started");
-        List.iter
+
+       let mp =
+         Declaremods.start_modtype Modintern.interp_module_ast
+           id binders_ast mty_sign
+       in
+       Dumpglob.dump_moddef loc mp "modtype";
+       if_verbose msg_info
+	 (str ("Interactive Module Type "^ Id.to_string id ^" started"));
+       List.iter
          (fun (export,id) ->
            Option.iter
-            (fun export -> vernac_import export [Ident (dummy_loc,id)]) export
+             (fun export -> vernac_import export [Ident (Loc.ghost,id)]) export
          ) argsexport
 
     | _ :: _ ->
 	let binders_ast = List.map
           (fun (export,idl,ty) ->
-            if export <> None then
+            if not (Option.is_empty export) then
               error ("Arguments of a functor definition can be imported only if" ^
 			" the definition is interactive. Remove the \"Export\" " ^
 			"and \"Import\" keywords from every functor argument.")
             else (idl,ty)) binders_ast in
-	let mp = Declaremods.declare_modtype Modintern.interp_modtype
-          Modintern.interp_modexpr_or_modtype
-	  id binders_ast mty_sign mty_ast_l in
-          Dumpglob.dump_moddef loc mp "modtype";
-	  if_verbose message
-	    ("Module Type "^ string_of_id id ^" is defined")
+	let mp =
+          Declaremods.declare_modtype Modintern.interp_module_ast
+	    id binders_ast mty_sign mty_ast_l
+        in
+        Dumpglob.dump_moddef loc mp "modtype";
+	if_verbose msg_info
+	  (str ("Module Type "^ Id.to_string id ^" is defined"))
 
 let vernac_end_modtype (loc,id) =
   let mp = Declaremods.end_modtype () in
   Dumpglob.dump_modref loc mp "modtype";
-  if_verbose message ("Module Type "^ string_of_id id ^" is defined")
+  if_verbose msg_info (str ("Module Type "^ Id.to_string id ^" is defined"))
 
 let vernac_include l =
-  Declaremods.declare_include Modintern.interp_modexpr_or_modtype l
+  Declaremods.declare_include Modintern.interp_module_ast l
 
 (**********************)
 (* Gallina extensions *)
@@ -670,7 +706,7 @@ let vernac_begin_section (_, id as lid) =
 
 let vernac_end_section (loc,_) =
   Dumpglob.dump_reference loc
-    (string_of_dirpath (Lib.current_dirpath true)) "<>" "sec";
+    (DirPath.to_string (Lib.current_dirpath true)) "<>" "sec";
   Lib.close_section ()
 
 (* Dispatcher of the "End" command *)
@@ -685,7 +721,7 @@ let vernac_end_segment (_,id as lid) =
 
 (* Libraries *)
 
-let vernac_require import _ qidl =
+let vernac_require import qidl =
   let qidl = List.map qualid_of_reference qidl in
   let modrefl = Flags.silently (List.map Library.try_locate_qualified_library) qidl in
   if Dumpglob.dump () then
@@ -697,29 +733,34 @@ let vernac_require import _ qidl =
 let vernac_canonical r =
   Recordops.declare_canonical_structure (smart_global r)
 
-let vernac_coercion stre ref qids qidt =
+let vernac_coercion locality local ref qids qidt =
+  let local = enforce_locality locality local in
   let target = cl_of_qualid qidt in
   let source = cl_of_qualid qids in
   let ref' = smart_global ref in
-  Class.try_add_new_coercion_with_target ref' stre ~source ~target;
-  if_verbose msgnl (pr_global ref' ++ str " is now a coercion")
+  Class.try_add_new_coercion_with_target ref' ~local ~source ~target;
+  if_verbose msg_info (pr_global ref' ++ str " is now a coercion")
 
-let vernac_identity_coercion stre id qids qidt =
+let vernac_identity_coercion locality local id qids qidt =
+  let local = enforce_locality locality local in
   let target = cl_of_qualid qidt in
   let source = cl_of_qualid qids in
-  Class.try_add_new_identity_coercion id stre ~source ~target
+  Class.try_add_new_identity_coercion id ~local ~source ~target
 
 (* Type classes *)
 
-let vernac_instance abst glob sup inst props pri =
+let vernac_instance abst locality sup inst props pri =
+  let global = not (make_section_locality locality) in
   Dumpglob.dump_constraint inst false "inst";
-  ignore(Classes.new_instance ~abstract:abst ~global:glob sup inst props pri)
+  ignore(Classes.new_instance 
+    ~abstract:abst ~global sup inst props pri)
 
 let vernac_context l =
-  Classes.context l
+  if not (Classes.context l) then Pp.feedback Interface.AddedAxiom
 
-let vernac_declare_instances glob ids =
-  List.iter (fun (id) -> Classes.existing_instance glob id) ids
+let vernac_declare_instances locality ids pri =
+  let glob = not (make_section_locality locality) in
+  List.iter (fun id -> Classes.existing_instance glob id pri) ids
 
 let vernac_declare_class id =
   Classes.declare_class id
@@ -734,15 +775,18 @@ let focus_command_cond = Proof.no_cond command_focus
 let vernac_solve n tcom b =
   if not (refining ()) then
     error "Unknown command of the non proof-editing mode.";
-  let p = Proof_global.give_me_the_proof () in
-  Proof.transaction p begin fun () ->
-    solve_nth n (Tacinterp.hide_interp tcom None) ~with_end_tac:b;
+  let status = Proof_global.with_current_proof (fun etac p ->
+    let with_end_tac = if b then Some etac else None in
+    let global = match n with SelectAll -> true | _ -> false in
+    let (p,status) =
+      solve n (Tacinterp.hide_interp global tcom None) ?with_end_tac p
+    in
     (* in case a strict subtree was completed,
        go back to the top of the prooftree *)
-    Proof_global.maximal_unfocus command_focus p;
+    let p = Proof.maximal_unfocus command_focus p in
+    p,status) in
     print_subgoals();
-    if !pcoq <> None then (Option.get !pcoq).solve n
-  end
+    if not status then Pp.feedback Interface.AddedAxiom
  
 
   (* A command which should be a tactic. It has been
@@ -756,54 +800,57 @@ let vernac_solve_existential = instantiate_nth_evar_com
 let vernac_set_end_tac tac =
   if not (refining ()) then
     error "Unknown command of the non proof-editing mode.";
-  if tac <> (Tacexpr.TacId []) then set_end_tac (Tacinterp.interp tac) else ()
+  match tac with
+  | Tacexpr.TacId [] -> ()
+  | _ -> set_end_tac tac
     (* TO DO verifier s'il faut pas mettre exist s | TacId s ici*)
 
 let vernac_set_used_variables l =
   let l = List.map snd l in
-  if not (list_distinct l) then error "Used variables list contains duplicates";
+  if not (List.distinct_f Id.compare l)
+  then error "Used variables list contains duplicates";
   let vars = Environ.named_context (Global.env ()) in
   List.iter (fun id -> 
-    if not (List.exists (fun (id',_,_) -> id = id') vars) then
-      error ("Unknown variable: " ^ string_of_id id))
+    if not (List.exists (fun (id',_,_) -> Id.equal id id') vars) then
+      error ("Unknown variable: " ^ Id.to_string id))
     l;
   set_used_variables l
 
 (*****************************)
 (* Auxiliary file management *)
 
-let vernac_require_from export spec filename =
-  Library.require_library_from_file None
-    (System.expand_path_macros filename)
-    export
+let expand filename =
+  Envars.expand_path_macros ~warn:(fun x -> msg_warning (str x)) filename
+
+let vernac_require_from export filename =
+  Library.require_library_from_file None (expand filename) export
 
 let vernac_add_loadpath isrec pdir ldiropt =
-  let pdir = System.expand_path_macros pdir in
-  let alias = match ldiropt with
-    | None -> Nameops.default_root_prefix
-    | Some ldir -> ldir in
-  (if isrec then Mltop.add_rec_path else Mltop.add_path) ~unix_path:pdir ~coq_root:alias
+  let pdir = expand pdir in
+  let alias = Option.default Nameops.default_root_prefix ldiropt in
+  (if isrec then Mltop.add_rec_path else Mltop.add_path)
+    ~unix_path:pdir ~coq_root:alias
 
 let vernac_remove_loadpath path =
-  Library.remove_load_path (System.expand_path_macros path)
+  Loadpath.remove_load_path (expand path)
 
   (* Coq syntax for ML or system commands *)
 
 let vernac_add_ml_path isrec path =
-  (if isrec then Mltop.add_rec_ml_dir else Mltop.add_ml_dir)
-    (System.expand_path_macros path)
+  (if isrec then Mltop.add_rec_ml_dir else Mltop.add_ml_dir) (expand path)
 
-let vernac_declare_ml_module local l =
-  Mltop.declare_ml_modules local (List.map System.expand_path_macros l)
+let vernac_declare_ml_module locality l =
+  let local = make_locality locality in
+  Mltop.declare_ml_modules local (List.map expand l)
 
 let vernac_chdir = function
-  | None -> message (Sys.getcwd())
+  | None -> msg_notice (str (Sys.getcwd()))
   | Some path ->
       begin
-	try Sys.chdir (System.expand_path_macros path)
-	with Sys_error str -> warning ("Cd failed: " ^ str)
+	try Sys.chdir (expand path)
+	with Sys_error err -> msg_warning (str ("Cd failed: " ^ err))
       end;
-      if_verbose message (Sys.getcwd())
+      if_verbose msg_info (str (Sys.getcwd()))
 
 
 (********************)
@@ -820,42 +867,49 @@ let vernac_restore_state file =
 (************)
 (* Commands *)
 
-let vernac_declare_tactic_definition (local,x,def) =
-  Tacinterp.add_tacdef local x def
+let vernac_declare_tactic_definition locality (x,def) =
+  let local = make_module_locality locality in
+  Tacenv.register_ltac local x def
 
-let vernac_create_hintdb local id b =
+let vernac_create_hintdb locality id b =
+  let local = make_module_locality locality in
   Auto.create_hint_db local id full_transparent_state b
 
-let vernac_remove_hints local dbs ids =
+let vernac_remove_hints locality dbs ids =
+  let local = make_module_locality locality in
   Auto.remove_hints local dbs (List.map Smartlocate.global_with_alias ids)
 
-let vernac_hints local lb h =
+let vernac_hints locality local lb h =
+  let local = enforce_module_locality locality local in
   Auto.add_hints local lb (Auto.interp_hints h)
 
-let vernac_syntactic_definition lid =
+let vernac_syntactic_definition locality lid x local y =
   Dumpglob.dump_definition lid false "syndef";
-  Metasyntax.add_syntactic_definition (snd lid)
+  let local = enforce_module_locality locality local in
+  Metasyntax.add_syntactic_definition (snd lid) x local y
 
-let vernac_declare_implicits local r = function
+let vernac_declare_implicits locality r l =
+  let local = make_section_locality locality in
+  match l with
   | [] ->
       Impargs.declare_implicits local (smart_global r)
   | _::_ as imps ->
       Impargs.declare_manual_implicits local (smart_global r) ~enriching:false
 	(List.map (List.map (fun (ex,b,f) -> ex, (b,true,f))) imps)
 
-let vernac_declare_arguments local r l nargs flags =
+let vernac_declare_arguments locality r l nargs flags =
   let extra_scope_flag = List.mem `ExtraScopes flags in
   let names = List.map (List.map (fun (id, _,_,_,_) -> id)) l in
   let names, rest = List.hd names, List.tl names in
   let scopes = List.map (List.map (fun (_,_, s, _,_) -> s)) l in
-  if List.exists ((<>) names) rest then
+  if List.exists (fun na -> not (List.equal Name.equal na names)) rest then
     error "All arguments lists must declare the same names.";
-  if not (Util.list_distinct (List.filter ((<>) Anonymous) names)) then
-    error "Arguments names must be distinct.";
+  if not (List.distinct_f Name.compare (List.filter ((!=) Anonymous) names))
+  then error "Arguments names must be distinct.";
   let sr = smart_global r in
   let inf_names =
     Impargs.compute_implicits_names (Global.env()) (Global.type_of_global sr) in
-  let string_of_name = function Anonymous -> "_" | Name id -> string_of_id id in
+  let string_of_name = function Anonymous -> "_" | Name id -> Id.to_string id in
   let rec check li ld ls = match li, ld, ls with
     | [], [], [] -> ()
     | [], Anonymous::ld, (Some _)::ls when extra_scope_flag -> check li ld ls
@@ -866,90 +920,110 @@ let vernac_declare_arguments local r l nargs flags =
        (String.concat ", " (List.map string_of_name l)) ^ ".")
     | _::li, _::ld, _::ls -> check li ld ls 
     | _ -> assert false in
-  if l <> [[]] then
-    List.iter2 (fun l -> check inf_names l) (names :: rest) scopes;
+  let () = match l with
+  | [[]] -> ()
+  | _ ->
+    List.iter2 (fun l -> check inf_names l) (names :: rest) scopes
+  in
   (* we take extra scopes apart, and we check they are consistent *)
   let l, scopes = 
     let scopes, rest = List.hd scopes, List.tl scopes in
-    if List.exists (List.exists ((<>) None)) rest then
+    if List.exists (List.exists ((!=) None)) rest then
       error "Notation scopes can be given only once";
     if not extra_scope_flag then l, scopes else
-    let l, _ = List.split (List.map (list_chop (List.length inf_names)) l) in
+    let l, _ = List.split (List.map (List.chop (List.length inf_names)) l) in
     l, scopes in
   (* we interpret _ as the inferred names *)
-  let l = if l = [[]] then l else
+  let l = match l with
+  | [[]] -> l
+  | _ ->
     let name_anons = function
       | (Anonymous, a,b,c,d), Name id -> Name id, a,b,c,d
       | x, _ -> x in
     List.map (fun ns -> List.map name_anons (List.combine ns inf_names)) l in
   let names_decl = List.map (List.map (fun (id, _,_,_,_) -> id)) l in
+  let renamed_arg = ref None in
+  let set_renamed a b =
+    if Option.is_empty !renamed_arg && not (Id.equal a b) then renamed_arg := Some(b,a) in
+  let pr_renamed_arg () = match !renamed_arg with None -> ""
+    | Some (o,n) ->
+       "\nArgument "^string_of_id o ^" renamed to "^string_of_id n^"." in
   let some_renaming_specified =
-    try Arguments_renaming.arguments_names sr <> names_decl
+    try
+      let names = Arguments_renaming.arguments_names sr in
+      not (List.equal (List.equal Name.equal) names names_decl)
     with Not_found -> false in
   let some_renaming_specified, implicits =
-    if l = [[]] then false, [[]] else
-    Util.list_fold_map (fun sr il ->
-      let sr', impl = Util.list_fold_map (fun b -> function
+    match l with
+    | [[]] -> false, [[]]
+    | _ ->
+    List.fold_map (fun sr il ->
+      let sr', impl = List.fold_map (fun b -> function
         | (Anonymous, _,_, true, max), Name id -> assert false
         | (Name x, _,_, true, _), Anonymous ->
-            error ("Argument "^string_of_id x^" cannot be declared implicit.")
+            error ("Argument "^Id.to_string x^" cannot be declared implicit.")
         | (Name iid, _,_, true, max), Name id ->
-           b || iid <> id, Some (ExplByName id, max, false)
-        | (Name iid, _,_, _, _), Name id -> b || iid <> id, None
+           set_renamed iid id;
+           b || not (Id.equal iid id), Some (ExplByName id, max, false)
+        | (Name iid, _,_, _, _), Name id ->
+           set_renamed iid id;
+           b || not (Id.equal iid id), None
         | _ -> b, None)
         sr (List.combine il inf_names) in
-      sr || sr', Util.list_map_filter (fun x -> x) impl)
+      sr || sr', List.map_filter (fun x -> x) impl)
       some_renaming_specified l in
   if some_renaming_specified then
     if not (List.mem `Rename flags) then
-      error "To rename arguments the \"rename\" flag must be specified."
-    else Arguments_renaming.rename_arguments local sr names_decl;
+      error ("To rename arguments the \"rename\" flag must be specified."
+        ^ pr_renamed_arg ())
+    else
+      Arguments_renaming.rename_arguments
+        (make_section_locality locality) sr names_decl;
   (* All other infos are in the first item of l *)
   let l = List.hd l in
-  let some_implicits_specified = implicits <> [[]] in
+  let some_implicits_specified = match implicits with
+  | [[]] -> false | _ -> true in
   let scopes = List.map (function
     | None -> None
-    | Some (o, k) -> 
-        try Some(ignore(Notation.find_scope k); k)
-        with e when Errors.noncritical e ->
+    | Some (o, k) ->
+        try ignore (Notation.find_scope k); Some k
+        with UserError _ ->
           Some (Notation.find_delimiters_scope o k)) scopes
   in
-  let some_scopes_specified = List.exists ((<>) None) scopes in
+  let some_scopes_specified = List.exists ((!=) None) scopes in
   let rargs =
-    Util.list_map_filter (function (n, true) -> Some n | _ -> None)
-      (Util.list_map_i (fun i (_, b, _,_,_) -> i, b) 0 l) in
+    Util.List.map_filter (function (n, true) -> Some n | _ -> None)
+      (Util.List.map_i (fun i (_, b, _,_,_) -> i, b) 0 l) in
   if some_scopes_specified || List.mem `ClearScopes flags then
-    vernac_arguments_scope local r scopes;
+    vernac_arguments_scope locality r scopes;
   if not some_implicits_specified && List.mem `DefaultImplicits flags then
-    vernac_declare_implicits local r []
+    vernac_declare_implicits locality r []
   else if some_implicits_specified || List.mem `ClearImplicits flags then
-    vernac_declare_implicits local r implicits;
+    vernac_declare_implicits locality r implicits;
   if nargs >= 0 && nargs < List.fold_left max 0 rargs then
     error "The \"/\" option must be placed after the last \"!\".";
   let rec narrow = function
     | #Tacred.simpl_flag as x :: tl -> x :: narrow tl
     | [] -> [] | _ :: tl -> narrow tl in
   let flags = narrow flags in
-  if rargs <> [] || nargs >= 0 || flags <> [] then
+  if not (List.is_empty rargs) || nargs >= 0 || not (List.is_empty flags) then
     match sr with
     | ConstRef _ as c ->
-       Tacred.set_simpl_behaviour local c (rargs, nargs, flags)
+       Tacred.set_simpl_behaviour
+         (make_section_locality locality) c (rargs, nargs, flags)
     | _ -> errorlabstrm "" (strbrk "Modifiers of the behavior of the simpl tactic are relevant for constants only.")
 
 let vernac_reserve bl =
   let sb_decl = (fun (idl,c) ->
     let t = Constrintern.interp_type Evd.empty (Global.env()) c in
     let t = Detyping.detype false [] [] t in
-    let t = aconstr_of_glob_constr [] [] t in
+    let t = Notation_ops.notation_constr_of_glob_constr Id.Map.empty Id.Map.empty t in
     Reserve.declare_reserved_type idl t)
   in List.iter sb_decl bl
 
-let vernac_generalizable = Implicit_quantifiers.declare_generalizable
-
-let make_silent_if_not_pcoq b =
-  if !pcoq <> None then
-    error "Turning on/off silent flag is not supported in Pcoq mode."
-  else make_silent b
+let vernac_generalizable locality =
+  let local = make_non_locality locality in
+  Implicit_quantifiers.declare_generalizable local
 
 let _ =
   declare_bool_option
@@ -958,7 +1032,7 @@ let _ =
       optname  = "silent";
       optkey   = ["Silent"];
       optread  = is_silent;
-      optwrite = make_silent_if_not_pcoq }
+      optwrite = make_silent }
 
 let _ =
   declare_bool_option
@@ -1099,6 +1173,15 @@ let _ =
   declare_bool_option
     { optsync  = true;
       optdepr  = false;
+      optname  = "use of the program extension";
+      optkey   = ["Program";"Mode"];
+      optread  = (fun () -> !Flags.program_mode);
+      optwrite = (fun b -> Flags.program_mode:=b) }
+
+let _ =
+  declare_bool_option
+    { optsync  = true;
+      optdepr  = false;
       optname  = "use of virtual machine inside the kernel";
       optkey   = ["Virtual";"Machine"];
       optread  = (fun () -> Vconv.use_vm ());
@@ -1181,7 +1264,7 @@ let _ =
       optdepr  = false;
       optname  = "Ltac debug";
       optkey   = ["Ltac";"Debug"];
-      optread  = (fun () -> get_debug () <> Tactic_debug.DebugOff);
+      optread  = (fun () -> get_debug () != Tactic_debug.DebugOff);
       optwrite = vernac_debug }
 
 let _ =
@@ -1193,15 +1276,27 @@ let _ =
       optread  = (fun () -> !Constrintern.parsing_explicit);
       optwrite = (fun b ->  Constrintern.parsing_explicit := b) }
 
-let vernac_set_opacity local str =
+let vernac_set_strategy locality l =
+  let local = make_locality locality in
   let glob_ref r =
     match smart_global r with
       | ConstRef sp -> EvalConstRef sp
       | VarRef id -> EvalVarRef id
       | _ -> error
           "cannot set an inductive type or a constructor as transparent" in
-  let str = List.map (fun (lev,ql) -> (lev,List.map glob_ref ql)) str in
-  Redexpr.set_strategy local str
+  let l = List.map (fun (lev,ql) -> (lev,List.map glob_ref ql)) l in
+  Redexpr.set_strategy local l
+
+let vernac_set_opacity locality (v,l) =
+  let local = make_non_locality locality in
+  let glob_ref r =
+    match smart_global r with
+      | ConstRef sp -> EvalConstRef sp
+      | VarRef id -> EvalVarRef id
+      | _ -> error
+          "cannot set an inductive type or a constructor as transparent" in
+  let l = List.map glob_ref l in
+  Redexpr.set_strategy local [v,l]
 
 let vernac_set_option locality key = function
   | StringValue s -> set_string_option_value_gen locality key s
@@ -1245,31 +1340,27 @@ let get_current_context_of_args = function
   | None -> get_current_context ()
 
 let vernac_check_may_eval redexp glopt rc =
-  let module P = Pretype_errors in
   let (sigma, env) = get_current_context_of_args glopt in
   let sigma', c = interp_open_constr sigma env rc in
-  let sigma' = Evarconv.consider_remaining_unif_problems env sigma' in
+  Evarconv.check_problems_are_solved sigma';
   let j =
     try
       Evarutil.check_evars env sigma sigma' c;
       Arguments_renaming.rename_typing env c
-    with P.PretypeError (_,_,P.UnsolvableImplicit _)
-      | Compat.Loc.Exc_located (_,P.PretypeError (_,_,P.UnsolvableImplicit _)) ->
+    with Pretype_errors.PretypeError (_,_,Pretype_errors.UnsolvableImplicit _) ->
       Evarutil.j_nf_evar sigma' (Retyping.get_judgment_of env sigma' c) in
   match redexp with
     | None ->
-	if !pcoq <> None then (Option.get !pcoq).print_check env j
-	else msg (print_judgment env j)
+	msg_notice (print_judgment env j)
     | Some r ->
-        Tacinterp.dump_glob_red_expr r;
+        Tacintern.dump_glob_red_expr r;
         let (sigma',r_interp) = interp_redexp env sigma' r in
-	let redfun = fst (reduction_of_red_expr r_interp) in
-	if !pcoq <> None
-	then (Option.get !pcoq).print_eval redfun env sigma' rc j
-	else msg (print_eval redfun env sigma' rc j)
+	let redfun = fst (reduction_of_red_expr env r_interp) in
+	msg_notice (print_eval redfun env sigma' rc j)
 
 let vernac_declare_reduction locality s r =
-  declare_red_expr locality s (snd (interp_redexp (Global.env()) Evd.empty r))
+  let local = make_locality locality in
+  declare_red_expr local s (snd (interp_redexp (Global.env()) Evd.empty r))
 
   (* The same but avoiding the current goal context if any *)
 let vernac_global_check c =
@@ -1278,58 +1369,59 @@ let vernac_global_check c =
   let c = interp_constr evmap env c in
   let senv = Global.safe_env() in
   let j = Safe_typing.typing senv c in
-  msg (print_safe_judgment env j)
+  msg_notice (print_safe_judgment env j)
 
 let vernac_print = function
-  | PrintTables -> print_tables ()
-  | PrintFullContext-> msg (print_full_context_typ ())
-  | PrintSectionContext qid -> msg (print_sec_context_typ qid)
-  | PrintInspect n -> msg (inspect n)
-  | PrintGrammar ent -> Metasyntax.print_grammar ent
-  | PrintLoadPath dir -> (* For compatibility ? *) print_loadpath dir
-  | PrintModules -> msg (print_modules ())
+  | PrintTables -> msg_notice (print_tables ())
+  | PrintFullContext-> msg_notice (print_full_context_typ ())
+  | PrintSectionContext qid -> msg_notice (print_sec_context_typ qid)
+  | PrintInspect n -> msg_notice (inspect n)
+  | PrintGrammar ent -> msg_notice (Metasyntax.pr_grammar ent)
+  | PrintLoadPath dir -> (* For compatibility ? *) msg_notice (print_loadpath dir)
+  | PrintModules -> msg_notice (print_modules ())
   | PrintModule qid -> print_module qid
   | PrintModuleType qid -> print_modtype qid
-  | PrintMLLoadPath -> Mltop.print_ml_path ()
-  | PrintMLModules -> Mltop.print_ml_modules ()
-  | PrintName qid ->
-      if !pcoq <> None then (Option.get !pcoq).print_name qid
-      else msg (print_name qid)
-  | PrintGraph -> ppnl (Prettyp.print_graph())
-  | PrintClasses -> ppnl (Prettyp.print_classes())
-  | PrintTypeClasses -> ppnl (Prettyp.print_typeclasses())
-  | PrintInstances c -> ppnl (Prettyp.print_instances (smart_global c))
-  | PrintLtac qid -> ppnl (Tacinterp.print_ltac (snd (qualid_of_reference qid)))
-  | PrintCoercions -> ppnl (Prettyp.print_coercions())
+  | PrintNamespace ns -> print_namespace ns
+  | PrintMLLoadPath -> msg_notice (Mltop.print_ml_path ())
+  | PrintMLModules -> msg_notice (Mltop.print_ml_modules ())
+  | PrintDebugGC -> msg_notice (Mltop.print_gc ())
+  | PrintName qid -> dump_global qid; msg_notice (print_name qid)
+  | PrintGraph -> msg_notice (Prettyp.print_graph())
+  | PrintClasses -> msg_notice (Prettyp.print_classes())
+  | PrintTypeClasses -> msg_notice (Prettyp.print_typeclasses())
+  | PrintInstances c -> msg_notice (Prettyp.print_instances (smart_global c))
+  | PrintLtac qid -> msg_notice (Tacintern.print_ltac (snd (qualid_of_reference qid)))
+  | PrintCoercions -> msg_notice (Prettyp.print_coercions())
   | PrintCoercionPaths (cls,clt) ->
-      ppnl (Prettyp.print_path_between (cl_of_qualid cls) (cl_of_qualid clt))
-  | PrintCanonicalConversions -> ppnl (Prettyp.print_canonical_projections ())
+      msg_notice (Prettyp.print_path_between (cl_of_qualid cls) (cl_of_qualid clt))
+  | PrintCanonicalConversions -> msg_notice (Prettyp.print_canonical_projections ())
   | PrintUniverses (b, None) ->
     let univ = Global.universes () in
     let univ = if b then Univ.sort_universes univ else univ in
-    pp (Univ.pr_universes univ)
+    msg_notice (Univ.pr_universes univ)
   | PrintUniverses (b, Some s) -> dump_universes b s
-  | PrintHint r -> Auto.print_hint_ref (smart_global r)
-  | PrintHintGoal -> Auto.print_applicable_hint ()
-  | PrintHintDbName s -> Auto.print_hint_db_by_name s
-  | PrintRewriteHintDbName s -> Autorewrite.print_rewrite_hintdb s
-  | PrintHintDb -> Auto.print_searchtable ()
+  | PrintHint r -> msg_notice (Auto.pr_hint_ref (smart_global r))
+  | PrintHintGoal -> msg_notice (Auto.pr_applicable_hint ())
+  | PrintHintDbName s -> msg_notice (Auto.pr_hint_db_by_name s)
+  | PrintRewriteHintDbName s -> msg_notice (Autorewrite.print_rewrite_hintdb s)
+  | PrintHintDb -> msg_notice (Auto.pr_searchtable ())
   | PrintScopes ->
-      pp (Notation.pr_scopes (Constrextern.without_symbols pr_lglob_constr))
+      msg_notice (Notation.pr_scopes (Constrextern.without_symbols pr_lglob_constr))
   | PrintScope s ->
-      pp (Notation.pr_scope (Constrextern.without_symbols pr_lglob_constr) s)
+      msg_notice (Notation.pr_scope (Constrextern.without_symbols pr_lglob_constr) s)
   | PrintVisibility s ->
-      pp (Notation.pr_visibility (Constrextern.without_symbols pr_lglob_constr) s)
-  | PrintAbout qid -> 
-    msg (print_about qid)
-  | PrintImplicit qid -> 
-    dump_global qid; msg (print_impargs qid)
-  | PrintAssumptions (o,r) ->
+      msg_notice (Notation.pr_visibility (Constrextern.without_symbols pr_lglob_constr) s)
+  | PrintAbout qid ->
+    msg_notice (print_about qid)
+  | PrintImplicit qid ->
+    dump_global qid; msg_notice (print_impargs qid)
+  | PrintAssumptions (o,t,r) ->
       (* Prints all the axioms and section variables used by a term *)
       let cstr = constr_of_global (smart_global r) in
-      let st = Conv_oracle.get_transp_state () in
-      let nassums = Assumptions.assumptions st ~add_opaque:o cstr in
-      msg (Printer.pr_assumptionset (Global.env ()) nassums)
+      let st = Conv_oracle.get_transp_state (Environ.oracle (Global.env())) in
+      let nassums =
+	Assumptions.assumptions st ~add_opaque:o ~add_transparent:t cstr in
+      msg_notice (Printer.pr_assumptionset (Global.env ()) nassums)
 
 let global_module r =
   let (loc,qid) = qualid_of_reference r in
@@ -1344,18 +1436,16 @@ let interp_search_restriction = function
 
 open Search
 
-let is_ident s = try ignore (check_ident s); true with UserError _ -> false
-
 let interp_search_about_item = function
   | SearchSubPattern pat ->
       let _,pat = intern_constr_pattern Evd.empty (Global.env()) pat in
       GlobSearchSubPattern pat
-  | SearchString (s,None) when is_ident s ->
+  | SearchString (s,None) when Id.is_valid s ->
       GlobSearchString s
   | SearchString (s,sc) ->
       try
 	let ref =
-	  Notation.interp_notation_as_global_reference dummy_loc
+	  Notation.interp_notation_as_global_reference Loc.ghost
 	    (fun _ -> true) s sc in
 	GlobSearchSubPattern (Pattern.PRef ref)
       with UserError _ ->
@@ -1364,157 +1454,62 @@ let interp_search_about_item = function
 
 let vernac_search s r =
   let r = interp_search_restriction r in
-  if !pcoq <> None then (Option.get !pcoq).search s r else
+  let env = Global.env () in
+  let get_pattern c = snd (Constrintern.intern_constr_pattern Evd.empty env c) in
   match s with
   | SearchPattern c ->
-      let (_,c) = interp_open_constr_patvar Evd.empty (Global.env()) c in
-      Search.search_pattern c r
+      msg_notice (Search.search_pattern (get_pattern c) r)
   | SearchRewrite c ->
-      let _,pat = interp_open_constr_patvar Evd.empty (Global.env()) c in
-      Search.search_rewrite pat r
+      msg_notice (Search.search_rewrite (get_pattern c) r)
   | SearchHead c ->
-      let _,pat = interp_open_constr_patvar Evd.empty (Global.env()) c in
-      Search.search_by_head pat r
+      msg_notice (Search.search_by_head (get_pattern c) r)
   | SearchAbout sl ->
-      Search.search_about (List.map (on_snd interp_search_about_item) sl) r
+      msg_notice (Search.search_about (List.map (on_snd interp_search_about_item) sl) r)
 
 let vernac_locate = function
-  | LocateTerm (Genarg.AN qid) -> msgnl (print_located_qualid qid)
-  | LocateTerm (Genarg.ByNotation (_,ntn,sc)) ->
-      ppnl
+  | LocateTerm (AN qid) -> msg_notice (print_located_qualid qid)
+  | LocateTerm (ByNotation (_,ntn,sc)) ->
+      msg_notice
         (Notation.locate_notation
           (Constrextern.without_symbols pr_lglob_constr) ntn sc)
   | LocateLibrary qid -> print_located_library qid
   | LocateModule qid -> print_located_module qid
   | LocateTactic qid -> print_located_tactic qid
-  | LocateFile f -> locate_file f
+  | LocateFile f -> msg_notice (locate_file f)
 
-(****************)
-(* Backtracking *)
-
-(** NB: these commands are now forbidden in non-interactive use,
-    e.g. inside VernacLoad, VernacList, ... *)
-
-let vernac_backto lbl =
-  try
-    let lbl' = Backtrack.backto lbl in
-    if lbl <> lbl' then
-      Pp.msg_warning
-	(str "Actually back to state "++ Pp.int lbl' ++ str ".");
-    try_print_subgoals ()
-  with Backtrack.Invalid -> error "Invalid backtrack."
-
-let vernac_back n =
-  try
-    let extra = Backtrack.back n in
-    if extra <> 0 then
-      Pp.msg_warning
-	(str "Actually back by " ++ Pp.int (extra+n) ++ str " steps.");
-    try_print_subgoals ()
-  with Backtrack.Invalid -> error "Invalid backtrack."
-
-let vernac_reset_name id =
-  try
-    let globalized =
-      try
-	let gr = Smartlocate.global_with_alias (Ident id) in
-	Dumpglob.add_glob (fst id) gr;
-	true
-      with e when Errors.noncritical e -> false in
-
-    if not globalized then begin
-       try begin match Lib.find_opening_node (snd id) with
-          | Lib.OpenedSection _ -> Dumpglob.dump_reference (fst id)
-              (string_of_dirpath (Lib.current_dirpath true)) "<>" "sec";
-          (* Might be nice to implement module cases, too.... *)
-          | _ -> ()
-       end with UserError _ -> ()
-    end;
-
-    if Backtrack.is_active () then
-      (Backtrack.reset_name id; try_print_subgoals ())
-    else
-      (* When compiling files, Reset is now allowed again
-	 as asked by A. Chlipala. we emulate a simple reset,
-	 that discards all proofs. *)
-      let lbl = Lib.label_before_name id in
-      Pfedit.delete_all_proofs ();
-      Pp.msg_warning (str "Reset command occurred in non-interactive mode.");
-      Lib.reset_label lbl
-  with Backtrack.Invalid | Not_found -> error "Invalid Reset."
-
-
-let vernac_reset_initial () =
-  if Backtrack.is_active () then
-    Backtrack.reset_initial ()
-  else begin
-    Pp.msg_warning (str "Reset command occurred in non-interactive mode.");
-    Lib.reset_label Lib.first_command_label
-  end
-
-(* For compatibility with ProofGeneral: *)
-
-let vernac_backtrack snum pnum naborts =
-  Backtrack.backtrack snum pnum naborts;
-  try_print_subgoals ()
-
+let vernac_register id r =
+ if Pfedit.refining () then
+    error "Cannot register a primitive while in proof editing mode.";
+  let t = (Constrintern.global_reference (snd id)) in
+  if not (isConst t) then
+    error "Register inline: a constant is expected";
+  let kn = destConst t in
+  match r with
+  | RegisterInline -> Global.register_inline kn
 
 (********************)
 (* Proof management *)
 
-let vernac_abort = function
-  | None ->
-      Backtrack.mark_unreachable [Pfedit.get_current_proof_name ()];
-      delete_current_proof ();
-      if_verbose message "Current goal aborted";
-      if !pcoq <> None then (Option.get !pcoq).abort ""
-  | Some id ->
-      Backtrack.mark_unreachable [snd id];
-      delete_proof id;
-      let s = string_of_id (snd id) in
-      if_verbose message ("Goal "^s^" aborted");
-      if !pcoq <> None then (Option.get !pcoq).abort s
-
-let vernac_abort_all () =
-  if refining() then begin
-    Backtrack.mark_unreachable (Pfedit.get_all_proof_names ());
-    delete_all_proofs ();
-    message "Current goals aborted"
-  end else
-    error "No proof-editing in progress."
-
-let vernac_restart () =
-  Backtrack.mark_unreachable [Pfedit.get_current_proof_name ()];
-  restart_proof(); print_subgoals ()
-
-let vernac_undo n =
-  let d = Pfedit.current_proof_depth () - n in
-  Backtrack.mark_unreachable ~after:d [Pfedit.get_current_proof_name ()];
-  Pfedit.undo n; print_subgoals ()
-
-let vernac_undoto n =
-  Backtrack.mark_unreachable ~after:n [Pfedit.get_current_proof_name ()];
-  Pfedit.undo_todepth n;
-  print_subgoals ()
-
 let vernac_focus gln =
-  let p = Proof_global.give_me_the_proof () in
-  let n = match gln with None -> 1 | Some n -> n in
-  if n = 0 then
-    Util.error "Invalid goal number: 0. Goal numbering starts with 1."
-  else
-    Proof.focus focus_command_cond () n p; print_subgoals ()
+  Proof_global.simple_with_current_proof (fun _ p ->
+    match gln with
+      | None -> Proof.focus focus_command_cond () 1 p
+      | Some 0 ->
+         Errors.error "Invalid goal number: 0. Goal numbering starts with 1."
+      | Some n ->
+         Proof.focus focus_command_cond () n p);
+  print_subgoals ()
 
   (* Unfocuses one step in the focus stack. *)
 let vernac_unfocus () =
-  let p = Proof_global.give_me_the_proof () in
-  Proof.unfocus command_focus p; print_subgoals ()
+  Proof_global.simple_with_current_proof (fun _ p -> Proof.unfocus command_focus p ());
+  print_subgoals ()
 
 (* Checks that a proof is fully unfocused. Raises an error if not. *)
 let vernac_unfocused () =
   let p = Proof_global.give_me_the_proof () in
   if Proof.unfocused p then
-    msg (str"The proof is indeed fully unfocused.")
+    msg_notice (str"The proof is indeed fully unfocused.")
   else
     error "The proof is not fully unfocused."
 
@@ -1529,44 +1524,43 @@ let subproof_kind = Proof.new_focus_kind ()
 let subproof_cond = Proof.done_cond subproof_kind
 
 let vernac_subproof gln =
-  let p = Proof_global.give_me_the_proof () in
-  begin match gln with
-  | None -> Proof.focus subproof_cond () 1 p
-  | Some n -> Proof.focus subproof_cond () n p
-  end ;
+  Proof_global.simple_with_current_proof (fun _ p ->
+    match gln with
+    | None -> Proof.focus subproof_cond () 1 p
+    | Some n -> Proof.focus subproof_cond () n p);
   print_subgoals ()
 
 let vernac_end_subproof () =
-  let p = Proof_global.give_me_the_proof () in
-  Proof.unfocus subproof_kind p ; print_subgoals ()
+  Proof_global.simple_with_current_proof (fun _ p -> Proof.unfocus subproof_kind p ());
+  print_subgoals ()
 
 
 let vernac_bullet (bullet:Proof_global.Bullet.t) =
-  let p = Proof_global.give_me_the_proof () in
-  Proof.transaction p 
-    (fun () -> Proof_global.Bullet.put p bullet);
+  Proof_global.simple_with_current_proof (fun _ p ->
+    Proof_global.Bullet.put p bullet);
   (* Makes the focus visible in emacs by re-printing the goal. *)
   if !Flags.print_emacs then print_subgoals ()
 
 
 let vernac_show = function
   | ShowGoal goalref ->
-      if !pcoq <> None then (Option.get !pcoq).show_goal goalref
-      else msg (match goalref with
-	| OpenSubgoals -> pr_open_subgoals ()
-	| NthGoal n -> pr_nth_open_subgoal n
-        | GoalId id -> pr_goal_by_id id)
+    let info = match goalref with
+      | OpenSubgoals -> pr_open_subgoals ()
+      | NthGoal n -> pr_nth_open_subgoal n
+      | GoalId id -> pr_goal_by_id id
+    in
+    msg_notice info
   | ShowGoalImplicitly None ->
-      Constrextern.with_implicits msg (pr_open_subgoals ())
+      Constrextern.with_implicits msg_notice (pr_open_subgoals ())
   | ShowGoalImplicitly (Some n) ->
-      Constrextern.with_implicits msg (pr_nth_open_subgoal n)
+      Constrextern.with_implicits msg_notice (pr_nth_open_subgoal n)
   | ShowProof -> show_proof ()
   | ShowNode -> show_node ()
-  | ShowScript -> show_script ()
+  | ShowScript -> !show_script ()
   | ShowExistentials -> show_top_evars ()
   | ShowTree -> show_prooftree ()
   | ShowProofNames ->
-      msgnl (prlist_with_sep pr_spc pr_id (Pfedit.get_all_proof_names()))
+      msg_notice (pr_sequence pr_id (Pfedit.get_all_proof_names()))
   | ShowIntros all -> show_intro all
   | ShowMatch id -> show_match id
   | ShowThesis -> show_thesis ()
@@ -1584,32 +1578,47 @@ let vernac_check_guard () =
     with UserError(_,s) ->
       (str ("Condition violated: ") ++s)
   in
-  msgnl message
+  msg_notice message
 
-let interp c = match c with
-  (* Control (done in vernac) *)
-  | (VernacTime _|VernacList _|VernacLoad _|VernacTimeout _|VernacFail _) ->
-      assert false
+(* "locality" is the prefix "Local" attribute, while the "local" component
+ * is the outdated/deprecated "Local" attribute of some vernacular commands
+ * still parsed as the obsolete_locality grammar entry for retrocompatibility *)
+let interp ?proof locality c =
+  prerr_endline ("interpreting: " ^ Pp.string_of_ppcmds (Ppvernac.pr_vernac c));
+  match c with
+  (* Done in vernac *)
+  | (VernacList _|VernacLoad _) -> assert false
+
+  (* Done later in this file *)
+  | VernacFail _ -> assert false
+  | VernacTime _ -> assert false
+  | VernacTimeout _ -> assert false
+  | VernacStm _ -> assert false
+
+  | VernacError e -> raise e
 
   (* Syntax *)
-  | VernacTacticNotation (n,r,e) -> Metasyntax.add_tactic_notation (n,r,e)
-  | VernacSyntaxExtension (lcl,sl) -> vernac_syntax_extension lcl sl
+  | VernacTacticNotation (n,r,e) ->
+      Metasyntax.add_tactic_notation (make_module_locality locality,n,r,e)
+  | VernacSyntaxExtension (local,sl) ->
+      vernac_syntax_extension locality local sl
   | VernacDelimiters (sc,lr) -> vernac_delimiters sc lr
   | VernacBindScope (sc,rl) -> vernac_bind_scope sc rl
-  | VernacOpenCloseScope sc -> vernac_open_close_scope sc
-  | VernacArgumentsScope (lcl,qid,scl) -> vernac_arguments_scope lcl qid scl
-  | VernacInfix (local,mv,qid,sc) -> vernac_infix local mv qid sc
-  | VernacNotation (local,c,infpl,sc) -> vernac_notation local c infpl sc
+  | VernacOpenCloseScope (local, s) -> vernac_open_close_scope locality local s
+  | VernacArgumentsScope (qid,scl) -> vernac_arguments_scope locality qid scl
+  | VernacInfix (local,mv,qid,sc) -> vernac_infix locality local mv qid sc
+  | VernacNotation (local,c,infpl,sc) ->
+      vernac_notation locality local c infpl sc
 
   (* Gallina *)
-  | VernacDefinition (k,lid,d,f) -> vernac_definition k lid d f
-  | VernacStartTheoremProof (k,l,top,f) -> vernac_start_proof k l top f
-  | VernacEndProof e -> vernac_end_proof e
+  | VernacDefinition (k,lid,d) -> vernac_definition locality k lid d
+  | VernacStartTheoremProof (k,l,top) -> vernac_start_proof k l top
+  | VernacEndProof e -> vernac_end_proof ?proof e
   | VernacExactProof c -> vernac_exact_proof c
-  | VernacAssumption (stre,nl,l) -> vernac_assumption stre l nl
+  | VernacAssumption (stre,nl,l) -> vernac_assumption locality stre l nl
   | VernacInductive (finite,infer,l) -> vernac_inductive finite infer l
-  | VernacFixpoint l -> vernac_fixpoint l
-  | VernacCoFixpoint l -> vernac_cofixpoint l
+  | VernacFixpoint (local, l) -> vernac_fixpoint locality local l
+  | VernacCoFixpoint (local, l) -> vernac_cofixpoint locality local l
   | VernacScheme l -> vernac_scheme l
   | VernacCombinedScheme (id, l) -> vernac_combined_scheme id l
 
@@ -1627,17 +1636,18 @@ let interp c = match c with
 
   | VernacEndSegment lid -> vernac_end_segment lid
 
-  | VernacRequire (export,spec,qidl) -> vernac_require export spec qidl
+  | VernacRequire (export, qidl) -> vernac_require export qidl
   | VernacImport (export,qidl) -> vernac_import export qidl
   | VernacCanonical qid -> vernac_canonical qid
-  | VernacCoercion (str,r,s,t) -> vernac_coercion str r s t
-  | VernacIdentityCoercion (str,(_,id),s,t) -> vernac_identity_coercion str id s t
+  | VernacCoercion (local,r,s,t) -> vernac_coercion locality local r s t
+  | VernacIdentityCoercion (local,(_,id),s,t) ->
+      vernac_identity_coercion locality local id s t
 
   (* Type classes *)
-  | VernacInstance (abst, glob, sup, inst, props, pri) ->
-      vernac_instance abst glob sup inst props pri
+  | VernacInstance (abst, sup, inst, props, pri) ->
+      vernac_instance abst locality sup inst props pri
   | VernacContext sup -> vernac_context sup
-  | VernacDeclareInstances (glob, ids) -> vernac_declare_instances glob ids
+  | VernacDeclareInstances (ids, pri) -> vernac_declare_instances locality ids pri
   | VernacDeclareClass id -> vernac_declare_class id
 
   (* Solving *)
@@ -1645,11 +1655,11 @@ let interp c = match c with
   | VernacSolveExistential (n,c) -> vernac_solve_existential n c
 
   (* Auxiliary file and library management *)
-  | VernacRequireFrom (exp,spec,f) -> vernac_require_from exp spec f
+  | VernacRequireFrom (exp, f) -> vernac_require_from exp f
   | VernacAddLoadPath (isrec,s,alias) -> vernac_add_loadpath isrec s alias
   | VernacRemoveLoadPath s -> vernac_remove_loadpath s
   | VernacAddMLPath (isrec,s) -> vernac_add_ml_path isrec s
-  | VernacDeclareMLModule (local, l) -> vernac_declare_ml_module local l
+  | VernacDeclareMLModule l -> vernac_declare_ml_module locality l
   | VernacChdir s -> vernac_chdir s
 
   (* State management *)
@@ -1657,45 +1667,52 @@ let interp c = match c with
   | VernacRestoreState s -> vernac_restore_state s
 
   (* Resetting *)
-  | VernacResetName id -> vernac_reset_name id
-  | VernacResetInitial -> vernac_reset_initial ()
-  | VernacBack n -> vernac_back n
-  | VernacBackTo n -> vernac_backto n
+  | VernacResetName _ -> anomaly (str "VernacResetName not handled by Stm")
+  | VernacResetInitial -> anomaly (str "VernacResetInitial not handled by Stm")
+  | VernacBack _ -> anomaly (str "VernacBack not handled by Stm")
+  | VernacBackTo _ -> anomaly (str "VernacBackTo not handled by Stm")
 
   (* Commands *)
-  | VernacDeclareTacticDefinition def -> vernac_declare_tactic_definition def
-  | VernacCreateHintDb (local,dbname,b) -> vernac_create_hintdb local dbname b
-  | VernacRemoveHints (local,dbnames,ids) -> vernac_remove_hints local dbnames ids
-  | VernacHints (local,dbnames,hints) -> vernac_hints local dbnames hints
-  | VernacSyntacticDefinition (id,c,l,b) ->vernac_syntactic_definition id c l b
-  | VernacDeclareImplicits (local,qid,l) ->vernac_declare_implicits local qid l
-  | VernacArguments (local, qid, l, narg, flags) -> vernac_declare_arguments local qid l narg flags 
+  | VernacDeclareTacticDefinition def ->
+      vernac_declare_tactic_definition locality def
+  | VernacCreateHintDb (dbname,b) -> vernac_create_hintdb locality dbname b
+  | VernacRemoveHints (dbnames,ids) -> vernac_remove_hints locality dbnames ids
+  | VernacHints (local,dbnames,hints) ->
+      vernac_hints locality local dbnames hints
+  | VernacSyntacticDefinition (id,c,local,b) ->
+      vernac_syntactic_definition locality  id c local b
+  | VernacDeclareImplicits (qid,l) ->
+      vernac_declare_implicits locality qid l
+  | VernacArguments (qid, l, narg, flags) ->
+      vernac_declare_arguments locality qid l narg flags 
   | VernacReserve bl -> vernac_reserve bl
-  | VernacGeneralizable (local,gen) -> vernac_generalizable local gen
-  | VernacSetOpacity (local,qidl) -> vernac_set_opacity local qidl
-  | VernacSetOption (locality,key,v) -> vernac_set_option locality key v
-  | VernacUnsetOption (locality,key) -> vernac_unset_option locality key
+  | VernacGeneralizable gen -> vernac_generalizable locality gen
+  | VernacSetOpacity qidl -> vernac_set_opacity locality qidl
+  | VernacSetStrategy l -> vernac_set_strategy locality l
+  | VernacSetOption (key,v) -> vernac_set_option locality key v
+  | VernacUnsetOption key -> vernac_unset_option locality key
   | VernacRemoveOption (key,v) -> vernac_remove_option key v
   | VernacAddOption (key,v) -> vernac_add_option key v
   | VernacMemOption (key,v) -> vernac_mem_option key v
   | VernacPrintOption key -> vernac_print_option key
   | VernacCheckMayEval (r,g,c) -> vernac_check_may_eval r g c
-  | VernacDeclareReduction (b,s,r) -> vernac_declare_reduction b s r
+  | VernacDeclareReduction (s,r) -> vernac_declare_reduction locality s r
   | VernacGlobalCheck c -> vernac_global_check c
   | VernacPrint p -> vernac_print p
   | VernacSearch (s,r) -> vernac_search s r
   | VernacLocate l -> vernac_locate l
-  | VernacComments l -> if_verbose message ("Comments ok\n")
+  | VernacRegister (id, r) -> vernac_register id r
+  | VernacComments l -> if_verbose msg_info (str "Comments ok\n")
   | VernacNop -> ()
 
   (* Proof management *)
-  | VernacGoal t -> vernac_start_proof Theorem [None,([],t,None)] false (fun _ _->())
-  | VernacAbort id -> vernac_abort id
-  | VernacAbortAll -> vernac_abort_all ()
-  | VernacRestart -> vernac_restart ()
-  | VernacUndo n -> vernac_undo n
-  | VernacUndoTo n -> vernac_undoto n
-  | VernacBacktrack (snum,pnum,naborts) -> vernac_backtrack snum pnum naborts
+  | VernacGoal t -> vernac_start_proof Theorem [None,([],t,None)] false
+  | VernacAbort id -> anomaly (str "VernacAbort not handled by Stm")
+  | VernacAbortAll -> anomaly (str "VernacAbortAll not handled by Stm")
+  | VernacRestart -> anomaly (str "VernacRestart not handled by Stm")
+  | VernacUndo _ -> anomaly (str "VernacUndo not handled by Stm")
+  | VernacUndoTo _ -> anomaly (str "VernacUndoTo not handled by Stm")
+  | VernacBacktrack _ -> anomaly (str "VernacBacktrack not handled by Stm")
   | VernacFocus n -> vernac_focus n
   | VernacUnfocus -> vernac_unfocus ()
   | VernacUnfocused -> vernac_unfocused ()
@@ -1714,7 +1731,151 @@ let interp c = match c with
   | VernacToplevelControl e -> raise e
 
   (* Extensions *)
-  | VernacExtend (opn,args) -> Vernacinterp.call (opn,args)
+  | VernacExtend (opn,args) -> Vernacinterp.call ?locality (opn,args)
 
-let interp c = interp c ; check_locality ()
+  (* Handled elsewhere *)
+  | VernacProgram _
+  | VernacLocal _ -> assert false
+
+(* Vernaculars that take a locality flag *)
+let check_vernac_supports_locality c l =
+  match l, c with
+  | None, _ -> ()
+  | Some _, (
+      VernacTacticNotation _
+    | VernacOpenCloseScope _
+    | VernacSyntaxExtension _ | VernacInfix _ | VernacNotation _
+    | VernacDefinition _ | VernacFixpoint _ | VernacCoFixpoint _
+    | VernacAssumption _
+    | VernacCoercion _ | VernacIdentityCoercion _
+    | VernacInstance _ | VernacDeclareInstances _
+    | VernacDeclareMLModule _
+    | VernacDeclareTacticDefinition _
+    | VernacCreateHintDb _ | VernacRemoveHints _ | VernacHints _
+    | VernacSyntacticDefinition _
+    | VernacArgumentsScope _ | VernacDeclareImplicits _ | VernacArguments _
+    | VernacGeneralizable _
+    | VernacSetOpacity _ | VernacSetStrategy _
+    | VernacSetOption _ | VernacUnsetOption _
+    | VernacDeclareReduction _
+    | VernacExtend _ ) -> ()
+  | Some _, _ -> Errors.error "This command does not support Locality"
+
+(** A global default timeout, controled by option "Set Default Timeout n".
+    Use "Unset Default Timeout" to deactivate it (or set it to 0). *)
+
+let default_timeout = ref None
+
+let _ =
+  Goptions.declare_int_option
+    { Goptions.optsync  = true;
+      Goptions.optdepr  = false;
+      Goptions.optname  = "the default timeout";
+      Goptions.optkey   = ["Default";"Timeout"];
+      Goptions.optread  = (fun () -> !default_timeout);
+      Goptions.optwrite = ((:=) default_timeout) }
+
+(** When interpreting a command, the current timeout is initially
+    the default one, but may be modified locally by a Timeout command. *)
+
+let current_timeout = ref None
+
+(** Installing and de-installing a timer.
+    Note: according to ocaml documentation, Unix.alarm isn't available
+    for native win32. *)
+
+let timeout_handler _ = raise Timeout
+
+let set_timeout n =
+  let psh =
+    Sys.signal Sys.sigalrm (Sys.Signal_handle timeout_handler) in
+  ignore (Unix.alarm n);
+  Some psh
+
+let default_set_timeout () =
+  match !current_timeout with
+    | Some n -> set_timeout n
+    | None -> None
+
+let restore_timeout = function
+  | None -> ()
+  | Some psh ->
+    (* stop alarm *)
+    ignore(Unix.alarm 0);
+    (* restore handler *)
+    Sys.set_signal Sys.sigalrm psh
+
+let locate_if_not_already loc exn =
+  match Loc.get_loc exn with
+  | None -> Loc.add_loc exn loc
+  | Some l -> if Loc.is_ghost l then Loc.add_loc exn loc else exn
+
+exception HasNotFailed
+exception HasFailed of string
+
+let interp ?(verbosely=true) ?proof (loc,c) =
+  let orig_program_mode = Flags.is_program_mode () in
+  let rec aux ?locality isprogcmd = function
+    | VernacProgram c when not isprogcmd -> aux ?locality true c
+    | VernacProgram _ -> Errors.error "Program mode specified twice"
+    | VernacLocal (b, c) when Option.is_empty locality -> aux ~locality:b isprogcmd c
+    | VernacLocal _ -> Errors.error "Locality specified twice"
+    | VernacStm (Command c) -> aux ?locality isprogcmd c
+    | VernacStm (PGLast c) -> aux ?locality isprogcmd c
+    | VernacStm _ -> assert false (* Done by Stm *)
+    | VernacFail v ->
+	begin try
+	  (* If the command actually works, ignore its effects on the state.
+           * Note that error has to be printed in the right state, hence
+           * within the purified function *)
+	  Future.purify
+	    (fun v ->
+               try
+                 aux ?locality isprogcmd v;
+                 raise HasNotFailed
+               with
+               | HasNotFailed as e -> raise e
+               | e -> raise (HasFailed (Pp.string_of_ppcmds
+                  (Errors.print (Cerrors.process_vernac_interp_error e)))))
+            v
+        with e when Errors.noncritical e -> 
+          let e = Errors.push e in
+          match e with
+	  | HasNotFailed ->
+	      errorlabstrm "Fail" (str "The command has not failed!")
+	  | HasFailed msg ->
+	      if_verbose msg_info
+		(str "The command has indeed failed with message:" ++
+		 fnl () ++ str "=> " ++ hov 0 (str msg))
+          | _ -> assert false
+	end
+    | VernacTimeout (n,v) ->
+        current_timeout := Some n;
+        aux ?locality isprogcmd v
+    | VernacTime v ->
+	let tstart = System.get_time() in
+        aux ?locality isprogcmd v;
+	let tend = System.get_time() in
+	let msg = if !Flags.time then "" else "Finished transaction in " in
+        msg_info (str msg ++ System.fmt_time_difference tstart tend)
+    | c -> 
+        check_vernac_supports_locality c locality;
+        Obligations.set_program_mode isprogcmd;
+        let psh = default_set_timeout () in
+        try
+          if verbosely then Flags.verbosely (interp ?proof locality) c
+                       else Flags.silently  (interp ?proof locality) c;
+          restore_timeout psh;
+          if orig_program_mode || not !Flags.program_mode || isprogcmd then
+            Flags.program_mode := orig_program_mode
+        with
+          | reraise when Errors.noncritical reraise ->
+            let e = Errors.push reraise in
+            let e = locate_if_not_already loc e in
+            restore_timeout psh;
+            Flags.program_mode := orig_program_mode;
+            raise e
+  in
+    if verbosely then Flags.verbosely (aux false) c
+    else aux false c
 

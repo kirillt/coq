@@ -68,7 +68,7 @@ Coercion Zpos: nat >-> znat.
 Delimit Scope znat_scope with znat.
 Open Scope znat_scope.
 
-Variable addz : znat -> znat -> znat.
+Parameter addz : znat -> znat -> znat.
 Notation "z1 + z2" := (addz z1 z2) : znat_scope.
 
   (* Check that "3+3", where 3 is in nat and the coercion to znat is implicit,
@@ -244,7 +244,11 @@ Check (fun x => match x with SOME2 x => x | NONE2 => 0 end).
 
 Notation NONE3 := @None.
 Notation SOME3 := @Some.     
-Check (fun x => match x with SOME3 x => x | NONE3 => 0 end).
+Check (fun x => match x with SOME3 _ x => x | NONE3 _ => 0 end).
+
+Notation "a :'" := (cons a) (at level 12).
+
+Check (fun x => match x with | nil => NONE | h :' t => SOME3 _ t end).
 
 (* Check correct matching of "Type" in notations. Of course the
    notation denotes a term that will be reinterpreted with a different
@@ -275,3 +279,4 @@ Check fun (x:nat) (p : x=x) => match p with ONE => ONE end = p.
 
 Notation "1" := eq_refl.
 Check fun (x:nat) (p : x=x) => match p with 1 => 1 end = p.
+

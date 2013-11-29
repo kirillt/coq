@@ -9,7 +9,7 @@
 open Term
 open Tacmach
 open Names
-open Libnames
+open Globnames
 
 type seqtac= (Sequent.t -> tactic) -> Sequent.t -> tactic
 
@@ -19,7 +19,7 @@ type 'a with_backtracking = tactic -> 'a
 
 val wrap : int -> bool -> seqtac
 
-val basename_of_global: global_reference -> identifier
+val basename_of_global: global_reference -> Id.t
 
 val clear_global: global_reference -> tactic
 

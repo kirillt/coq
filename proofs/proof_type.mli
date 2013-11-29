@@ -11,34 +11,36 @@ open Evd
 open Names
 open Libnames
 open Term
-open Util
+open Context
+open Pp
 open Tacexpr
 open Glob_term
 open Genarg
 open Nametab
 open Pattern
+open Misctypes
 
 (** This module defines the structure of proof tree and the tactic type. So, it
    is used by [Proof_tree] and [Refiner] *)
 
-type goal = Goal.goal
-
-type tactic = goal sigma -> goal list sigma
-
 type prim_rule =
-  | Intro of identifier
-  | Cut of bool * bool * identifier * types
-  | FixRule of identifier * int * (identifier * int * constr) list * int
-  | Cofix of identifier * (identifier * constr) list * int
+  | Intro of Id.t
+  | Cut of bool * bool * Id.t * types
+  | FixRule of Id.t * int * (Id.t * int * constr) list * int
+  | Cofix of Id.t * (Id.t * constr) list * int
   | Refine of constr
   | Convert_concl of types * cast_kind
   | Convert_hyp of named_declaration
-  | Thin of identifier list
-  | ThinBody of identifier list
-  | Move of bool * identifier * identifier move_location
-  | Order of identifier list
-  | Rename of identifier * identifier
+  | Thin of Id.t list
+  | ThinBody of Id.t list
+  | Move of bool * Id.t * Id.t move_location
+  | Order of Id.t list
+  | Rename of Id.t * Id.t
   | Change_evars
+
+(** Nowadays, the only rules we'll consider are the primitive rules *)
+
+type rule = prim_rule
 
 (** The type [goal sigma] is the type of subgoal. It has the following form
 {v   it    = \{ evar_concl = [the conclusion of the subgoal]
@@ -65,70 +67,21 @@ type prim_rule =
                                               in the type of evar] \} \} \} v}
 *)
 
-(** {6 ... } *)
-(** Proof trees.
-  [ref] = [None] if the goal has still to be proved,
-  and [Some (r,l)] if the rule [r] was applied to the goal
-  and gave [l] as subproofs to be completed.
-  if [ref = (Some(Nested(Tactic t,p),l))] then [p] is the proof
-  that the goal can be proven if the goals in [l] are solved. *)
-type proof_tree = {
-  goal : goal;
-  ref : (rule * proof_tree list) option }
+type goal = Goal.goal
 
-and rule =
-  | Prim of prim_rule
-  | Nested of compound_rule * proof_tree
-  | Decl_proof of bool
-  | Daimon
+type tactic = goal sigma -> goal list sigma
 
-and compound_rule=
-  (** the boolean of Tactic tells if the default tactic is used *)
-  | Tactic of tactic_expr * bool
+(** Ltac traces *)
 
-and tactic_expr =
-  (constr,
-   constr_pattern,
-   evaluable_global_reference,
-   inductive,
-   ltac_constant,
-   identifier,
-   glob_tactic_expr,
-   tlevel)
-     Tacexpr.gen_tactic_expr
-
-and atomic_tactic_expr =
-  (constr,
-   constr_pattern,
-   evaluable_global_reference,
-   inductive,
-   ltac_constant,
-   identifier,
-   glob_tactic_expr,
-   tlevel)
-     Tacexpr.gen_atomic_tactic_expr
-
-and tactic_arg =
-  (constr,
-   constr_pattern,
-   evaluable_global_reference,
-   inductive,
-   ltac_constant,
-   identifier,
-   glob_tactic_expr,
-   tlevel)
-     Tacexpr.gen_tactic_arg
+(** TODO: Move those definitions somewhere sensible *)
 
 type ltac_call_kind =
-  | LtacNotationCall of string
+  | LtacNotationCall of KerName.t
   | LtacNameCall of ltac_constant
-  | LtacAtomCall of glob_atomic_tactic_expr * atomic_tactic_expr option ref
-  | LtacVarCall of identifier * glob_tactic_expr
-  | LtacConstrInterp of glob_constr *
-      (extended_patvar_map * (identifier * identifier option) list)
+  | LtacAtomCall of glob_atomic_tactic_expr
+  | LtacVarCall of Id.t * glob_tactic_expr
+  | LtacConstrInterp of glob_constr * Pretyping.ltac_var_map
 
-type ltac_trace = (int * loc * ltac_call_kind) list
+type ltac_trace = (int * Loc.t * ltac_call_kind) list
 
-exception LtacLocated of (int * ltac_call_kind * ltac_trace * loc) * exn
-
-val abstract_tactic_box : atomic_tactic_expr option ref ref
+val ltac_trace_info : ltac_trace Exninfo.t

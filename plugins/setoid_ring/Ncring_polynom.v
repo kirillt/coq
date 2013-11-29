@@ -103,7 +103,7 @@ Variable P:Pol.
 
 (* Xi^n * P + Q
 les variables de tete de Q ne sont pas forcement < i 
-mais Q est normalisé : variables de tete decroissantes *)
+mais Q est normalisÃ© : variables de tete decroissantes *)
 
 Fixpoint PaddX (i n:positive)(Q:Pol){struct Q}:=
   match Q with
@@ -416,10 +416,13 @@ Qed.
  Variable pow_th : power_theory Cp_phi rpow.
 
  (** evaluation of polynomial expressions towards R *)
+
  Fixpoint PEeval (l:list R) (pe:PExpr C) {struct pe} : R :=
    match pe with
+   | PEO => 0
+   | PEI => 1
    | PEc c => [c]
-   | PEX j => nth 0 j l
+   | PEX _ j => nth 0 j l
    | PEadd pe1 pe2 => (PEeval l pe1) + (PEeval l pe2)
    | PEsub pe1 pe2 => (PEeval l pe1) - (PEeval l pe2)
    | PEmul pe1 pe2 => (PEeval l pe1) * (PEeval l pe2)
@@ -500,8 +503,10 @@ Definition pow_N_gen (R:Type)(x1:R)(m:R->R->R)(x:R) (p:N) :=
 
   Fixpoint norm_aux (pe:PExpr C) : Pol :=
    match pe with
+   | PEO => Pc cO
+   | PEI => Pc cI
    | PEc c => Pc c
-   | PEX j => mk_X j
+   | PEX _ j => mk_X j
    | PEadd pe1 (PEopp pe2) =>
      Psub (norm_aux pe1) (norm_aux pe2)
    | PEadd pe1 pe2 => Padd (norm_aux  pe1) (norm_aux pe2)
@@ -520,28 +525,30 @@ Definition pow_N_gen (R:Type)(x1:R)(m:R->R->R)(x:R) (p:N) :=
   Proof.
    intros.
    induction pe.
-Esimpl3. Esimpl3. simpl.
- rewrite IHpe1;rewrite IHpe2.
- destruct pe2; Esimpl3. 
-unfold Psub.
-destruct pe1; destruct pe2; rewrite Padd_ok; rewrite Popp_ok; reflexivity.
-simpl. unfold Psub. rewrite IHpe1;rewrite IHpe2.
-destruct pe1. destruct pe2; rewrite Padd_ok; rewrite Popp_ok; try reflexivity.
-Esimpl3. Esimpl3. Esimpl3. Esimpl3. Esimpl3. Esimpl3.
- Esimpl3. Esimpl3. Esimpl3. Esimpl3. Esimpl3. Esimpl3. Esimpl3.
-simpl. rewrite IHpe1;rewrite IHpe2. rewrite Pmul_ok. reflexivity.
-simpl. rewrite IHpe; Esimpl3. 
-simpl.
-   rewrite Ppow_N_ok; (intros;try reflexivity). 
-   rewrite rpow_pow_N.  Esimpl3.
-   induction n;simpl. Esimpl3. induction p; simpl.
-  try rewrite IHp;try rewrite IHpe;
- repeat rewrite Pms_ok;
-      repeat rewrite Pmul_ok;reflexivity.
-rewrite Pmul_ok. try rewrite IHp;try rewrite IHpe;
- repeat rewrite Pms_ok;
-      repeat rewrite Pmul_ok;reflexivity. trivial.
-exact pow_th.
+   - now simpl; rewrite <- ring_morphism0.
+   - now simpl; rewrite <- ring_morphism1.
+   - Esimpl3. 
+   - Esimpl3. 
+   - simpl.
+     rewrite IHpe1;rewrite IHpe2.
+     destruct pe2; Esimpl3. 
+     unfold Psub.
+     destruct pe1; destruct pe2; rewrite Padd_ok; rewrite Popp_ok; reflexivity.
+   - simpl. unfold Psub. rewrite IHpe1;rewrite IHpe2.
+     now destruct pe1; 
+       [destruct pe2; rewrite Padd_ok; rewrite Popp_ok; Esimpl3 | Esimpl3..]. 
+   - simpl. rewrite IHpe1;rewrite IHpe2. rewrite Pmul_ok. reflexivity.
+   - now simpl; rewrite IHpe; Esimpl3. 
+   - simpl.
+     rewrite Ppow_N_ok; (intros;try reflexivity). 
+     rewrite rpow_pow_N; [| now apply pow_th]. 
+     induction n;simpl; [now Esimpl3|]. 
+     induction p; simpl; trivial.
+     + try rewrite IHp;try rewrite IHpe;
+         repeat rewrite Pms_ok; repeat rewrite Pmul_ok;reflexivity.
+     + rewrite Pmul_ok. 
+       try rewrite IHp;try rewrite IHpe; repeat rewrite Pms_ok;
+         repeat rewrite Pmul_ok;reflexivity. 
   Qed.
 
  Lemma norm_subst_spec :

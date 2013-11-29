@@ -8,10 +8,9 @@
 
 module Search = Explore.Make(Proof_search)
 
+open Errors
 open Util
 open Term
-open Names
-open Evd
 open Tacmach
 open Proof_search
 
@@ -27,13 +26,6 @@ let logic_constant =
 let li_False = lazy (destInd (logic_constant "False"))
 let li_and = lazy (destInd (logic_constant "and"))
 let li_or =  lazy (destInd (logic_constant "or"))
-
-let data_constant =
-  Coqlib.gen_constant "refl_tauto" ["Init";"Datatypes"]
-
-let l_true_equals_true =
-  lazy (mkApp(logic_constant "eq_refl",
-        [|data_constant "bool";data_constant "true"|]))
 
 let pos_constant =
   Coqlib.gen_constant "refl_tauto" ["Numbers";"BinNums"]
@@ -103,7 +95,7 @@ let rec make_form atom_env gls term =
 	Prod(_,a,b) ->
 	  if not (Termops.dependent (mkRel 1) b) &&
 	    Retyping.get_sort_family_of
-	    (pf_env gls) (Tacmach.project gls) a = InProp
+	    (pf_env gls) (Tacmach.project gls) a == InProp
 	  then
 	    let fa=make_form atom_env gls a in
 	    let fb=make_form atom_env gls b in
@@ -113,24 +105,24 @@ let rec make_form atom_env gls term =
       | Cast(a,_,_) ->
 	  make_form atom_env gls a
       | Ind ind ->
-	  if ind = Lazy.force li_False then
+	  if Names.eq_ind ind (Lazy.force li_False) then
 	    Bot
 	  else
 	    make_atom atom_env (normalize term)
-      | App(hd,argv) when Array.length argv = 2 ->
+      | App(hd,argv) when Int.equal (Array.length argv) 2 ->
 	  begin
 	    try
 	      let ind = destInd hd in
-		if ind = Lazy.force li_and then
+		if Names.eq_ind ind (Lazy.force li_and) then
 		  let fa=make_form atom_env gls argv.(0) in
 		  let fb=make_form atom_env gls argv.(1) in
 		    Conjunct (fa,fb)
-		else if ind = Lazy.force li_or then
+		else if Names.eq_ind ind (Lazy.force li_or) then
 		  let fa=make_form atom_env gls argv.(0) in
 		  let fb=make_form atom_env gls argv.(1) in
 		    Disjunct (fa,fb)
 		else make_atom atom_env (normalize term)
-	    with Invalid_argument _ -> make_atom atom_env (normalize term)
+	    with DestKO -> make_atom atom_env (normalize term)
 	  end
       | _ -> make_atom atom_env (normalize term)
 
@@ -143,7 +135,7 @@ let rec make_hyps atom_env gls lenv = function
 	make_hyps atom_env gls (typ::lenv) rest in
 	if List.exists (Termops.dependent (mkVar id)) lenv ||
 	  (Retyping.get_sort_family_of
-	     (pf_env gls) (Tacmach.project gls) typ <> InProp)
+	     (pf_env gls) (Tacmach.project gls) typ != InProp)
 	then
 	  hrec
 	else
@@ -151,7 +143,7 @@ let rec make_hyps atom_env gls lenv = function
 
 let rec build_pos n =
   if n<=1 then force node_count l_xH
-  else if n land 1 = 0 then
+  else if Int.equal (n land 1) 0 then
     mkApp (force node_count l_xO,[|build_pos (n asr 1)|])
   else
     mkApp (force node_count l_xI,[|build_pos (n asr 1)|])
@@ -269,22 +261,21 @@ let rtauto_tac gls=
   let gl=pf_concl gls in
   let _=
     if Retyping.get_sort_family_of
-      (pf_env gls) (Tacmach.project gls) gl <> InProp
+      (pf_env gls) (Tacmach.project gls) gl != InProp
     then errorlabstrm "rtauto" (Pp.str "goal should be in Prop") in
   let glf=make_form gamma gls gl in
   let hyps=make_hyps gamma gls [gl] (pf_hyps gls) in
   let formula=
     List.fold_left (fun gl (_,f)-> Arrow (f,gl)) glf hyps in
-  let search_fun =
-    if Tacinterp.get_debug()=Tactic_debug.DebugOn 0 then
-      Search.debug_depth_first
-    else
-      Search.depth_first in
+  let search_fun = match Tacinterp.get_debug() with
+  | Tactic_debug.DebugOn 0 -> Search.debug_depth_first
+  | _ -> Search.depth_first
+  in
   let _ =
     begin
       reset_info ();
       if !verbose then
-	msgnl (str "Starting proof-search ...");
+	msg_info (str "Starting proof-search ...");
     end in
   let search_start_time = System.get_time () in
   let prf =
@@ -294,10 +285,10 @@ let rtauto_tac gls=
   let search_end_time = System.get_time () in
   let _ = if !verbose then
     begin
-      msgnl (str "Proof tree found in " ++
+      msg_info (str "Proof tree found in " ++
 	     System.fmt_time_difference search_start_time search_end_time);
       pp_info ();
-      msgnl (str "Building proof term ... ")
+      msg_info (str "Building proof term ... ")
     end in
   let build_start_time=System.get_time () in
   let _ = step_count := 0; node_count := 0 in
@@ -306,11 +297,11 @@ let rtauto_tac gls=
 		      build_form formula;
 		      build_proof [] 0 prf|]) in
   let term=
-    Term.applist (main,List.rev_map (fun (id,_) -> mkVar id) hyps) in
+    applist (main,List.rev_map (fun (id,_) -> mkVar id) hyps) in
   let build_end_time=System.get_time () in
   let _ = if !verbose then
     begin
-      msgnl (str "Proof term built in " ++
+      msg_info (str "Proof term built in " ++
 	     System.fmt_time_difference build_start_time build_end_time ++
 	     fnl () ++
 	     str "Proof size : " ++ int !step_count ++
@@ -327,9 +318,9 @@ let rtauto_tac gls=
       Tactics.exact_no_check term gls in
   let tac_end_time = System.get_time () in
   let _ =
-    if !check then msgnl (str "Proof term type-checking is on");
+    if !check then msg_info (str "Proof term type-checking is on");
     if !verbose then
-      msgnl (str "Internal tactic executed in " ++
+      msg_info (str "Internal tactic executed in " ++
 	     System.fmt_time_difference tac_start_time tac_end_time) in
     result
 

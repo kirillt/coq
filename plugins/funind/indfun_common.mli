@@ -5,23 +5,21 @@ open Pp
    The mk_?_id function build different name w.r.t. a function
    Each of their use is justified in the code
 *)
-val mk_rel_id : identifier -> identifier
-val mk_correct_id : identifier -> identifier
-val mk_complete_id : identifier -> identifier
-val mk_equation_id : identifier -> identifier
+val mk_rel_id : Id.t -> Id.t
+val mk_correct_id : Id.t -> Id.t
+val mk_complete_id : Id.t -> Id.t
+val mk_equation_id : Id.t -> Id.t
 
 
 val msgnl : std_ppcmds -> unit
 
-val invalid_argument : string -> 'a
-
-val fresh_id : identifier list -> string -> identifier
-val fresh_name : identifier list -> string -> name
-val get_name : identifier list -> ?default:string -> name -> name
+val fresh_id : Id.t list -> string -> Id.t
+val fresh_name : Id.t list -> string -> Name.t
+val get_name : Id.t list -> ?default:string -> Name.t -> Name.t
 
 val array_get_start : 'a array -> 'a array
 
-val id_of_name : name -> identifier
+val id_of_name : Name.t -> Id.t
 
 val locate_ind : Libnames.reference -> inductive
 val locate_constant : Libnames.reference -> constant
@@ -36,15 +34,15 @@ val list_add_set_eq :
   ('a -> 'a -> bool) -> 'a -> 'a list -> 'a list
 
 val chop_rlambda_n : int -> Glob_term.glob_constr ->
-  (name*Glob_term.glob_constr*bool) list * Glob_term.glob_constr
+  (Name.t*Glob_term.glob_constr*bool) list * Glob_term.glob_constr
 
 val chop_rprod_n : int -> Glob_term.glob_constr ->
-  (name*Glob_term.glob_constr) list * Glob_term.glob_constr
+  (Name.t*Glob_term.glob_constr) list * Glob_term.glob_constr
 
 val def_of_const : Term.constr -> Term.constr
 val eq : Term.constr Lazy.t
 val refl_equal : Term.constr Lazy.t
-val const_of_id: identifier -> constant
+val const_of_id: Id.t -> constant
 val jmeq : unit -> Term.constr
 val jmeq_refl : unit -> Term.constr
 
@@ -54,16 +52,16 @@ val jmeq_refl : unit -> Term.constr
 
 val new_save_named : bool -> unit
 
-val save : bool -> identifier ->  Entries.definition_entry  -> Decl_kinds.goal_kind ->
-  Tacexpr.declaration_hook -> unit
+val save : bool -> Id.t ->  Entries.definition_entry  -> Decl_kinds.goal_kind ->
+  unit Tacexpr.declaration_hook Ephemeron.key -> unit
 
 (* [get_proof_clean do_reduce] : returns the proof name, definition, kind and hook and
    abort the proof
 *)
 val get_proof_clean : bool ->
-  Names.identifier *
+  Names.Id.t *
     (Entries.definition_entry * Decl_kinds.goal_kind *
-       Tacexpr.declaration_hook)
+      unit Tacexpr.declaration_hook Ephemeron.key)
 
 
 
@@ -112,3 +110,14 @@ exception Defining_principle of exn
 exception ToShow of exn
 
 val is_strict_tcc : unit -> bool
+
+val h_intros: Names.Id.t list -> Proof_type.tactic
+val h_id :  Names.Id.t
+val hrec_id :  Names.Id.t
+val acc_inv_id :  Term.constr Util.delayed
+val ltof_ref : Globnames.global_reference Util.delayed
+val well_founded_ltof : Term.constr Util.delayed
+val acc_rel : Term.constr Util.delayed
+val well_founded : Term.constr Util.delayed
+val evaluable_of_global_reference : Globnames.global_reference -> Names.evaluable_global_reference
+val list_rewrite : bool -> (Term.constr*bool) list -> Proof_type.tactic

@@ -1,3 +1,4 @@
+
 (* The "?" of cons and eq should be inferred *)
 Variable list : Set -> Set.
 Variable cons : forall T : Set, T -> list T -> list T.
@@ -44,13 +45,13 @@ Fixpoint build (nl : list nat) :
 
 
 (* Checks that disjoint contexts are correctly set by restrict_hyp *)
-(* Bug de 1999 corrigé en déc 2004 *)
+(* Bug de 1999 corrigÃ© en dÃ©c 2004 *)
 
 Check
   (let p :=
      fun (m : nat) f (n : nat) =>
      match f m n with
-     | exist a b => exist _ a b
+     | exist _ a b => exist _ a b
      end in
    p
    :forall x : nat,
@@ -61,7 +62,7 @@ Check
 
 Check (fun f:(forall (v:Type->Type), v (v nat) -> nat) => f _ (Some (Some O))).
 
-(* This used to fail with anomaly "evar was not declared" in V8.0pl3 *)
+(* This used to fail with anomaly (Pp.str "evar was not declared") in V8.0pl3 *)
 
 Theorem contradiction : forall p, ~ p -> p -> False.
 Proof. trivial. Qed.
@@ -177,9 +178,9 @@ refine
        | left _ => _
        | right _ =>
            match le_step s _ _ with
-           | exist s' h' =>
+           | exist _ s' h' =>
                match hr s' _ _ with
-               | exist s'' _ => exist _ s'' _
+               | exist _ s'' _ => exist _ s'' _
                end
            end
        end)).
@@ -203,7 +204,7 @@ Abort.
 Fixpoint filter (A:nat->Set) (l:list (sigT A)) : list (sigT A) :=
   match l with
   | nil => nil
-  | (existT k v)::l' => (existT _ k v):: (filter A l')
+  | (existT _ k v)::l' => (existT _ k v):: (filter A l')
   end.
 
 (* Bug #2000: used to raise Out of memory in 8.2 while it should fail by
@@ -379,3 +380,22 @@ Section evar_evar_occur.
   (* Still evars in the resulting type, but constraints should be solved *)
   Check match g _ with conj a b => f _ a b end.
 End evar_evar_occur.
+
+(* Eta expansion (bug #2936) *)
+Record iffT (X Y:Type) : Type := mkIff { iffLR : X->Y; iffRL : Y->X }.
+Record tri (R:Type->Type->Type) (S:Type->Type->Type) (T:Type->Type->Type) := mkTri {
+  tri0 : forall a b c, R a b -> S a c -> T b c
+}.
+Implicit Arguments mkTri [R S T].
+Definition tri_iffT : tri iffT iffT iffT :=
+  (mkTri
+    (fun X0 X1 X2 E01 E02 =>
+     (mkIff _ _ (fun x1 => iffLR _ _ E02 (iffRL _ _ E01 x1))
+     (fun x2 => iffLR _ _ E01 (iffRL _ _ E02 x2))))).
+
+(* Check that local defs names are preserved if possible during unification *)
+
+Goal forall x (x':=x) (f:forall y, y=y:>nat -> Prop), f _ (eq_refl x').
+intros.
+unfold x' at 2. (* A way to check that there are indeed 2 occurrences of x' *)
+Abort.

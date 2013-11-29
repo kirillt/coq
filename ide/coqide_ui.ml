@@ -1,6 +1,6 @@
 let ui_m = GAction.ui_manager ();;
 
-let no_under = Minilib.string_map (fun x -> if x = '_' then '-' else x)
+let no_under = Util.String.map (fun x -> if x = '_' then '-' else x)
 
 let list_items menu li =
   let res_buf = Buffer.create 500 in
@@ -42,14 +42,15 @@ let init () =
   </menu>
   <menu name='Edit' action='Edit'>
     <menuitem action='Undo' />
-    <menuitem action='Clear Undo Stack' />
+    <menuitem action='Redo' />
     <separator />
     <menuitem action='Cut' />
     <menuitem action='Copy' />
     <menuitem action='Paste' />
     <separator />
-    <menuitem action='Find in buffer' />
-    <menuitem action='Find backwards' />
+    <menuitem action='Find' />
+    <menuitem action='Find Next' />
+    <menuitem action='Find Previous' />
     <menuitem action='Complete Word' />
     <separator />
     <menuitem action='External editor' />
@@ -60,8 +61,12 @@ let init () =
     <menuitem action='Previous tab' />
     <menuitem action='Next tab' />
     <separator/>
+    <menuitem action='Zoom in' />
+    <menuitem action='Zoom out' />
+    <menuitem action='Zoom fit' />
+    <separator/>
     <menuitem action='Show Toolbar' />
-    <menuitem action='Show Query Pane' />
+    <menuitem action='Query Pane' />
     <separator/>
     <menuitem action='Display implicit arguments' />
     <menuitem action='Display coercions' />
@@ -79,7 +84,6 @@ let init () =
     <menuitem action='Start' />
     <menuitem action='End' />
     <menuitem action='Interrupt' />
-    <menuitem action='Hide' />
     <menuitem action='Previous' />
     <menuitem action='Next' />
   </menu>
@@ -109,12 +113,19 @@ let init () =
     %s
   </menu>
   <menu action='Queries'>
-    <menuitem action='SearchAbout' />
+    <menuitem action='Search' />
     <menuitem action='Check' />
     <menuitem action='Print' />
     <menuitem action='About' />
     <menuitem action='Locate' />
+    <menuitem action='Print Assumptions' />
     <menuitem action='Whelp Locate' />
+  </menu>
+  <menu name='Tools' action='Tools'>
+    <menuitem action='Comment' />
+    <menuitem action='Uncomment' />
+    <separator />
+    <menuitem action='Coqtop arguments' />
   </menu>
   <menu action='Compile'>
     <menuitem action='Compile buffer' />
@@ -129,6 +140,7 @@ let init () =
     <menuitem action='Browse Coq Manual' />
     <menuitem action='Browse Coq Library' />
     <menuitem action='Help for keyword' />
+    <menuitem action='Help for μPG mode' />
     <separator />
     <menuitem name='Abt' action='About Coq' />
   </menu>
@@ -141,8 +153,8 @@ let init () =
   <toolitem action='Go to' />
   <toolitem action='Start' />
   <toolitem action='End' />
+  <toolitem action='Force' />
   <toolitem action='Interrupt' />
-  <toolitem action='Hide' />
   <toolitem action='Previous' />
   <toolitem action='Next' />
   <toolitem action='Wizard' />

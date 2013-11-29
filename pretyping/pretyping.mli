@@ -13,103 +13,110 @@
    implicit arguments. *)
 
 open Names
-open Sign
+open Context
 open Term
 open Environ
 open Evd
 open Glob_term
 open Evarutil
+open Misctypes
 
 (** An auxiliary function for searching for fixpoint guard indexes *)
 
 val search_guard :
-    Util.loc -> env -> int list list -> rec_declaration -> int array
+  Loc.t -> env -> int list list -> rec_declaration -> int array
 
-type typing_constraint = OfType of types option | IsType
+type typing_constraint = OfType of types | IsType | WithoutTypeConstraint
 
-type var_map = (identifier * Pattern.constr_under_binders) list
-type unbound_ltac_var_map = (identifier * identifier option) list
+type var_map = Pattern.constr_under_binders Id.Map.t
+type unbound_ltac_var_map = Genarg.tlevel Genarg.generic_argument Id.Map.t
 type ltac_var_map = var_map * unbound_ltac_var_map
 type glob_constr_ltac_closure = ltac_var_map * glob_constr
 type pure_open_constr = evar_map * constr
 
-module type S =
-sig
+type inference_flags = {
+  use_typeclasses : bool;
+  use_unif_heuristics : bool;
+  use_hook : (env -> evar_map -> evar -> constr) option;
+  fail_evar : bool;
+  expand_evars : bool
+}
 
-  module Cases : Cases.S
+val default_inference_flags : bool -> inference_flags
 
-  (** Allow references to syntaxically inexistent variables (i.e., if applied on an inductive) *)
-  val allow_anonymous_refs : bool ref
+val no_classes_no_fail_inference_flags : inference_flags
 
-  (** Generic call to the interpreter from glob_constr to open_constr, leaving
-     unresolved holes as evars and returning the typing contexts of
-     these evars. Work as [understand_gen] for the rest. *)
+val all_no_fail_flags : inference_flags
 
-  val understand_tcc : ?resolve_classes:bool ->
-    evar_map -> env -> ?expected_type:types -> glob_constr -> open_constr
+val all_and_fail_flags : inference_flags
 
-  val understand_tcc_evars : ?fail_evar:bool -> ?resolve_classes:bool ->
-    evar_map ref -> env -> typing_constraint -> glob_constr -> constr
+(** Allow references to syntaxically inexistent variables (i.e., if applied on an inductive) *)
+val allow_anonymous_refs : bool ref
+  
+(** Generic call to the interpreter from glob_constr to open_constr, leaving
+    unresolved holes as evars and returning the typing contexts of
+    these evars. Work as [understand_gen] for the rest. *)
 
-  (** More general entry point with evars from ltac *)
+val understand_tcc : ?flags:inference_flags -> evar_map -> env ->
+  ?expected_type:typing_constraint -> glob_constr -> open_constr
 
-  (** Generic call to the interpreter from glob_constr to constr, failing
-     unresolved holes in the glob_constr cannot be instantiated.
+val understand_tcc_evars : ?flags:inference_flags -> evar_map ref -> env ->
+  ?expected_type:typing_constraint -> glob_constr -> constr
 
-     In [understand_ltac expand_evars sigma env ltac_env constraint c],
+(** More general entry point with evars from ltac *)
 
-     resolve_classes : launch typeclass resolution after typechecking.
-     expand_evars : expand inferred evars by their value if any
-     sigma : initial set of existential variables (typically dependent subgoals)
-     ltac_env : partial substitution of variables (used for the tactic language)
-     constraint : tell if interpreted as a possibly constrained term or a type
-  *)
+(** Generic call to the interpreter from glob_constr to constr
 
-  val understand_ltac : ?resolve_classes:bool ->
-    bool -> evar_map -> env -> ltac_var_map ->
-    typing_constraint -> glob_constr -> pure_open_constr
+    In [understand_ltac flags sigma env ltac_env constraint c],
 
-  (** Standard call to get a constr from a glob_constr, resolving implicit args *)
+    flags: tell how to manage evars
+    sigma: initial set of existential variables (typically current goals)
+    ltac_env: partial substitution of variables (used for the tactic language)
+    constraint: tell if interpreted as a possibly constrained term or a type
+*)
 
-  val understand : evar_map -> env -> ?expected_type:Term.types ->
-    glob_constr -> constr
+val understand_ltac : inference_flags ->
+  evar_map -> env -> ltac_var_map ->
+  typing_constraint -> glob_constr -> pure_open_constr
 
-  (** Idem but the glob_constr is intended to be a type *)
+(** Standard call to get a constr from a glob_constr, resolving implicit args *)
 
-  val understand_type : evar_map -> env -> glob_constr -> constr
+val understand : ?flags:inference_flags -> ?expected_type:typing_constraint ->
+  evar_map -> env -> glob_constr -> constr
 
-  (** A generalization of the two previous case *)
+(** Idem but returns the judgment of the understood term *)
 
-  val understand_gen : typing_constraint -> evar_map -> env ->
-    glob_constr -> constr
+val understand_judgment : evar_map -> env -> glob_constr -> unsafe_judgment
 
-  (** Idem but returns the judgment of the understood term *)
+(** Idem but do not fail on unresolved evars *)
+val understand_judgment_tcc : evar_map ref -> env -> glob_constr -> unsafe_judgment
 
-  val understand_judgment : evar_map -> env -> glob_constr -> unsafe_judgment
+(** Trying to solve remaining evars and remaining conversion problems
+    with type classes, heuristics, and possibly an external solver *)
 
-  (** Idem but do not fail on unresolved evars *)
-  val understand_judgment_tcc : evar_map ref -> env -> glob_constr -> unsafe_judgment
+val solve_remaining_evars : inference_flags ->
+  env -> (* initial map *) evar_map -> (* map to solve *) evar_map -> evar_map
 
-  (**/**)
-  (** Internal of Pretyping... *)
-  val pretype :
-    type_constraint -> env -> evar_map ref ->
-    ltac_var_map -> glob_constr -> unsafe_judgment
+(** Checking evars are all solved and reporting an appropriate error message *)
 
-  val pretype_type :
-    val_constraint -> env -> evar_map ref ->
-    ltac_var_map -> glob_constr -> unsafe_type_judgment
+val check_evars_are_solved :
+  env -> (* initial map: *) evar_map -> (* map to check: *) evar_map -> unit
 
-  val pretype_gen :
-    bool -> bool -> bool -> evar_map ref -> env ->
-    ltac_var_map -> typing_constraint -> glob_constr -> constr
+(**/**)
+(** Internal of Pretyping... *)
+val pretype :
+  type_constraint -> env -> evar_map ref ->
+  ltac_var_map -> glob_constr -> unsafe_judgment
 
-  (**/**)
+val pretype_type :
+  val_constraint -> env -> evar_map ref ->
+  ltac_var_map -> glob_constr -> unsafe_type_judgment
 
-end
+val ise_pretype_gen :
+  inference_flags -> evar_map -> env ->
+  ltac_var_map -> typing_constraint -> glob_constr -> evar_map * constr
 
-module Pretyping_F (C : Coercion.S) : S
-module Default : S
+(**/**)
 
 (** To embed constr in glob_constr *)
 
@@ -119,7 +126,6 @@ val constr_out : Dyn.t -> constr
 val interp_sort : glob_sort -> sorts
 val interp_elimination_sort : glob_sort -> sorts_family
 
-(** Last chance for solving evars, possibly using external solver *)
-val solve_remaining_evars : bool -> bool ->
-  (env -> evar_map -> existential -> constr) ->
-  env -> evar_map -> pure_open_constr -> pure_open_constr
+val genarg_interp_hook :
+  (types -> env -> evar_map -> Genarg.typed_generic_argument Id.Map.t ->
+    Genarg.glob_generic_argument -> constr * evar_map) Hook.t

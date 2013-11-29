@@ -6,6 +6,7 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Util
 
 (* Dump of globalization (to be used by coqdoc) *)
 
@@ -29,11 +30,13 @@ let dump () = !glob_output != NoGlob
 
 let noglob () = glob_output := NoGlob
 
-let dump_to_stdout () = glob_output := StdOut; glob_file := Pervasives.stdout
+let dump_to_dotglob () = glob_output := MultFiles
 
-let dump_to_dotglob f = glob_output := MultFiles
-
-let dump_into_file f = glob_output := File f; open_glob_file f
+let dump_into_file f =
+  if String.equal f "stdout" then
+    (glob_output := StdOut; glob_file := Pervasives.stdout)
+  else
+    (glob_output := File f; open_glob_file f)
 
 let dump_string s =
   if dump () then Pervasives.output_string !glob_file s
@@ -59,11 +62,6 @@ let end_dump_glob () =
 let previous_state = ref MultFiles
 let pause () = previous_state := !glob_output; glob_output := NoGlob
 let continue () = glob_output := !previous_state
-
-type coqdoc_state = Lexer.location_table
-
-let coqdoc_freeze = Lexer.location_table
-let coqdoc_unfreeze = Lexer.restore_location_table
 
 open Decl_kinds
 
@@ -102,18 +100,18 @@ let type_of_global_ref gr =
     "class"
   else
     match gr with
-    | Libnames.ConstRef cst ->
+    | Globnames.ConstRef cst ->
 	type_of_logical_kind (Decls.constant_kind cst)
-    | Libnames.VarRef v ->
+    | Globnames.VarRef v ->
 	"var" ^ type_of_logical_kind (Decls.variable_kind v)
-    | Libnames.IndRef ind ->
+    | Globnames.IndRef ind ->
 	let (mib,oib) = Inductive.lookup_mind_specif (Global.env ()) ind in
 	  if mib.Declarations.mind_record then
 	    if mib.Declarations.mind_finite then "rec"
 	    else "corec"
 	  else if mib.Declarations.mind_finite then "ind"
 	  else "coind"
-    | Libnames.ConstructRef _ -> "constr"
+    | Globnames.ConstructRef _ -> "constr"
 
 let remove_sections dir =
   if Libnames.is_dirpath_prefix_of dir (Lib.cwd ()) then
@@ -124,7 +122,7 @@ let remove_sections dir =
     dir
 
 let interval loc =
-  let loc1,loc2 = Util.unloc loc in
+  let loc1,loc2 = Loc.unloc loc in
   loc1, loc2-1
 
 let dump_ref loc filepath modpath ident ty =
@@ -137,13 +135,13 @@ let add_glob_gen loc sp lib_dp ty =
     let mod_dp,id = Libnames.repr_path sp in
     let mod_dp = remove_sections mod_dp in
     let mod_dp_trunc = Libnames.drop_dirpath_prefix lib_dp mod_dp in
-    let filepath = Names.string_of_dirpath lib_dp in
-    let modpath = Names.string_of_dirpath mod_dp_trunc in
-    let ident = Names.string_of_id id in
+    let filepath = Names.DirPath.to_string lib_dp in
+    let modpath = Names.DirPath.to_string mod_dp_trunc in
+    let ident = Names.Id.to_string id in
       dump_ref loc filepath modpath ident ty
 
 let add_glob loc ref =
-  if dump () && loc <> Util.dummy_loc then
+  if dump () && not (Loc.is_ghost loc) then
     let sp = Nametab.path_of_global ref in
     let lib_dp = Lib.library_part ref in
     let ty = type_of_global_ref ref in
@@ -154,7 +152,7 @@ let mp_of_kn kn =
     Names.MPdot (mp,l)
 
 let add_glob_kn loc kn =
-  if dump () && loc <> Util.dummy_loc then
+  if dump () && not (Loc.is_ghost loc) then
     let sp = Nametab.path_of_syndef kn in
     let lib_dp = Lib.dp_of_mp (mp_of_kn kn) in
       add_glob_gen loc sp lib_dp "syndef"
@@ -164,12 +162,12 @@ let dump_binding loc id = ()
 let dump_definition (loc, id) sec s =
   let bl,el = interval loc in
   dump_string (Printf.sprintf "%s %d:%d %s %s\n" s bl el
-			(Names.string_of_dirpath (Lib.current_dirpath sec)) (Names.string_of_id id))
+			(Names.DirPath.to_string (Lib.current_dirpath sec)) (Names.Id.to_string id))
 
 let dump_reference loc modpath ident ty =
   let bl,el = interval loc in
   dump_string (Printf.sprintf "R%d:%d %s %s %s %s\n"
-		  bl el (Names.string_of_dirpath (Lib.library_dp ())) modpath ident ty)
+		  bl el (Names.DirPath.to_string (Lib.library_dp ())) modpath ident ty)
 
 let dump_constraint ((loc, n), _, _) sec ty =
   match n with
@@ -179,9 +177,9 @@ let dump_constraint ((loc, n), _, _) sec ty =
 let dump_modref loc mp ty =
   if dump () then
     let (dp, l) = Lib.split_modpath mp in
-    let l = if l = [] then l else Util.list_drop_last l in
-    let fp = Names.string_of_dirpath dp in
-    let mp = Names.string_of_dirpath (Names.make_dirpath l) in
+    let l = if List.is_empty l then l else List.drop_last l in
+    let fp = Names.DirPath.to_string dp in
+    let mp = Names.DirPath.to_string (Names.DirPath.make l) in
     let bl,el = interval loc in
       dump_string (Printf.sprintf "R%d:%d %s %s %s %s\n"
 		      bl el fp mp "<>" ty)
@@ -190,13 +188,13 @@ let dump_moddef loc mp ty =
   if dump () then
     let bl,el = interval loc in
     let (dp, l) = Lib.split_modpath mp in
-    let mp = Names.string_of_dirpath (Names.make_dirpath l) in
+    let mp = Names.DirPath.to_string (Names.DirPath.make l) in
       dump_string (Printf.sprintf "%s %d:%d %s %s\n" ty bl el "<>" mp)
 
 let dump_libref loc dp ty =
   let bl,el = interval loc in
   dump_string (Printf.sprintf "R%d:%d %s <> <> %s\n"
-		  bl el (Names.string_of_dirpath dp) ty)
+		  bl el (Names.DirPath.to_string dp) ty)
 
 let cook_notation df sc =
   (* We encode notations so that they are space-free and still human-readable *)
@@ -212,19 +210,19 @@ let cook_notation df sc =
   let l = String.length df - 1 in
   let i = ref 0 in
   while !i <= l do
-    assert (df.[!i] <> ' ');
-    if df.[!i] = '_' && (!i = l || df.[!i+1] = ' ') then
+    assert (df.[!i] != ' ');
+    if df.[!i] == '_' && (Int.equal !i l || df.[!i+1] == ' ') then
       (* Next token is a non-terminal *)
       (ntn.[!j] <- 'x'; incr j; incr i)
     else begin
       (* Next token is a terminal *)
       ntn.[!j] <- '\''; incr j;
-      while !i <= l && df.[!i] <> ' ' do
+      while !i <= l && df.[!i] != ' ' do
 	if df.[!i] < ' ' then
 	  let c = char_of_int (int_of_char 'A' + int_of_char df.[!i] - 1) in
 	  (String.blit ("'^" ^ String.make 1 c) 0 ntn !j 3; j := !j+3; incr i)
 	else begin
-	  if df.[!i] = '\'' then (ntn.[!j] <- '\''; incr j);
+	  if df.[!i] == '\'' then (ntn.[!j] <- '\''; incr j);
 	  ntn.[!j] <- df.[!i]; incr j; incr i
 	end
       done;
@@ -237,13 +235,13 @@ let cook_notation df sc =
 
 let dump_notation (loc,(df,_)) sc sec =
   (* We dump the location of the opening '"' *)
-  dump_string (Printf.sprintf "not %d %s %s\n" (fst (Util.unloc loc))
-    (Names.string_of_dirpath (Lib.current_dirpath sec)) (cook_notation df sc))
+  dump_string (Printf.sprintf "not %d %s %s\n" (fst (Loc.unloc loc))
+    (Names.DirPath.to_string (Lib.current_dirpath sec)) (cook_notation df sc))
 
 let dump_notation_location posl df (((path,secpath),_),sc) =
   if dump () then
-    let path = Names.string_of_dirpath path in
-    let secpath = Names.string_of_dirpath secpath in
+    let path = Names.DirPath.to_string path in
+    let secpath = Names.DirPath.to_string secpath in
     let df = cook_notation df sc in
     List.iter (fun (bl,el) ->
       dump_string(Printf.sprintf "R%d:%d %s %s %s not\n" bl el path secpath df))

@@ -56,7 +56,7 @@ Class Asymmetric {A} (R : relation A) :=
 Class Transitive {A} (R : relation A) :=
   transitivity : forall x y z, R x y -> R y z -> R x z.
 
-Hint Resolve @irreflexivity : ord.
+Hint Resolve irreflexivity : ord.
 
 Unset Implicit Arguments.
 
@@ -130,7 +130,7 @@ Tactic Notation "apply" "*" constr(t) :=
 
 Ltac simpl_relation :=
   unfold flip, impl, arrow ; try reduce ; program_simpl ;
-    try ( solve [ intuition ]).
+    try ( solve [ dintuition ]).
 
 Local Obligation Tactic := simpl_relation.
 
@@ -316,7 +316,8 @@ Notation "∙⊥∙" := false_predicate : predicate_scope.
 
 (** Predicate equivalence is an equivalence, and predicate implication defines a preorder. *)
 
-Program Instance predicate_equivalence_equivalence : Equivalence (@predicate_equivalence l).
+Program Instance predicate_equivalence_equivalence : 
+  Equivalence (@predicate_equivalence l).
 
   Next Obligation.
     induction l ; firstorder.

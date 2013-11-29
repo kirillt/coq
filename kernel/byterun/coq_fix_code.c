@@ -46,7 +46,8 @@ void init_arity () {
     arity[MULCINT31]=arity[MULINT31]=arity[COMPAREINT31]=
     arity[DIV21INT31]=arity[DIVINT31]=arity[ADDMULDIVINT31]=
     arity[HEAD0INT31]=arity[TAIL0INT31]=
-    arity[COMPINT31]=arity[DECOMPINT31]=0;
+    arity[COMPINT31]=arity[DECOMPINT31]=
+    arity[ORINT31]=arity[ANDINT31]=arity[XORINT31]=0;
   /* instruction with one operand */
   arity[ACC]=arity[PUSHACC]=arity[POP]=arity[ENVACC]=arity[PUSHENVACC]=
     arity[PUSH_RETADDR]=arity[APPLY]=arity[APPTERM1]=arity[APPTERM2]=
@@ -54,7 +55,7 @@ void init_arity () {
     arity[PUSHOFFSETCLOSURE]=arity[GETGLOBAL]=arity[PUSHGETGLOBAL]=
     arity[MAKEBLOCK1]=arity[MAKEBLOCK2]=arity[MAKEBLOCK3]=arity[MAKEBLOCK4]=
     arity[MAKEACCU]=arity[CONSTINT]=arity[PUSHCONSTINT]=arity[GRABREC]=
-    arity[PUSHFIELDS]=arity[GETFIELD]=arity[SETFIELD]=arity[ACCUMULATECOND]=
+    arity[PUSHFIELDS]=arity[GETFIELD]=arity[SETFIELD]=
     arity[BRANCH]=arity[ISCONST]= 1;
   /* instruction with two operands */
   arity[APPTERM]=arity[MAKEBLOCK]=arity[CLOSURE]=
@@ -84,15 +85,6 @@ value coq_makeaccu (value i) {
   return (value)res;
 }
 
-value coq_accucond (value i) {
-  code_t q;
-  code_t res = coq_stat_alloc(8);
-  q = res;
-  *q++ = VALINSTR(ACCUMULATECOND);
-  *q = (opcode_t)Int_val(i);
-  return (value)res;
-}
-
 value coq_pushpop (value i) {
   code_t res;
   int n;
@@ -117,7 +109,7 @@ value coq_is_accumulate_code(value code){
   code_t q;
   int res;
   q = (code_t)code;
-  res = Is_instruction(q,ACCUMULATECOND) || Is_instruction(q,ACCUMULATE);
+  res = Is_instruction(q,ACCUMULATE);
   return Val_bool(res);
 }
 

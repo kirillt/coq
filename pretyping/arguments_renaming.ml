@@ -8,32 +8,20 @@
 
 (*i*)
 open Names
-open Libnames
-open Decl_kinds
+open Globnames
 open Term
-open Sign
-open Evd
 open Environ
-open Nametab
-open Mod_subst
 open Util
-open Pp
 open Libobject
-open Nameops
 (*i*)
 
-let empty_name_table = (Refmap.empty : name list list Refmap.t)
-let name_table = ref empty_name_table
-
-let _ =
-  Summary.declare_summary "rename-arguments"
-    { Summary.freeze_function = (fun () -> !name_table);
-      Summary.unfreeze_function = (fun r -> name_table := r);
-      Summary.init_function = (fun () -> name_table := empty_name_table) }
+let name_table =
+  Summary.ref (Refmap.empty : Name.t list list Refmap.t)
+    ~name:"rename-arguments"
 
 type req =
   | ReqLocal
-  | ReqGlobal of global_reference * name list list
+  | ReqGlobal of global_reference * Name.t list list
 
 let load_rename_args _ (_, (_, (r, names))) =
   name_table := Refmap.add r names !name_table
@@ -56,12 +44,14 @@ let section_segment_of_reference = function
   | _ -> []
 
 let discharge_rename_args = function
-  | _, (ReqGlobal (c, names), _) ->
-     let c' = pop_global_reference c in
-     let vars = section_segment_of_reference c in
-     let var_names = List.map (fun (id, _,_,_) -> Name id) vars in
-     let names' = List.map (fun l -> var_names @ l) names in
-     Some (ReqGlobal (c', names), (c', names'))
+  | _, (ReqGlobal (c, names), _ as req) ->
+     (try 
+       let vars = section_segment_of_reference c in
+       let c' = pop_global_reference c in
+       let var_names = List.map (fun (id, _,_,_) -> Name id) vars in
+       let names' = List.map (fun l -> var_names @ l) names in
+       Some (ReqGlobal (c', names), (c', names'))
+     with Not_found -> Some req)
   | _ -> None
 
 let rebuild_rename_args x = x

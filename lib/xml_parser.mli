@@ -27,9 +27,7 @@
 
 (** An Xml node is either
         [Element (tag-name, attributes, children)] or [PCData text] *)
-type xml = 
-        | Element of (string * (string * string) list * xml list)
-        | PCData of string
+type xml = Xml_datatype.xml
 
 (** Abstract type for an Xml parser. *)
 type t
@@ -85,21 +83,21 @@ val abs_range : error_pos -> int * int
 val pos : Lexing.lexbuf -> error_pos
 
 (** Several kind of resources can contain Xml documents. *)
-type source = 
-	| SFile of string
-	| SChannel of in_channel
-	| SString of string
-	| SLexbuf of Lexing.lexbuf
+type source =
+| SChannel of in_channel
+| SString of string
+| SLexbuf of Lexing.lexbuf
 
 (** This function returns a new parser with default options. *)
-val make : unit -> t
+val make : source -> t
 
-(** When a Xml document is parsed, the parser will check that the end of the
+(** When a Xml document is parsed, the parser may check that the end of the
  document is reached, so for example parsing ["<A/><B/>"] will fail instead
- of returning only the A element. You can turn off this check by setting
- [check_eof] to [false] {i (by default, check_eof is true)}. *)
+ of returning only the A element. You can turn on this check by setting
+ [check_eof] to [true] {i (by default, check_eof is false, unlike
+ in the original Xmllight)}. *)
 val check_eof : t -> bool -> unit
 
 (** Once the parser is configurated, you can run the parser on a any kind
  of xml document source to parse its contents into an Xml data structure. *)
-val parse :  t -> source -> xml
+val parse :  t -> xml

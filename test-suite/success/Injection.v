@@ -39,7 +39,7 @@ Qed.
 (* Test injection as *)
 
 Lemma l5 : forall x y z t : nat, (x,y) = (z,t) -> x=z.
-intros; injection H as Hyt Hxz.
+intros; injection H as Hxz Hyt.
 exact Hxz.
 Qed.
 
@@ -64,6 +64,24 @@ Goal (forall x y : nat, x = y -> S x = S y) -> True.
 intros.
 einjection (H O).
 instantiate (1:=O).
+Abort.
+
+(* Test the injection intropattern *)
+
+Goal forall (a b:nat) l l', cons a l = cons b l' -> a=b.
+intros * [= H1 H2].
+exact H1.
+Qed.
+
+(* Test injection using K, knowing that an equality is decidable *)
+(* Basic case, using sigT *)
+
+Scheme Equality for nat.
+Goal forall n:nat, forall P:nat -> Type, forall H1 H2:P n,
+  existT P n H1 = existT P n H2 -> H1 = H2.
+intros.
+injection H.
+intro H0. exact H0.
 Abort.
 
 (* Injection does not projects at positions in Prop... allow it?

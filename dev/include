@@ -33,18 +33,20 @@
 #install_printer  (* constr_substituted *) ppsconstr;; 
 #install_printer  (* universe *)  ppuni;;
 #install_printer  (* universes *)  ppuniverses;;
+#install_printer  (* constraints *)  ppconstraints;;
 #install_printer  (* type_judgement *) pptype;;
 #install_printer  (* judgement *) ppj;;
 
-#install_printer  (* hint_db *)  print_hint_db;;
+(*#install_printer  (* hint_db *)  print_hint_db;;*)
 (*#install_printer  (* hints_path *)  pphintspath;;*)
 #install_printer  (* goal *)  ppgoal;;
 (*#install_printer  (* sigma goal *)  ppsigmagoal;;*)
 (*#install_printer  (* proof *)  pproof;;*)
 #install_printer  (* Goal.goal *)  ppgoalgoal;;
 #install_printer  (* metaset.t *) ppmetas;;
+#install_printer  (* evar *)  ppevar;;
 #install_printer  (* evar_map *)  ppevm;;
-#install_printer  (* ExistentialSet.t *) ppexistentialset;;
+#install_printer  (* Evar.Set.t *) ppexistentialset;;
 #install_printer  (* clenv *) ppclenv;;
 #install_printer  (* env *) ppenv;;
 

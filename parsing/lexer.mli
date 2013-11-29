@@ -7,13 +7,12 @@
 (************************************************************************)
 
 open Pp
-open Util
 
 val add_keyword : string -> unit
 val remove_keyword : string -> unit
 val is_keyword : string -> bool
 
-val location_function : int -> loc
+(* val location_function : int -> Loc.t *)
 
 (** for coqdoc *)
 type location_table
@@ -27,13 +26,12 @@ val check_keyword : string -> unit
 type frozen_t
 val freeze : unit -> frozen_t
 val unfreeze : frozen_t -> unit
-val init : unit -> unit
 
 type com_state
 val com_state: unit -> com_state
 val restore_com_state: com_state -> unit
 
-val set_xml_output_comment : (string -> unit) -> unit
+val xml_output_comment : (string -> unit) Hook.t
 
 val terminal : string -> Tok.t
 

@@ -1,7 +1,5 @@
 # Makefile for the Coq documentation
 
-# COQSRC needs to be set to a coq source repository
-
 # To compile documentation, you need the following tools:
 # Dvi: latex (latex2e), bibtex, makeindex
 # Pdf: pdflatex

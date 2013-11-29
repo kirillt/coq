@@ -7,13 +7,9 @@
 (************************************************************************)
 
 open Util
-open Pp
-open Term
 open Names
-open Environ
-open Univ
-open Evd
-open Conv_oracle
+open Term
+open Vars
 open Closure
 open Esubst
 
@@ -46,7 +42,7 @@ type cbv_value =
   | VAL of int * constr
   | STACK of int * cbv_value * cbv_stack
   | CBN of constr * cbv_value subs
-  | LAM of int * (name * constr) list * constr * cbv_value subs
+  | LAM of int * (Name.t * constr) list * constr * cbv_value subs
   | FIXP of fixpoint * cbv_value subs * cbv_value array
   | COFIXP of cofixpoint * cbv_value subs * cbv_value array
   | CONSTR of constructor * cbv_value array
@@ -90,7 +86,7 @@ let rec shift_value n = function
   | CONSTR (c,args) ->
       CONSTR (c, Array.map (shift_value n) args)
 let shift_value n v =
-  if n = 0 then v else shift_value n v
+  if Int.equal n 0 then v else shift_value n v
 
 (* Contracts a fixpoint: given a fixpoint and a bindings,
  * returns the corresponding fixpoint body, and the bindings in which
@@ -115,7 +111,7 @@ let make_constr_ref n = function
 
 (* Adds an application list. Collapse APPs! *)
 let stack_app appl stack =
-  if Array.length appl = 0 then stack else
+  if Int.equal (Array.length appl) 0 then stack else
     match stack with
     | APP(args,stk) -> APP(Array.append appl args,stk)
     | _             -> APP(appl, stack)
@@ -267,7 +263,7 @@ and cbv_stack_term info stack env t =
           let eargs = Array.sub args nlams (nargs-nlams) in
           cbv_stack_term info (APP(eargs,stk)) env' b
         else
-          let ctxt' = list_skipn nargs ctxt in
+          let ctxt' = List.skipn nargs ctxt in
           LAM(nlams-nargs,ctxt', b, subs_cons(args,env))
 
     (* a Fix applied enough -> IOTA *)
@@ -333,7 +329,7 @@ and cbv_norm_value info = function (* reduction under binders *)
       map_constr_with_binders subs_lift (cbv_norm_term info) env t
   | LAM (n,ctxt,b,env) ->
       let nctxt =
-        list_map_i (fun i (x,ty) ->
+        List.map_i (fun i (x,ty) ->
           (x,cbv_norm_term info (subs_liftn i env) ty)) 0 ctxt in
       compose_lam (List.rev nctxt) (cbv_norm_term info (subs_liftn n env) b)
   | FIXP ((lij,(names,lty,bds)),env,args) ->

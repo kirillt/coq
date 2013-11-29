@@ -7,37 +7,126 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
 open Nameops
 open Term
+open Vars
 open Termops
-open Sign
 open Environ
-open Libnames
+open Globnames
 open Mod_subst
 
-(* The kinds of existential variable *)
+(** Generic filters *)
+module Filter :
+sig
+  type t
+  val equal : t -> t -> bool
+  val length : t -> int
+  val identity : int -> t
+  val is_identity : t -> bool
+  val init : int -> (int -> bool) -> t
+  val filter_list : t -> 'a list -> 'a list
+  val filter_array : t -> 'a array -> 'a array
+  val cons : bool -> t -> t
+  val compose : t -> t -> t
+  val restrict_upon : t -> int -> (int -> bool) -> t option
+  val map_along : (bool -> 'a -> bool) -> t -> 'a list -> t
+  val init_list : ('a -> bool) -> 'a list -> t
+  val append : t -> t -> t
+  val repr :  t -> bool list
+end =
+struct
+  type t = bool list
 
-type obligation_definition_status = Define of bool | Expand
+  (** Most of filters we use are identities, so we share their use. *)
+  let identity_pool = Array.make 128 []
 
-type hole_kind =
-  | ImplicitArg of global_reference * (int * identifier option) * bool
-  | BinderType of name
-  | QuestionMark of obligation_definition_status
-  | CasesType
-  | InternalHole
-  | TomatchTypeParameter of inductive * int
-  | GoalEvar
-  | ImpossibleCase
-  | MatchingVar of bool * identifier
+  let () =
+    (** Fill the filter pool *)
+    for i = 1 to 127 do
+      let pred = Array.unsafe_get identity_pool (pred i) in
+      let curr = true :: pred in
+      Array.unsafe_set identity_pool i curr
+    done
+
+  let rec identity_gen n accu =
+    if n = 0 then accu
+    else identity_gen (pred n) (true :: accu)
+
+  let identity n =
+    if n < 128 then Array.unsafe_get identity_pool n
+    else
+      let accu = Array.unsafe_get identity_pool 127 in
+      identity_gen (n - 127) accu
+
+  let length = List.length
+
+  let rec equal l1 l2 = match l1, l2 with
+  | [], [] -> true
+  | h1 :: l1, h2 :: l2 ->
+    (if h1 then h2 else not h2) && equal l1 l2
+  | _ -> false
+
+  let rec is_identity = function
+  | [] -> true
+  | true :: l -> is_identity l
+  | false :: _ -> false
+
+  let rec init_aux f i accu =
+    if i = 0 then accu
+    else init_aux f (pred i) (f (pred i) :: accu)
+
+  let init len f =
+    init_aux f len []
+
+  let filter_list = CList.filter_with
+
+  let filter_array = CArray.filter_with
+
+  let cons b l = b :: l
+
+  let compose = CList.filter_with
+
+  let apply_subfilter filter subfilter =
+    let len = Array.length subfilter in
+    let fold b (i, ans) =
+      if b then
+        let () = assert (0 <= i) in
+        (pred i, Array.unsafe_get subfilter i :: ans)
+      else
+        (i, false :: ans)
+    in
+    snd (List.fold_right fold filter (pred len, []))
+
+  let restrict_upon f len p =
+    let newfilter = Array.init len p in
+    if Array.for_all (fun id -> id) newfilter then
+      None
+    else
+      Some (apply_subfilter f newfilter)
+
+  let map_along = List.map2
+
+  let init_list = List.map
+
+  let append = (@)
+
+  let repr f = f
+
+end
+
+(* The kinds of existential variables are now defined in [Evar_kinds] *)
 
 (* The type of mappings for existential variables *)
 
-type evar = existential_key
+module Dummy = struct end
+module Store = Store.Make(Dummy)
 
-let string_of_existential evk = "?" ^ string_of_int evk
-let existential_of_int evk = evk
+type evar = Term.existential_key
+
+let string_of_existential evk = "?" ^ string_of_int (Evar.repr evk)
 
 type evar_body =
   | Evar_empty
@@ -47,8 +136,8 @@ type evar_info = {
   evar_concl : constr;
   evar_hyps : named_context_val;
   evar_body : evar_body;
-  evar_filter : bool list;
-  evar_source : hole_kind located;
+  evar_filter : Filter.t;
+  evar_source : Evar_kinds.t Loc.located;
   evar_candidates : constr list option; (* if not None, list of allowed instances *)
   evar_extra : Store.t }
 
@@ -56,193 +145,123 @@ let make_evar hyps ccl = {
   evar_concl = ccl;
   evar_hyps = hyps;
   evar_body = Evar_empty;
-  evar_filter = List.map (fun _ -> true) (named_context_of_val hyps);
-  evar_source = (dummy_loc,InternalHole);
+  evar_filter = Filter.identity (List.length (named_context_of_val hyps));
+  evar_source = (Loc.ghost,Evar_kinds.InternalHole);
   evar_candidates = None;
   evar_extra = Store.empty
 }
 
+let instance_mismatch () =
+  anomaly (Pp.str "Signature and its instance do not match")
+
 let evar_concl evi = evi.evar_concl
-let evar_hyps evi = evi.evar_hyps
-let evar_context evi = named_context_of_val evi.evar_hyps
-let evar_body evi = evi.evar_body
+
 let evar_filter evi = evi.evar_filter
+
+let evar_body evi = evi.evar_body
+
+let evar_context evi = named_context_of_val evi.evar_hyps
+
 let evar_filtered_context evi =
-  snd (list_filter2 (fun b c -> b) (evar_filter evi,evar_context evi))
+  let filter = evar_filter evi in
+  if Filter.is_identity filter then evar_context evi
+  else Filter.filter_list (evar_filter evi) (evar_context evi)
+
+let evar_hyps evi = evi.evar_hyps
+
 let evar_filtered_hyps evi =
-  List.fold_right push_named_context_val (evar_filtered_context evi)
-    empty_named_context_val
-let evar_unfiltered_env evi = Global.env_of_context evi.evar_hyps
-let evar_env evi =
-  List.fold_right push_named (evar_filtered_context evi)
-    (reset_context (Global.env()))
+  let filter = evar_filter evi in
+  if Filter.is_identity filter then evar_hyps evi
+  else
+    let rec make_hyps filter ctxt = match filter, ctxt with
+    | [], [] -> empty_named_context_val
+    | false :: filter, _ :: ctxt -> make_hyps filter ctxt
+    | true :: filter, decl :: ctxt ->
+      let hyps = make_hyps filter ctxt in
+      push_named_context_val decl hyps
+    | _ -> instance_mismatch ()
+    in
+    make_hyps (Filter.repr filter) (evar_context evi)
+
+let evar_env evi = Global.env_of_context evi.evar_hyps
+
+let evar_filtered_env evi =
+  let filter = evar_filter evi in
+  if Filter.is_identity filter then evar_env evi
+  else
+    let rec make_env filter ctxt = match filter, ctxt with
+    | [], [] -> reset_context (Global.env ())
+    | false :: filter, _ :: ctxt -> make_env filter ctxt
+    | true :: filter, decl :: ctxt ->
+      let env = make_env filter ctxt in
+      push_named decl env
+    | _ -> instance_mismatch ()
+    in
+    make_env (Filter.repr filter) (evar_context evi)
+
+let eq_evar_body b1 b2 = match b1, b2 with
+| Evar_empty, Evar_empty -> true
+| Evar_defined t1, Evar_defined t2 -> eq_constr t1 t2
+| _ -> false
 
 let eq_evar_info ei1 ei2 =
   ei1 == ei2 ||
     eq_constr ei1.evar_concl ei2.evar_concl &&
     eq_named_context_val (ei1.evar_hyps) (ei2.evar_hyps) &&
-    ei1.evar_body = ei2.evar_body
+    eq_evar_body ei1.evar_body ei2.evar_body
+    (** ppedrot: [eq_constr] may be a bit too permissive here *)
 
 (* spiwack: Revised hierarchy :
-   - ExistentialMap ( Maps of existential_keys )
-   - EvarInfoMap ( .t = evar_info ExistentialMap.t * evar_info ExistentialMap )
+   - Evar.Map ( Maps of existential_keys )
+   - EvarInfoMap ( .t = evar_info Evar.Map.t * evar_info Evar.Map )
    - EvarMap ( .t = EvarInfoMap.t * sort_constraints )
    - evar_map (exported)
 *)
-
-module ExistentialMap = Intmap
-module ExistentialSet = Intset
 
 (* This exception is raised by *.existential_value *)
 exception NotInstantiatedEvar
 
 (* Note: let-in contributes to the instance *)
 let make_evar_instance sign args =
-  let rec instrec = function
-    | (id,_,_) :: sign, c::args when isVarId id c -> instrec (sign,args)
-    | (id,_,_) :: sign, c::args -> (id,c) :: instrec (sign,args)
-    | [],[] -> []
-    | [],_ | _,[] -> anomaly "Signature and its instance do not match"
+  let rec instrec sign args = match sign, args with
+  | [], [] -> []
+  | (id,_,_) :: sign, c :: args ->
+    if isVarId id c then instrec sign args
+    else (id, c) :: instrec sign args
+  | [], _ | _, [] -> instance_mismatch ()
   in
-    instrec (sign,args)
+  instrec sign args
+
+let make_evar_instance_array info args =
+  let len = Array.length args in
+  let rec instrec filter ctxt i = match filter, ctxt with
+  | [], [] ->
+    if Int.equal i len then []
+    else instance_mismatch ()
+  | false :: filter, _ :: ctxt ->
+    instrec filter ctxt i
+  | true :: filter, (id, _, _) :: ctxt ->
+    if i < len then
+      let c = Array.unsafe_get args i in
+      if isVarId id c then instrec filter ctxt (succ i)
+      else (id, c) :: instrec filter ctxt (succ i)
+    else instance_mismatch ()
+  | _ -> instance_mismatch ()
+  in
+  let filter = Filter.repr (evar_filter info) in
+  instrec filter (evar_context info) 0
 
 let instantiate_evar sign c args =
   let inst = make_evar_instance sign args in
-  if inst = [] then c else replace_vars inst c
+  match inst with
+  | [] -> c
+  | _ -> replace_vars inst c
 
-module EvarInfoMap = struct
-  type t = evar_info ExistentialMap.t * evar_info ExistentialMap.t
-
-  let empty = ExistentialMap.empty, ExistentialMap.empty
-
-  let is_empty (d,u) = ExistentialMap.is_empty d && ExistentialMap.is_empty u
-
-  let has_undefined (_,u) = not (ExistentialMap.is_empty u)
-
-  let to_list (def,undef) =
-    (* Workaround for change in Map.fold behavior in ocaml 3.08.4 *)
-    let l = ref [] in
-    ExistentialMap.iter (fun evk x -> l := (evk,x)::!l) def;
-    ExistentialMap.iter (fun evk x -> l := (evk,x)::!l) undef;
-    !l
-
-  let undefined_list (def,undef) =
-    (* Order is important: needs ocaml >= 3.08.4 from which "fold" is a
-       "fold_left" *)
-    ExistentialMap.fold (fun evk evi l -> (evk,evi)::l) undef []
-
-  let undefined_evars (def,undef) = (ExistentialMap.empty,undef)
-  let defined_evars (def,undef) = (def,ExistentialMap.empty)
-
-  let find (def,undef) k =
-    try ExistentialMap.find k def
-    with Not_found -> ExistentialMap.find k undef
-  let find_undefined (def,undef) k = ExistentialMap.find k undef
-  let remove (def,undef) k =
-    (ExistentialMap.remove k def,ExistentialMap.remove k undef)
-  let mem (def,undef) k =
-    ExistentialMap.mem k def || ExistentialMap.mem k undef
-  let fold (def,undef) f a =
-    ExistentialMap.fold f def (ExistentialMap.fold f undef a)
-  let fold_undefined (def,undef) f a =
-    ExistentialMap.fold f undef a
-  let exists_undefined (def,undef) f =
-    ExistentialMap.fold (fun k v b -> b || f k v) undef false
-
-  let add (def,undef) evk newinfo =
-    if newinfo.evar_body = Evar_empty then
-      (def,ExistentialMap.add evk newinfo undef)
-    else
-      (ExistentialMap.add evk newinfo def,undef)
-
-  let add_undefined (def,undef) evk newinfo =
-    assert (newinfo.evar_body = Evar_empty);
-    (def,ExistentialMap.add evk newinfo undef)
-
-  let map f (def,undef) = (ExistentialMap.map f def, ExistentialMap.map f undef)
-
-  let define (def,undef) evk body =
-    let oldinfo =
-      try ExistentialMap.find evk undef
-      with Not_found -> 
-	try ExistentialMap.find evk def
-	with Not_found -> 
-	  anomaly "Evd.define: cannot define undeclared evar" in
-    let newinfo =
-      { oldinfo with
-	  evar_body = Evar_defined body } in
-      match oldinfo.evar_body with
-	| Evar_empty ->
-	    (ExistentialMap.add evk newinfo def,ExistentialMap.remove evk undef)
-	| _ ->
-	    anomaly "Evd.define: cannot define an evar twice"
-
-  let is_evar = mem
-
-  let is_defined (def,undef) evk = ExistentialMap.mem evk def
-  let is_undefined (def,undef) evk = ExistentialMap.mem evk undef
-
-  (*******************************************************************)
-  (* Formerly Instantiate module *)
-
-  (* Existentials. *)
-
-  let existential_type sigma (n,args) =
-    let info =
-      try find sigma n
-      with Not_found ->
-	anomaly ("Evar "^(string_of_existential n)^" was not declared") in
-    let hyps = evar_filtered_context info in
-      instantiate_evar hyps info.evar_concl (Array.to_list args)
-
-  let existential_value sigma (n,args) =
-    let info = find sigma n in
-    let hyps = evar_filtered_context info in
-      match evar_body info with
-	| Evar_defined c ->
-	    instantiate_evar hyps c (Array.to_list args)
-	| Evar_empty ->
-	    raise NotInstantiatedEvar
-
-  let existential_opt_value sigma ev =
-    try Some (existential_value sigma ev)
-    with NotInstantiatedEvar -> None
-
-end
-
-module EvarMap = struct
-  type t = EvarInfoMap.t * (Univ.UniverseLSet.t * Univ.universes)
-  let empty = EvarInfoMap.empty, (Univ.UniverseLSet.empty, Univ.initial_universes)
-  let is_empty (sigma,_) = EvarInfoMap.is_empty sigma
-  let has_undefined (sigma,_) = EvarInfoMap.has_undefined sigma
-  let add (sigma,sm) k v = (EvarInfoMap.add sigma k v, sm)
-  let add_undefined (sigma,sm) k v = (EvarInfoMap.add_undefined sigma k v, sm)
-  let find (sigma,_) = EvarInfoMap.find sigma
-  let find_undefined (sigma,_) = EvarInfoMap.find_undefined sigma
-  let remove (sigma,sm) k = (EvarInfoMap.remove sigma k, sm)
-  let mem (sigma,_) = EvarInfoMap.mem sigma
-  let to_list (sigma,_) = EvarInfoMap.to_list sigma
-  let undefined_list (sigma,_) = EvarInfoMap.undefined_list sigma
-  let undefined_evars (sigma,sm) = (EvarInfoMap.undefined_evars sigma, sm)
-  let defined_evars (sigma,sm) = (EvarInfoMap.defined_evars sigma, sm)
-  let fold (sigma,_) = EvarInfoMap.fold sigma
-  let fold_undefined (sigma,_) = EvarInfoMap.fold_undefined sigma
-  let define (sigma,sm) k v = (EvarInfoMap.define sigma k v, sm)
-  let is_evar (sigma,_) = EvarInfoMap.is_evar sigma
-  let is_defined (sigma,_) = EvarInfoMap.is_defined sigma
-  let is_undefined (sigma,_) = EvarInfoMap.is_undefined sigma
-  let existential_value (sigma,_) = EvarInfoMap.existential_value sigma
-  let existential_type (sigma,_) = EvarInfoMap.existential_type sigma
-  let existential_opt_value (sigma,_) = EvarInfoMap.existential_opt_value sigma
-  let progress_evar_map (sigma1,sm1 as x) (sigma2,sm2 as y) = not (x == y) &&
-    (EvarInfoMap.exists_undefined sigma1
-      (fun k v -> assert (v.evar_body = Evar_empty);
-        EvarInfoMap.is_defined sigma2 k))
-
-  let merge e e' = fold e' (fun n v sigma -> add sigma n v) e
-  let add_constraints (sigma, (us, sm)) cstrs =
-    (sigma, (us, Univ.merge_constraints cstrs sm))
-end
+let instantiate_evar_array info c args =
+  let inst = make_evar_instance_array info args in
+  match inst with
+  | [] -> c
+  | _ -> replace_vars inst c
 
 (*******************************************************************)
 (* Metamaps *)
@@ -253,16 +272,16 @@ end
 
 type 'a freelisted = {
   rebus : 'a;
-  freemetas : Intset.t }
+  freemetas : Int.Set.t }
 
 (* Collects all metavars appearing in a constr *)
 let metavars_of c =
   let rec collrec acc c =
     match kind_of_term c with
-      | Meta mv -> Intset.add mv acc
+      | Meta mv -> Int.Set.add mv acc
       | _         -> fold_constr collrec acc c
   in
-  collrec Intset.empty c
+  collrec Int.Set.empty c
 
 let mk_freelisted c =
   { rebus = c; freemetas = metavars_of c }
@@ -277,6 +296,8 @@ let map_fl f cfl = { cfl with rebus=f cfl.rebus }
 *)
 
 type instance_constraint = IsSuperType | IsSubType | Conv
+
+let eq_instance_constraint c1 c2 = c1 == c2
 
 (* Status of the unification of the type of an instance against the type of
      the meta it instantiates:
@@ -301,8 +322,8 @@ type instance_status = instance_constraint * instance_typing_status
 (* Clausal environments *)
 
 type clbinding =
-  | Cltyp of name * constr freelisted
-  | Clval of name * (constr freelisted * instance_status) * constr freelisted
+  | Cltyp of Name.t * constr freelisted
+  | Clval of Name.t * (constr freelisted * instance_status) * constr freelisted
 
 let map_clb f = function
   | Cltyp (na,cfl) -> Cltyp (na,map_fl f cfl)
@@ -315,11 +336,9 @@ let clb_name = function
 
 (***********************)
 
-module Metaset = Intset
+module Metaset = Int.Set
 
-let meta_exists p s = Metaset.fold (fun x b -> b || (p x)) s false
-
-module Metamap = Intmap
+module Metamap = Int.Map
 
 let metamap_to_list m =
   Metamap.fold (fun n v l -> (n,v)::l) m []
@@ -329,136 +348,226 @@ let metamap_to_list m =
 
 type conv_pb = Reduction.conv_pb
 type evar_constraint = conv_pb * Environ.env * constr * constr
-type evar_map =
-    { evars : EvarMap.t;
-      conv_pbs : evar_constraint list;
-      last_mods : ExistentialSet.t;
-      metas : clbinding Metamap.t }
+
+module EvMap = Evar.Map
+
+type evar_map = {
+  defn_evars : evar_info EvMap.t;
+  undf_evars : evar_info EvMap.t;
+  universes  : Univ.UniverseLSet.t;
+  univ_cstrs : Univ.universes;
+  conv_pbs   : evar_constraint list;
+  last_mods  : Evar.Set.t;
+  metas      : clbinding Metamap.t;
+  effects    : Declareops.side_effects;
+}
 
 (*** Lifting primitive from EvarMap. ***)
 
 (* HH: The progress tactical now uses this function. *)
 let progress_evar_map d1 d2 =
-  EvarMap.progress_evar_map d1.evars d2.evars
+  let is_new k v =
+    assert (v.evar_body == Evar_empty);
+    EvMap.mem k d2.defn_evars
+  in
+  not (d1 == d2) && EvMap.exists is_new d1.undf_evars
 
-(* spiwack: tentative. It might very well not be the semantics we want
-     for merging evar_map *)
-let merge d1 d2 = {
-  evars = EvarMap.merge d1.evars d2.evars ;
-  conv_pbs = List.rev_append d1.conv_pbs d2.conv_pbs ;
-  last_mods = ExistentialSet.union d1.last_mods d2.last_mods ;
-  metas = Metamap.fold (fun k m r -> Metamap.add k m r) d2.metas d1.metas
-}
-let add d e i = { d with evars=EvarMap.add d.evars e i }
-let remove d e = { d with evars=EvarMap.remove d.evars e }
-let find d e = EvarMap.find d.evars e
-let find_undefined d e = EvarMap.find_undefined d.evars e
-let mem d e = EvarMap.mem d.evars e
+let add d e i = match i.evar_body with
+| Evar_empty ->
+  { d with undf_evars = EvMap.add e i d.undf_evars; }
+| Evar_defined _ ->
+  { d with defn_evars = EvMap.add e i d.defn_evars; }
+
+let remove d e =
+  let undf_evars = EvMap.remove e d.undf_evars in
+  let defn_evars = EvMap.remove e d.defn_evars in
+  { d with undf_evars; defn_evars; }
+
+let find d e =
+  try EvMap.find e d.undf_evars
+  with Not_found -> EvMap.find e d.defn_evars
+
+let find_undefined d e = EvMap.find e d.undf_evars
+
+let mem d e = EvMap.mem e d.undf_evars || EvMap.mem e d.defn_evars
+
 (* spiwack: this function loses information from the original evar_map
    it might be an idea not to export it. *)
-let to_list d = EvarMap.to_list d.evars
-let undefined_list d = EvarMap.undefined_list d.evars
-let undefined_evars d = { d with evars=EvarMap.undefined_evars d.evars }
-let defined_evars d = { d with evars=EvarMap.defined_evars d.evars }
+let to_list d =
+  (* Workaround for change in Map.fold behavior in ocaml 3.08.4 *)
+  let l = ref [] in
+  EvMap.iter (fun evk x -> l := (evk,x)::!l) d.defn_evars;
+  EvMap.iter (fun evk x -> l := (evk,x)::!l) d.undf_evars;
+  !l
+
+let undefined_map d = d.undf_evars
+
 (* spiwack: not clear what folding over an evar_map, for now we shall
     simply fold over the inner evar_map. *)
-let fold f d a = EvarMap.fold d.evars f a
-let fold_undefined f d a = EvarMap.fold_undefined d.evars f a
-let is_evar d e = EvarMap.is_evar d.evars e
-let is_defined d e = EvarMap.is_defined d.evars e
-let is_undefined d e = EvarMap.is_undefined d.evars e
+let fold f d a =
+  EvMap.fold f d.defn_evars (EvMap.fold f d.undf_evars a)
 
-let existential_value d e = EvarMap.existential_value d.evars e
-let existential_type d e = EvarMap.existential_type d.evars e
-let existential_opt_value d e = EvarMap.existential_opt_value d.evars e
+let fold_undefined f d a = EvMap.fold f d.undf_evars a
 
-let add_constraints d e = {d with evars= EvarMap.add_constraints d.evars e}
+let raw_map f d =
+  let f evk info =
+    let ans = f evk info in
+    let () = match info.evar_body, ans.evar_body with
+    | Evar_defined _, Evar_empty
+    | Evar_empty, Evar_defined _ ->
+      anomaly (str "Unrespectful mapping function.")
+    | _ -> ()
+    in
+    ans
+  in
+  let defn_evars = EvMap.mapi f d.defn_evars in
+  let undf_evars = EvMap.mapi f d.undf_evars in
+  { d with defn_evars; undf_evars; }
+
+let raw_map_undefined f d =
+  let f evk info =
+    let ans = f evk info in
+    let () = match ans.evar_body with
+    | Evar_defined _ ->
+      anomaly (str "Unrespectful mapping function.")
+    | _ -> ()
+    in
+    ans
+  in
+  { d with undf_evars = EvMap.mapi f d.undf_evars; }
+
+let is_evar = mem
+
+let is_defined d e = EvMap.mem e d.defn_evars
+
+let is_undefined d e = EvMap.mem e d.undf_evars
+
+let existential_value d (n, args) =
+  let info = find d n in
+  match evar_body info with
+  | Evar_defined c ->
+    instantiate_evar_array info c args
+  | Evar_empty ->
+    raise NotInstantiatedEvar
+
+let existential_opt_value d ev =
+  try Some (existential_value d ev)
+  with NotInstantiatedEvar -> None
+
+let existential_type d (n, args) =
+  let info =
+    try find d n
+    with Not_found ->
+      anomaly (str "Evar " ++ str (string_of_existential n) ++ str " was not declared") in
+  instantiate_evar_array info info.evar_concl args
+
+let add_constraints d cstrs =
+  { d with univ_cstrs = Univ.merge_constraints cstrs d.univ_cstrs }
 
 (*** /Lifting... ***)
 
 (* evar_map are considered empty disregarding histories *)
 let is_empty d =
-  EvarMap.is_empty d.evars &&
-  d.conv_pbs = [] &&
+  EvMap.is_empty d.defn_evars &&
+  EvMap.is_empty d.undf_evars &&
+  List.is_empty d.conv_pbs &&
   Metamap.is_empty d.metas
 
 let subst_named_context_val s = map_named_val (subst_mps s)
 
 let subst_evar_info s evi =
-  let subst_evb = function Evar_empty -> Evar_empty
-    | Evar_defined c -> Evar_defined (subst_mps s c) in
+  let subst_evb = function
+  | Evar_empty -> Evar_empty
+  | Evar_defined c -> Evar_defined (subst_mps s c)
+  in
   { evi with
       evar_concl = subst_mps s evi.evar_concl;
       evar_hyps = subst_named_context_val s evi.evar_hyps;
       evar_body = subst_evb evi.evar_body }
 
 let subst_evar_defs_light sub evd =
-  assert (Univ.is_initial_universes (snd (snd evd.evars)));
-  assert (evd.conv_pbs = []);
+  assert (Univ.is_initial_universes evd.univ_cstrs);
+  assert (match evd.conv_pbs with [] -> true | _ -> false);
+  let map_info i = subst_evar_info sub i in
   { evd with
-      metas = Metamap.map (map_clb (subst_mps sub)) evd.metas;
-      evars = EvarInfoMap.map (subst_evar_info sub)  (fst evd.evars), (snd evd.evars)
-  }
+    undf_evars = EvMap.map map_info evd.undf_evars;
+    defn_evars = EvMap.map map_info evd.defn_evars;
+    metas = Metamap.map (map_clb (subst_mps sub)) evd.metas; }
 
 let subst_evar_map = subst_evar_defs_light
 
 (* spiwack: deprecated *)
 let create_evar_defs sigma = { sigma with
-  conv_pbs=[]; last_mods=ExistentialSet.empty; metas=Metamap.empty }
+  conv_pbs=[]; last_mods=Evar.Set.empty; metas=Metamap.empty }
 (* spiwack: tentatively deprecated *)
 let create_goal_evar_defs sigma = { sigma with
-   (* conv_pbs=[]; last_mods=ExistentialSet.empty; metas=Metamap.empty } *)
+   (* conv_pbs=[]; last_mods=Evar.Set.empty; metas=Metamap.empty } *)
   metas=Metamap.empty } 
-let empty =  {
-  evars=EvarMap.empty;
-  conv_pbs=[];
-  last_mods = ExistentialSet.empty;
-  metas=Metamap.empty
+
+let empty = {
+  defn_evars = EvMap.empty;
+  undf_evars = EvMap.empty;
+  universes  = Univ.UniverseLSet.empty;
+  univ_cstrs = Univ.initial_universes;
+  conv_pbs   = [];
+  last_mods  = Evar.Set.empty;
+  metas      = Metamap.empty;
+  effects    = Declareops.no_seff;
 }
 
-let has_undefined evd =
-  EvarMap.has_undefined evd.evars
+let has_undefined evd = not (EvMap.is_empty evd.undf_evars)
 
-let evars_reset_evd ?(with_conv_pbs=false) evd d = 
-  {d with evars = evd.evars; 
-     conv_pbs = if with_conv_pbs then evd.conv_pbs else d.conv_pbs }
+let evars_reset_evd ?(with_conv_pbs=false) evd d =
+  let conv_pbs = if with_conv_pbs then evd.conv_pbs else d.conv_pbs in
+  { evd with
+    metas = d.metas;
+    last_mods = d.last_mods;
+    conv_pbs; }
+
 let add_conv_pb pb d = {d with conv_pbs = pb::d.conv_pbs}
-let evar_source evk d = (EvarMap.find d.evars evk).evar_source
+
+let evar_source evk d = (find d evk).evar_source
+
+let define_aux def undef evk body =
+  let oldinfo =
+    try EvMap.find evk undef
+    with Not_found ->
+      if EvMap.mem evk def then
+        anomaly ~label:"Evd.define" (Pp.str "cannot define an evar twice")
+      else
+        anomaly ~label:"Evd.define" (Pp.str "cannot define undeclared evar")
+  in
+  let () = assert (oldinfo.evar_body == Evar_empty) in
+  let newinfo = { oldinfo with evar_body = Evar_defined body } in
+  EvMap.add evk newinfo def, EvMap.remove evk undef
 
 (* define the existential of section path sp as the constr body *)
 let define evk body evd =
-  { evd with
-    evars = EvarMap.define evd.evars evk body;
-    last_mods =
-        match evd.conv_pbs with
-	| [] ->  evd.last_mods
-        | _ -> ExistentialSet.add evk evd.last_mods }
-
-let evar_declare hyps evk ty ?(src=(dummy_loc,InternalHole)) ?filter ?candidates evd =
-  let filter =
-    if filter = None then
-      List.map (fun _ -> true) (named_context_of_val hyps)
-    else
-      (let filter = Option.get filter in
-      assert (List.length filter = List.length (named_context_of_val hyps));
-      filter)
+  let (defn_evars, undf_evars) = define_aux evd.defn_evars evd.undf_evars evk body in
+  let last_mods = match evd.conv_pbs with
+  | [] ->  evd.last_mods
+  | _ -> Evar.Set.add evk evd.last_mods
   in
-  { evd with
-    evars = EvarMap.add_undefined evd.evars evk
-      {evar_hyps = hyps;
-       evar_concl = ty;
-       evar_body = Evar_empty;
-       evar_filter = filter;
-       evar_source = src;
-       evar_candidates = candidates;
-       evar_extra = Store.empty } }
+  { evd with defn_evars; undf_evars; last_mods; }
 
-let is_defined_evar evd (evk,_) = EvarMap.is_defined evd.evars evk
-
-(* Does k corresponds to an (un)defined existential ? *)
-let is_undefined_evar evd c = match kind_of_term c with
-  | Evar ev -> not (is_defined_evar evd ev)
-  | _ -> false
+let evar_declare hyps evk ty ?(src=(Loc.ghost,Evar_kinds.InternalHole)) ?filter ?candidates evd =
+  let filter = match filter with
+  | None ->
+    Filter.identity (List.length (named_context_of_val hyps))
+  | Some filter ->
+    assert (Int.equal (Filter.length filter) (List.length (named_context_of_val hyps)));
+    filter
+  in
+  let evar_info = {
+    evar_hyps = hyps;
+    evar_concl = ty;
+    evar_body = Evar_empty;
+    evar_filter = filter;
+    evar_source = src;
+    evar_candidates = candidates;
+    evar_extra = Store.empty; }
+  in
+  { evd with undf_evars = EvMap.add evk evar_info evd.undf_evars; }
 
 (* extracts conversion problems that satisfy predicate p *)
 (* Note: conv_pbs not satisying p are stored back in reverse order *)
@@ -473,18 +582,22 @@ let extract_conv_pbs evd p =
       ([],[])
       evd.conv_pbs
   in
-  {evd with conv_pbs = pbs1; last_mods = ExistentialSet.empty},
+  {evd with conv_pbs = pbs1; last_mods = Evar.Set.empty},
   pbs
 
 let extract_changed_conv_pbs evd p =
-  extract_conv_pbs evd (p evd.last_mods)
+  extract_conv_pbs evd (fun pb -> p evd.last_mods pb)
 
 let extract_all_conv_pbs evd =
   extract_conv_pbs evd (fun _ -> true)
 
-(* spiwack: should it be replaced by Evd.merge? *)
-let evar_merge evd evars =
-  { evd with evars = EvarMap.merge evd.evars evars.evars }
+let loc_of_conv_pb evd (pbty,env,t1,t2) =
+  match kind_of_term (fst (decompose_app t1)) with
+  | Evar (evk1,_) -> fst (evar_source evk1 evd)
+  | _ ->
+  match kind_of_term (fst (decompose_app t2)) with
+  | Evar (evk2,_) -> fst (evar_source evk2 evd)
+  | _ -> Loc.ghost
 
 let evar_list evd c =
   let rec evrec acc c =
@@ -496,25 +609,36 @@ let evar_list evd c =
 let collect_evars c =
   let rec collrec acc c =
     match kind_of_term c with
-      | Evar (evk,_) -> ExistentialSet.add evk acc
+      | Evar (evk,_) -> Evar.Set.add evk acc
       | _       -> fold_constr collrec acc c
   in
-  collrec ExistentialSet.empty c
+  collrec Evar.Set.empty c
+
+(**********************************************************)
+(* Side effects *)
+
+let emit_side_effects eff evd =
+  { evd with effects = Declareops.union_side_effects eff evd.effects; }
+
+let drop_side_effects evd =
+  { evd with effects = Declareops.no_seff; }
+
+let eval_side_effects evd = evd.effects
 
 (**********************************************************)
 (* Sort variables *)
 
-let new_univ_variable ({ evars = (sigma,(us,sm)) } as d) =
+let new_univ_variable evd =
   let u = Termops.new_univ_level () in
-  let us' = Univ.UniverseLSet.add u us in
-    ({d with evars = (sigma, (us', sm))}, Univ.make_universe u)
-  
+  let universes = Univ.UniverseLSet.add u evd.universes in
+  ({ evd with universes }, Univ.Universe.make u)
+
 let new_sort_variable d =
   let (d', u) = new_univ_variable d in
-    (d', Type u)
+  (d', Type u)
 
-let is_sort_variable {evars=(_,(us,_))} s = match s with Type u -> true | _ -> false 
-let whd_sort_variable {evars=(_,sm)} t = t
+let is_sort_variable evd s = match s with Type u -> true | _ -> false 
+let whd_sort_variable evd t = t
 
 let univ_of_sort = function
   | Type u -> u
@@ -522,38 +646,41 @@ let univ_of_sort = function
   | Prop Null -> Univ.type0m_univ
 
 let is_eq_sort s1 s2 =
-  if s1 = s2 then None
-  else 
-    let u1 = univ_of_sort s1 and u2 = univ_of_sort s2 in
-      if u1 = u2 then None
+  if Sorts.equal s1 s2 then None
+  else
+    let u1 = univ_of_sort s1
+    and u2 = univ_of_sort s2 in
+      if Univ.Universe.equal u1 u2 then None
       else Some (u1, u2)
 
-let is_univ_var_or_set u =   
-  Univ.is_univ_variable u || u = Univ.type0_univ
+let is_univ_var_or_set u =
+  Univ.is_univ_variable u || Univ.is_type0_univ u
 
-let set_leq_sort ({evars = (sigma, (us, sm))} as d) s1 s2 =
+let set_leq_sort evd s1 s2 =
   match is_eq_sort s1 s2 with
-  | None -> d
+  | None -> evd
   | Some (u1, u2) ->
-      match s1, s2 with
-      | Prop c, Prop c' -> 
-	  if c = Null && c' = Pos then d
-	  else (raise (Univ.UniverseInconsistency (Univ.Le, u1, u2)))
-     | Type u, Prop c -> 
-	  if c = Pos then 
-	    add_constraints d (Univ.enforce_geq Univ.type0_univ u Univ.empty_constraint)
-	  else raise (Univ.UniverseInconsistency (Univ.Le, u1, u2))
-      | _, Type u ->
-	  if is_univ_var_or_set u then
-	    add_constraints d (Univ.enforce_geq u2 u1 Univ.empty_constraint)
-	  else raise (Univ.UniverseInconsistency (Univ.Le, u1, u2))
+    match s1, s2 with
+    | Prop Null, Prop Pos -> evd
+    | Prop _, Prop _ ->
+      raise (Univ.UniverseInconsistency (Univ.Le, u1, u2,[]))
+    | Type u, Prop Pos ->
+      let cstr = Univ.enforce_leq u Univ.type0_univ Univ.empty_constraint in
+      add_constraints evd cstr
+    | Type _, Prop _ ->
+      raise (Univ.UniverseInconsistency (Univ.Le, u1, u2,[]))
+    | _, Type u ->
+      if is_univ_var_or_set u then
+        let cstr = Univ.enforce_leq u1 u2 Univ.empty_constraint in
+        add_constraints evd cstr
+      else raise (Univ.UniverseInconsistency (Univ.Le, u1, u2,[]))
 
 let is_univ_level_var us u =
   match Univ.universe_level u with
   | Some u -> Univ.UniverseLSet.mem u us
   | None -> false
 
-let set_eq_sort ({evars = (sigma, (us, sm))} as d) s1 s2 =
+let set_eq_sort ({ universes = us; univ_cstrs = sm; } as d) s1 s2 =
   match is_eq_sort s1 s2 with
   | None -> d
   | Some (u1, u2) ->
@@ -565,37 +692,44 @@ let set_eq_sort ({evars = (sigma, (us, sm))} as d) s1 s2 =
       | Type u, Type v when (is_univ_level_var us u) || (is_univ_level_var us v) ->
 	  add_constraints d (Univ.enforce_eq u1 u2 Univ.empty_constraint)
       | Prop c, Type u when is_univ_var_or_set u &&
-	  Univ.check_eq sm u1 u2 -> d
-      | Type u, Prop c when is_univ_var_or_set u && Univ.check_eq sm u1 u2 -> d
+	  Univ.lax_check_eq sm u1 u2 -> d
+      | Type u, Prop c when is_univ_var_or_set u &&
+          Univ.lax_check_eq sm u1 u2 -> d
       | Type u, Type v when is_univ_var_or_set u && is_univ_var_or_set v ->
 	  add_constraints d (Univ.enforce_eq u1 u2 Univ.empty_constraint)
-      | _, _ -> raise (Univ.UniverseInconsistency (Univ.Eq, u1, u2))
+      | _, _ -> raise (Univ.UniverseInconsistency (Univ.Eq, u1, u2, []))
 	    
 (**********************************************************)
 (* Accessing metas *)
 
+(** We use this function to overcome OCaml compiler limitations and to prevent
+    the use of costly in-place modifications. *)
+let set_metas evd metas = {
+  defn_evars = evd.defn_evars;
+  undf_evars = evd.undf_evars;
+  universes  = evd.universes;
+  univ_cstrs = evd.univ_cstrs;
+  conv_pbs = evd.conv_pbs;
+  last_mods = evd.last_mods;
+  metas;
+  effects = evd.effects; }
+
 let meta_list evd = metamap_to_list evd.metas
 
-let find_meta evd mv = Metamap.find mv evd.metas
-
 let undefined_metas evd =
-  List.sort Pervasives.compare (map_succeed (function
-    | (n,Clval(_,_,typ)) -> failwith ""
-    | (n,Cltyp (_,typ))  -> n)
-    (meta_list evd))
-
-let metas_of evd =
-  List.map (function
-    | (n,Clval(_,_,typ)) -> (n,typ.rebus)
-    | (n,Cltyp (_,typ))  -> (n,typ.rebus))
-    (meta_list evd)
+  let filter = function
+    | (n,Clval(_,_,typ)) -> None
+    | (n,Cltyp (_,typ))  -> Some n
+  in
+  let m = List.map_filter filter (meta_list evd) in
+  List.sort Int.compare m
 
 let map_metas_fvalue f evd =
-  { evd with metas =
-      Metamap.map
-        (function
-          | Clval(id,(c,s),typ) -> Clval(id,(mk_freelisted (f c.rebus),s),typ)
-          | x -> x) evd.metas }
+  let map = function
+  | Clval(id,(c,s),typ) -> Clval(id,(mk_freelisted (f c.rebus),s),typ)
+  | x -> x
+  in
+  set_metas evd (Metamap.map map evd.metas)
 
 let meta_opt_fvalue evd mv =
   match Metamap.find mv evd.metas with
@@ -614,7 +748,7 @@ let try_meta_fvalue evd mv =
 
 let meta_fvalue evd mv =
   try try_meta_fvalue evd mv
-  with Not_found -> anomaly "meta_fvalue: meta has no value"
+  with Not_found -> anomaly ~label:"meta_fvalue" (Pp.str "meta has no value")
 
 let meta_value evd mv =
   (fst (try_meta_fvalue evd mv)).rebus
@@ -627,21 +761,24 @@ let meta_ftype evd mv =
 let meta_type evd mv = (meta_ftype evd mv).rebus
 
 let meta_declare mv v ?(name=Anonymous) evd =
-  { evd with metas = Metamap.add mv (Cltyp(name,mk_freelisted v)) evd.metas }
+  let metas = Metamap.add mv (Cltyp(name,mk_freelisted v)) evd.metas in
+  set_metas evd metas
 
-let meta_assign mv (v,pb) evd =
-  match Metamap.find mv evd.metas with
-  | Cltyp(na,ty) ->
-      { evd with
-        metas = Metamap.add mv (Clval(na,(mk_freelisted v,pb),ty)) evd.metas }
-  | _ -> anomaly "meta_assign: already defined"
+let meta_assign mv (v, pb) evd =
+  let modify _ = function
+  | Cltyp (na, ty) -> Clval (na, (mk_freelisted v, pb), ty)
+  | _ -> anomaly ~label:"meta_assign" (Pp.str "already defined")
+  in
+  let metas = Metamap.modify mv modify evd.metas in
+  set_metas evd metas
 
-let meta_reassign mv (v,pb) evd =
-  match Metamap.find mv evd.metas with
-  | Clval(na,_,ty) ->
-      { evd with
-        metas = Metamap.add mv (Clval(na,(mk_freelisted v,pb),ty)) evd.metas }
-  | _ -> anomaly "meta_reassign: not yet defined"
+let meta_reassign mv (v, pb) evd =
+  let modify _ = function
+  | Clval(na, _, ty) -> Clval (na, (mk_freelisted v, pb), ty)
+  | _ -> anomaly ~label:"meta_reassign" (Pp.str "not yet defined")
+  in
+  let metas = Metamap.modify mv modify evd.metas in
+  set_metas evd metas
 
 (* If the meta is defined then forget its name *)
 let meta_name evd mv =
@@ -653,7 +790,7 @@ let meta_with_name evd id =
     Metamap.fold
       (fun n clb (l1,l2 as l) ->
         let (na',def) = clb_name clb in
-        if na = na' then if def then (n::l1,l2) else (n::l1,n::l2)
+        if Name.equal na na' then if def then (n::l1,l2) else (n::l1,n::l2)
         else l)
       evd.metas ([],[]) in
   match mvnodef, mvl with
@@ -667,32 +804,28 @@ let meta_with_name evd id =
           (str "Binder name \"" ++ pr_id id ++
            strbrk "\" occurs more than once in clause.")
 
-
 let meta_merge evd1 evd2 =
-  {evd2 with
-    metas = List.fold_left (fun m (n,v) -> Metamap.add n v m)
-      evd2.metas (metamap_to_list evd1.metas) }
+  let metas = Metamap.fold Metamap.add evd1.metas evd2.metas in
+  set_metas evd2 metas
 
 type metabinding = metavariable * constr * instance_status
 
 let retract_coercible_metas evd =
-  let mc,ml =
-    Metamap.fold (fun n v (mc,ml) ->
-      match v with
-	| Clval (na,(b,(Conv,CoerceToType as s)),typ) ->
-	    (n,b.rebus,s)::mc, Metamap.add n (Cltyp (na,typ)) ml
-	| v ->
-	    mc, Metamap.add n v ml)
-      evd.metas ([],Metamap.empty) in
-  mc, { evd with metas = ml }
-
-let rec list_assoc_in_triple x = function
-    [] -> raise Not_found
-  | (a,b,_)::l -> if compare a x = 0 then b else list_assoc_in_triple x l
+  let mc = ref [] in
+  let map n v = match v with
+  | Clval (na, (b, (Conv, CoerceToType as s)), typ) ->
+    let () = mc := (n, b.rebus, s) :: !mc in
+    Cltyp (na, typ)
+  | v -> v
+  in
+  let metas = Metamap.mapi map evd.metas in
+  !mc, set_metas evd metas
 
 let subst_defined_metas bl c =
   let rec substrec c = match kind_of_term c with
-    | Meta i -> substrec (list_assoc_snd_in_triple i bl)
+    | Meta i ->
+      let select (j,_,_) = Int.equal i j in
+      substrec (pi2 (List.find select bl))
     | _ -> map_constr substrec c
   in try Some (substrec c) with Not_found -> None
 
@@ -704,7 +837,8 @@ type open_constr = evar_map * constr
   type ['a] *)
 type 'a sigma = {
   it : 'a ;
-  sigma : evar_map}
+  sigma : evar_map
+}
 
 let sig_it x = x.it
 let sig_sig x = x.sigma
@@ -754,26 +888,26 @@ let pr_decl ((id,b,_),ok) =
       print_constr c ++ str (if ok then ")" else "}")
 
 let pr_evar_source = function
-  | QuestionMark _ -> str "underscore"
-  | CasesType -> str "pattern-matching return predicate"
-  | BinderType (Name id) -> str "type of " ++ Nameops.pr_id id
-  | BinderType Anonymous -> str "type of anonymous binder"
-  | ImplicitArg (c,(n,ido),b) ->
+  | Evar_kinds.QuestionMark _ -> str "underscore"
+  | Evar_kinds.CasesType -> str "pattern-matching return predicate"
+  | Evar_kinds.BinderType (Name id) -> str "type of " ++ Nameops.pr_id id
+  | Evar_kinds.BinderType Anonymous -> str "type of anonymous binder"
+  | Evar_kinds.ImplicitArg (c,(n,ido),b) ->
       let id = Option.get ido in
       str "parameter " ++ pr_id id ++ spc () ++ str "of" ++
       spc () ++ print_constr (constr_of_global c)
-  | InternalHole -> str "internal placeholder"
-  | TomatchTypeParameter (ind,n) ->
-      nth n ++ str " argument of type " ++ print_constr (mkInd ind)
-  | GoalEvar -> str "goal evar"
-  | ImpossibleCase -> str "type of impossible pattern-matching clause"
-  | MatchingVar _ -> str "matching variable"
+  | Evar_kinds.InternalHole -> str "internal placeholder"
+  | Evar_kinds.TomatchTypeParameter (ind,n) ->
+      pr_nth n ++ str " argument of type " ++ print_constr (mkInd ind)
+  | Evar_kinds.GoalEvar -> str "goal evar"
+  | Evar_kinds.ImpossibleCase -> str "type of impossible pattern-matching clause"
+  | Evar_kinds.MatchingVar _ -> str "matching variable"
 
 let pr_evar_info evi =
   let phyps =
     try
-      let decls = List.combine (evar_context evi) (evar_filter evi) in
-      prlist_with_sep pr_spc pr_decl (List.rev decls)
+      let decls = List.combine (evar_context evi) (Filter.repr (evar_filter evi)) in
+      prlist_with_sep spc pr_decl (List.rev decls)
     with Invalid_argument _ -> str "Ill-formed filtered context" in
   let pty = print_constr evi.evar_concl in
   let pb =
@@ -794,95 +928,136 @@ let pr_evar_info evi =
     (str"["  ++ phyps ++ spc () ++ str"|- "  ++ pty ++ pb ++ str"]" ++
        candidates ++ spc() ++ src)
 
-let compute_evar_dependency_graph (sigma:evar_map) =
+let compute_evar_dependency_graph (sigma : evar_map) =
   (* Compute the map binding ev to the evars whose body depends on ev *)
-  fold (fun evk evi acc ->
-    let deps =
-      match evar_body evi with
-      | Evar_empty -> ExistentialSet.empty
-      | Evar_defined c -> collect_evars c in
-    ExistentialSet.fold (fun evk' acc ->
-      let tab = try ExistentialMap.find evk' acc with Not_found -> [] in
-      ExistentialMap.add evk' ((evk,evi)::tab) acc) deps acc)
-    sigma ExistentialMap.empty
+  let fold evk evi acc =
+    let fold_ev evk' acc =
+      let tab =
+        try EvMap.find evk' acc
+        with Not_found -> Evar.Set.empty
+      in
+      EvMap.add evk' (Evar.Set.add evk tab) acc
+    in
+    match evar_body evi with
+    | Evar_empty -> assert false
+    | Evar_defined c -> Evar.Set.fold fold_ev (collect_evars c) acc
+  in
+  EvMap.fold fold sigma.defn_evars EvMap.empty
 
 let evar_dependency_closure n sigma =
+  (** Create the DAG of depth [n] representing the recursive dependencies of
+      undefined evars. *)
   let graph = compute_evar_dependency_graph sigma in
-  let order a b = fst a < fst b in
-  let rec aux n l =
-    if n=0 then l
+  let rec aux n curr accu =
+    if Int.equal n 0 then Evar.Set.union curr accu
     else
-      let l' =
-        list_map_append (fun (evk,_) ->
-          try ExistentialMap.find evk graph with Not_found -> []) l in
-      aux (n-1) (list_uniquize (Sort.list order (l@l'))) in
-  aux n (undefined_list sigma)
+      let fold evk accu =
+        try
+          let deps = EvMap.find evk graph in
+          Evar.Set.union deps accu
+        with Not_found -> accu
+      in
+      (** Consider only the newly added evars *)
+      let ncurr = Evar.Set.fold fold curr Evar.Set.empty in
+      (** Merge the others *)
+      let accu = Evar.Set.union curr accu in
+      aux (n - 1) ncurr accu
+  in
+  let undef = EvMap.domain (undefined_map sigma) in
+  aux n undef Evar.Set.empty
 
-let pr_evar_map_t depth sigma =
-  let (evars,(uvs,univs)) = sigma.evars in
-  let pr_evar_list l =
-    h 0 (prlist_with_sep pr_fnl
-	   (fun (ev,evi) ->
-	     h 0 (str(string_of_existential ev) ++
-                    str"==" ++ pr_evar_info evi)) l) in
-  let evs =
-    if EvarInfoMap.is_empty evars then mt ()
-    else
-      match depth with
-      | None ->
-          (* Print all evars *)
-          str"EVARS:"++brk(0,1)++pr_evar_list (to_list sigma)++fnl()
-      | Some n ->
-          (* Print all evars *)
-          str"UNDEFINED EVARS"++
-          (if n=0 then mt() else str" (+level "++int n++str" closure):")++
-          brk(0,1)++
-          pr_evar_list (evar_dependency_closure n sigma)++fnl()
-  and svs =
-    if Univ.UniverseLSet.is_empty uvs then mt ()
-    else str"UNIVERSE VARIABLES:"++brk(0,1)++
-      h 0 (prlist_with_sep pr_fnl 
-	     (fun u -> Univ.pr_uni_level u) (Univ.UniverseLSet.elements uvs))++fnl()
-  and cs =
-    if Univ.is_initial_universes univs then mt ()
-    else str"UNIVERSES:"++brk(0,1)++
-      h 0 (Univ.pr_universes univs)++fnl()
-  in evs ++ svs ++ cs
+let evar_dependency_closure n sigma =
+  let deps = evar_dependency_closure n sigma in
+  let map = EvMap.bind (fun ev -> find sigma ev) deps in
+  EvMap.bindings map
+
+let has_no_evar sigma =
+  EvMap.is_empty sigma.defn_evars && EvMap.is_empty sigma.undf_evars
 
 let print_env_short env =
-  let pr_body n = function None -> pr_name n | Some b -> str "(" ++ pr_name n ++ str " := " ++ print_constr b ++ str ")" in
+  let pr_body n = function
+  | None -> pr_name n
+  | Some b -> str "(" ++ pr_name n ++ str " := " ++ print_constr b ++ str ")" in
   let pr_named_decl (n, b, _) = pr_body (Name n) b in
   let pr_rel_decl (n, b, _) = pr_body n b in
   let nc = List.rev (named_context env) in
   let rc = List.rev (rel_context env) in
-    str "[" ++ prlist_with_sep pr_spc pr_named_decl nc ++ str "]" ++ spc () ++
-    str "[" ++ prlist_with_sep pr_spc pr_rel_decl rc ++ str "]"
+    str "[" ++ pr_sequence pr_named_decl nc ++ str "]" ++ spc () ++
+    str "[" ++ pr_sequence pr_rel_decl rc ++ str "]"
 
-let pr_constraints pbs =
-  h 0
-    (prlist_with_sep pr_fnl 
-       (fun (pbty,env,t1,t2) ->
-	  print_env_short env ++ spc () ++ str "|-" ++ spc () ++
-	    print_constr t1 ++ spc() ++
-	    str (match pbty with
-		 | Reduction.CONV -> "=="
-		 | Reduction.CUMUL -> "<=") ++
-	    spc() ++ print_constr t2) pbs)
+let pr_evar_constraints pbs =
+  let pr_evconstr (pbty, env, t1, t2) =
+    print_env_short env ++ spc () ++ str "|-" ++ spc () ++
+      print_constr t1 ++ spc () ++
+      str (match pbty with
+            | Reduction.CONV -> "=="
+            | Reduction.CUMUL -> "<=") ++
+      spc () ++ print_constr t2
+  in
+  prlist_with_sep fnl pr_evconstr pbs
 
-let pr_evar_map_constraints evd =
-  if evd.conv_pbs = [] then mt() 
-  else pr_constraints evd.conv_pbs++fnl()
+let pr_evar_map_gen pr_evars sigma =
+  let { universes = uvs; univ_cstrs = univs; } = sigma in
+  let evs = if has_no_evar sigma then mt () else pr_evars sigma
+  and svs =
+    if Univ.UniverseLSet.is_empty uvs then mt ()
+    else str "UNIVERSE VARIABLES:" ++ brk (0, 1) ++
+      h 0 (prlist_with_sep fnl Univ.pr_uni_level
+        (Univ.UniverseLSet.elements uvs)) ++ fnl ()
+  and cs =
+    if Univ.is_initial_universes univs then mt ()
+    else str "UNIVERSES:" ++ brk (0, 1) ++
+      h 0 (Univ.pr_universes univs) ++ fnl ()
+  and cstrs =
+    if List.is_empty sigma.conv_pbs then mt ()
+    else
+    str "CONSTRAINTS:" ++ brk (0, 1) ++
+      pr_evar_constraints sigma.conv_pbs ++ fnl ()
+  and metas =
+    if Metamap.is_empty sigma.metas then mt ()
+    else
+      str "METAS:" ++ brk (0, 1) ++ pr_meta_map sigma.metas
+  in
+  evs ++ svs ++ cs ++ cstrs ++ metas
 
-let pr_evar_map allevars evd =
-  let pp_evm =
-    if EvarMap.is_empty evd.evars then mt() else
-      pr_evar_map_t allevars evd++fnl() in
-  let cstrs = if evd.conv_pbs = [] then mt() else
-    str"CONSTRAINTS:"++brk(0,1)++pr_constraints evd.conv_pbs++fnl() in
-  let pp_met =
-    if Metamap.is_empty evd.metas then mt() else
-      str"METAS:"++brk(0,1)++pr_meta_map evd.metas in
-  v 0 (pp_evm ++ cstrs ++ pp_met)
+let pr_evar_list l =
+  let pr (ev, evi) =
+    h 0 (str (string_of_existential ev) ++
+      str "==" ++ pr_evar_info evi)
+  in
+  h 0 (prlist_with_sep fnl pr l)
+
+let pr_evar_by_depth depth sigma = match depth with
+| None ->
+  (* Print all evars *)
+  str"EVARS:"++brk(0,1)++pr_evar_list (to_list sigma)++fnl()
+| Some n ->
+  (* Print all evars *)
+  str"UNDEFINED EVARS:"++
+  (if Int.equal n 0 then mt() else str" (+level "++int n++str" closure):")++
+  brk(0,1)++
+  pr_evar_list (evar_dependency_closure n sigma)++fnl()
+
+let pr_evar_by_filter filter sigma =
+  let defined = Evar.Map.filter filter sigma.defn_evars in
+  let undefined = Evar.Map.filter filter sigma.undf_evars in
+  let prdef =
+    if Evar.Map.is_empty defined then mt ()
+    else str "DEFINED EVARS:" ++ brk (0, 1) ++
+      pr_evar_list (Evar.Map.bindings defined)
+  in
+  let prundef =
+    if Evar.Map.is_empty undefined then mt ()
+    else str "UNDEFINED EVARS:" ++ brk (0, 1) ++
+      pr_evar_list (Evar.Map.bindings undefined)
+  in
+  prdef ++ prundef
+
+let pr_evar_map depth sigma =
+  pr_evar_map_gen (fun sigma -> pr_evar_by_depth depth sigma) sigma
+
+let pr_evar_map_filter filter sigma =
+  pr_evar_map_gen (fun sigma -> pr_evar_by_filter filter sigma) sigma
 
 let pr_metaset metas =
-  str "[" ++ prlist_with_sep spc pr_meta (Metaset.elements metas) ++ str "]"
+  str "[" ++ pr_sequence pr_meta (Metaset.elements metas) ++ str "]"

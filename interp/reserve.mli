@@ -6,11 +6,12 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Loc
+open Pp
 open Names
 open Glob_term
-open Topconstr
+open Notation_term
 
-val declare_reserved_type : identifier located list -> aconstr -> unit
-val find_reserved_type : identifier -> aconstr
-val anonymize_if_reserved : name -> glob_constr -> glob_constr
+val declare_reserved_type : Id.t located list -> notation_constr -> unit
+val find_reserved_type : Id.t -> notation_constr
+val anonymize_if_reserved : Name.t -> glob_constr -> glob_constr

@@ -20,7 +20,7 @@ type unify_flags = {
   resolve_evars : bool;
   use_pattern_unification : bool;
   use_meta_bound_pattern_unification : bool;
-  frozen_evars : ExistentialSet.t;
+  frozen_evars : Evar.Set.t;
   restrict_conv_on_strict_subterms : bool;
   modulo_betaiota : bool;
   modulo_eta : bool;
@@ -55,11 +55,13 @@ val w_coerce_to_type : env -> evar_map -> constr -> types -> types ->
 
 (*i This should be in another module i*)
 
-(** [abstract_list_all env evd t c l]                       
-   abstracts the terms in l over c to get a term of type t 
+(** [abstract_list_all env evd t c l]
+   abstracts the terms in l over c to get a term of type t
    (exported for inv.ml) *)
 val abstract_list_all :
-  env -> evar_map -> constr -> constr -> constr list -> constr
+  env -> evar_map -> constr -> constr -> constr list -> constr * types
+val abstract_list_all_with_dependencies :
+  env -> evar_map -> types -> constr -> constr list -> constr
 
 
 (* For tracing *)

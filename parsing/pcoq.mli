@@ -6,16 +6,19 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Loc
+open Pp
 open Names
 open Glob_term
 open Extend
 open Vernacexpr
 open Genarg
-open Topconstr
+open Constrexpr
 open Tacexpr
 open Libnames
 open Compat
+open Misctypes
+open Genredexpr
 
 (** The parser of Coq *)
 
@@ -153,29 +156,28 @@ val create_generic_entry : string -> ('a, rlevel) abstract_argument_type ->
 
 module Prim :
   sig
-    open Util
     open Names
     open Libnames
     val preident : string Gram.entry
-    val ident : identifier Gram.entry
-    val name : name located Gram.entry
-    val identref : identifier located Gram.entry
-    val pattern_ident : identifier Gram.entry
-    val pattern_identref : identifier located Gram.entry
-    val base_ident : identifier Gram.entry
+    val ident : Id.t Gram.entry
+    val name : Name.t located Gram.entry
+    val identref : Id.t located Gram.entry
+    val pattern_ident : Id.t Gram.entry
+    val pattern_identref : Id.t located Gram.entry
+    val base_ident : Id.t Gram.entry
     val natural : int Gram.entry
     val bigint : Bigint.bigint Gram.entry
     val integer : int Gram.entry
     val string : string Gram.entry
     val qualid : qualid located Gram.entry
-    val fullyqualid : identifier list located Gram.entry
+    val fullyqualid : Id.t list located Gram.entry
     val reference : reference Gram.entry
-    val by_notation : (loc * string * string option) Gram.entry
+    val by_notation : (Loc.t * string * string option) Gram.entry
     val smart_global : reference or_by_notation Gram.entry
-    val dirpath : dir_path Gram.entry
+    val dirpath : DirPath.t Gram.entry
     val ne_string : string Gram.entry
     val ne_lstring : string located Gram.entry
-    val var : identifier located Gram.entry
+    val var : Id.t located Gram.entry
   end
 
 module Constr :
@@ -185,7 +187,7 @@ module Constr :
     val lconstr : constr_expr Gram.entry
     val binder_constr : constr_expr Gram.entry
     val operconstr : constr_expr Gram.entry
-    val ident : identifier Gram.entry
+    val ident : Id.t Gram.entry
     val global : reference Gram.entry
     val sort : glob_sort Gram.entry
     val pattern : cases_pattern_expr Gram.entry
@@ -195,8 +197,8 @@ module Constr :
     val binder : local_binder list Gram.entry (* closed_binder or variable *)
     val binders : local_binder list Gram.entry (* list of binder *)
     val open_binders : local_binder list Gram.entry
-    val binders_fixannot : (local_binder list * (identifier located option * recursion_order_expr)) Gram.entry
-    val typeclass_constraint : (name located * bool * constr_expr) Gram.entry
+    val binders_fixannot : (local_binder list * (Id.t located option * recursion_order_expr)) Gram.entry
+    val typeclass_constraint : (Name.t located * bool * constr_expr) Gram.entry
     val record_declaration : constr_expr Gram.entry
     val appl_arg : (constr_expr * explicitation located option) Gram.entry
   end
@@ -219,12 +221,13 @@ module Tactic :
     val int_or_var : int or_var Gram.entry
     val red_expr : raw_red_expr Gram.entry
     val simple_tactic : raw_atomic_tactic_expr Gram.entry
-    val simple_intropattern : Genarg.intro_pattern_expr located Gram.entry
+    val simple_intropattern : intro_pattern_expr located Gram.entry
     val tactic_arg : raw_tactic_arg Gram.entry
     val tactic_expr : raw_tactic_expr Gram.entry
     val binder_tactic : raw_tactic_expr Gram.entry
     val tactic : raw_tactic_expr Gram.entry
     val tactic_eoi : raw_tactic_expr Gram.entry
+    val tacdef_body : (reference * bool * raw_tactic_expr) Gram.entry
   end
 
 module Vernac_ :
@@ -240,7 +243,7 @@ module Vernac_ :
   end
 
 (** The main entry: reads an optional vernac command *)
-val main_entry : (loc * vernac_expr) option Gram.entry
+val main_entry : (Loc.t * vernac_expr) option Gram.entry
 
 (** Mapping formal entries into concrete ones *)
 
@@ -287,15 +290,15 @@ val interp_entry_name : bool (** true to fail on unknown entry *) ->
 
 val find_position :
   bool (** true if for creation in pattern entry; false if in constr entry *) ->
-  gram_assoc option -> int option ->
-    gram_position option * gram_assoc option * string option *
-    (** for reinitialization: *) gram_assoc option
+  Extend.gram_assoc option -> int option ->
+    Extend.gram_position option * Extend.gram_assoc option * string option *
+    (** for reinitialization: *) Extend.gram_assoc option
 
 val synchronize_level_positions : unit -> unit
 
 val register_empty_levels : bool -> int list ->
-    (gram_position option * gram_assoc option *
-     string option * gram_assoc option) list
+    (Extend.gram_position option * Extend.gram_assoc option *
+     string option * Extend.gram_assoc option) list
 
 val remove_levels : int -> unit
 

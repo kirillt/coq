@@ -6,14 +6,15 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Pp
 open Names
 open Term
 open Entries
 open Libnames
+open Globnames
 open Tacexpr
 open Vernacexpr
-open Topconstr
+open Constrexpr
 open Decl_kinds
 open Redexpr
 open Constrintern
@@ -26,29 +27,32 @@ open Pfedit
 
 val set_declare_definition_hook : (definition_entry -> unit) -> unit
 val get_declare_definition_hook : unit -> (definition_entry -> unit)
-val set_declare_assumptions_hook : (types -> unit) -> unit
 
 (** {6 Definitions/Let} *)
 
 val interp_definition :
   local_binder list -> red_expr option -> constr_expr ->
-  constr_expr option -> definition_entry * Impargs.manual_implicits
+  constr_expr option -> definition_entry * Evd.evar_map * Impargs.manual_implicits
 
-val declare_definition : identifier -> locality * definition_object_kind ->
-  definition_entry -> Impargs.manual_implicits -> declaration_hook -> unit
+val declare_definition : Id.t -> definition_kind ->
+  definition_entry -> Impargs.manual_implicits ->
+    Globnames.global_reference declaration_hook -> Globnames.global_reference
+
+val do_definition : Id.t -> definition_kind ->
+  local_binder list -> red_expr option -> constr_expr ->
+  constr_expr option -> unit declaration_hook -> unit
 
 (** {6 Parameters/Assumptions} *)
 
-val interp_assumption :
-  local_binder list -> constr_expr -> types * Impargs.manual_implicits
-
+(** returns [false] if the assumption is neither local to a section,
+    nor in a module type and meant to be instantiated. *)
 val declare_assumption : coercion_flag -> assumption_kind -> types ->
   Impargs.manual_implicits ->
-  bool (** implicit *) -> Entries.inline -> variable located -> unit
+  bool (** implicit *) -> Vernacexpr.inline -> variable Loc.located ->
+  global_reference * bool
 
-val declare_assumptions : variable located list ->
-  coercion_flag -> assumption_kind -> types -> Impargs.manual_implicits ->
-  bool -> Entries.inline -> unit
+val do_assumptions : locality * assumption_object_kind ->
+  Vernacexpr.inline -> simple_binder with_coercion list -> bool
 
 (** {6 Inductive and coinductive types} *)
 
@@ -56,9 +60,9 @@ val declare_assumptions : variable located list ->
    inductive declarations *)
 
 type structured_one_inductive_expr = {
-  ind_name : identifier;
+  ind_name : Id.t;
   ind_arity : constr_expr;
-  ind_lc : (identifier * constr_expr) list
+  ind_lc : (Id.t * constr_expr) list
 }
 
 type structured_inductive_expr =
@@ -93,8 +97,8 @@ val do_mutual_inductive :
 (** {6 Fixpoints and cofixpoints} *)
 
 type structured_fixpoint_expr = {
-  fix_name : identifier;
-  fix_annot : identifier located option;
+  fix_name : Id.t;
+  fix_annot : Id.t Loc.located option;
   fix_binders : local_binder list;
   fix_body : constr_expr option;
   fix_type : constr_expr
@@ -114,37 +118,37 @@ val extract_cofixpoint_components :
 (** Typing global fixpoints and cofixpoint_expr *)
 
 type recursive_preentry =
-  identifier list * constr option list * types list
+  Id.t list * constr option list * types list
 
 val interp_fixpoint :
   structured_fixpoint_expr list -> decl_notation list ->
-    recursive_preentry * (name list * Impargs.manual_implicits * int option) list
+    recursive_preentry * (Name.t list * Impargs.manual_implicits * int option) list
 
 val interp_cofixpoint :
   structured_fixpoint_expr list -> decl_notation list ->
-    recursive_preentry * (name list * Impargs.manual_implicits * int option) list
+    recursive_preentry * (Name.t list * Impargs.manual_implicits * int option) list
 
 (** Registering fixpoints and cofixpoints in the environment *)
 
 val declare_fixpoint :
-  recursive_preentry * (name list * Impargs.manual_implicits * int option) list ->
+  locality -> recursive_preentry * (Name.t list * Impargs.manual_implicits * int option) list ->
   lemma_possible_guards -> decl_notation list -> unit
 
 val declare_cofixpoint :
-  recursive_preentry * (name list * Impargs.manual_implicits * int option) list ->
+  locality -> recursive_preentry * (Name.t list * Impargs.manual_implicits * int option) list ->
     decl_notation list -> unit
 
 (** Entry points for the vernacular commands Fixpoint and CoFixpoint *)
 
 val do_fixpoint :
-  (fixpoint_expr * decl_notation list) list -> unit
+  locality -> (fixpoint_expr * decl_notation list) list -> unit
 
 val do_cofixpoint :
-  (cofixpoint_expr * decl_notation list) list -> unit
+  locality -> (cofixpoint_expr * decl_notation list) list -> unit
 
 (** Utils *)
 
-val check_mutuality : Environ.env -> bool -> (identifier * types) list -> unit
+val check_mutuality : Environ.env -> bool -> (Id.t * types) list -> unit
 
-val declare_fix : definition_object_kind -> identifier ->
-  constr -> types -> Impargs.manual_implicits -> global_reference
+val declare_fix : definition_kind -> Id.t ->
+  Entries.proof_output -> types -> Impargs.manual_implicits -> global_reference

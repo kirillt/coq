@@ -116,7 +116,7 @@ let insert texfile coq_output result =
   let next_block k =
     if !last_read = "" then last_read := input_line c_coq;
     (* skip k prompts *)
-    for i = 1 to k do
+    for _i = 1 to k do
       last_read := remove_prompt !last_read;
     done;
     (* read and return the following lines until a prompt is found *)
@@ -171,7 +171,7 @@ let insert texfile coq_output result =
       just_after ()
     end else begin
       if !verbose then Printf.printf "Coq < %s\n" s;
-      if (not first_block) & k=0 then output_string c_out "\\medskip\n";
+      if (not first_block) && k=0 then output_string c_out "\\medskip\n";
       if show_questions then encapsule false c_out ("Coq < " ^ s);
       if has_match dot_end_line s then begin
 	let bl = next_block (succ k) in
@@ -209,7 +209,7 @@ let insert texfile coq_output result =
 
 (* Process of one TeX file *)
 
-let rm f = try Sys.remove f with _ -> ()
+let rm f = try Sys.remove f with any -> ()
 
 let one_file texfile =
   let inputv = Filename.temp_file "coq_tex" ".v" in
@@ -233,9 +233,9 @@ let one_file texfile =
     insert texfile coq_output result;
     (* 4. clean up *)
     rm inputv; rm coq_output
-  with e -> begin
+  with reraise -> begin
     rm inputv; rm coq_output;
-    raise e
+    raise reraise
   end
 
 (* Parsing of the command line, check of the Coq command and process

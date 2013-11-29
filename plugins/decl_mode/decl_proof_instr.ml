@@ -6,29 +6,31 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Pp
 open Evd
 
-open Refiner
-open Proof_type
 open Tacmach
+open Tacintern
 open Tacinterp
 open Decl_expr
 open Decl_mode
 open Decl_interp
 open Glob_term
+open Glob_ops
 open Names
 open Nameops
 open Declarations
 open Tactics
 open Tacticals
 open Term
+open Vars
 open Termops
 open Namegen
 open Reductionops
 open Goptions
-
+open Misctypes
 
 (* Strictness option *)
 
@@ -49,20 +51,21 @@ let _ =
 
 let tcl_change_info_gen info_gen =
   (fun gls ->
+     let it = sig_it gls in
      let concl = pf_concl gls in
-     let hyps = Goal.V82.hyps (project gls) (sig_it gls) in
-     let extra = Goal.V82.extra (project gls) (sig_it gls) in
+     let hyps = Goal.V82.hyps (project gls) it in
+     let extra = Goal.V82.extra (project gls) it in
      let (gl,ev,sigma) = Goal.V82.mk_goal (project gls) hyps concl (info_gen extra) in
-     let sigma = Goal.V82.partial_solution sigma (sig_it gls) ev in
-     { it = [gl] ; sigma= sigma } )
+     let sigma = Goal.V82.partial_solution sigma it ev in
+     { it = [gl] ; sigma= sigma; } )
 
-open Store.Field
-
-let tcl_change_info info gls =  
-  let info_gen = Decl_mode.info.set info in
+let tcl_change_info info gls =
+  let info_gen s = Store.set s Decl_mode.info info in
   tcl_change_info_gen info_gen gls
 
-let tcl_erase_info gls =  tcl_change_info_gen (Decl_mode.info.remove) gls
+let tcl_erase_info gls =
+  let info_gen s = Store.remove s Decl_mode.info in
+  tcl_change_info_gen info_gen gls
 
 let special_whd gl=
   let infos=Closure.create_clos_infos Closure.betadeltaiota (pf_env gl) in
@@ -74,7 +77,7 @@ let special_nf gl=
 
 let is_good_inductive env ind =
   let mib,oib = Inductive.lookup_mind_specif env ind in
-    oib.mind_nrealargs = 0 && not (Inductiveops.mis_is_recursive (ind,mib,oib))
+    Int.equal oib.mind_nrealargs 0 && not (Inductiveops.mis_is_recursive (ind,mib,oib))
 
 let check_not_per pts =
   if not (Proof.is_done pts) then
@@ -90,7 +93,7 @@ let mk_evd metalist gls =
     meta_declare meta typ evd in
     List.fold_right add_one metalist evd0
 
-let is_tmp id = (string_of_id id).[0] = '_'
+let is_tmp id = (Id.to_string id).[0] == '_'
 
 let tmp_ids gls =
   let ctx = pf_hyps gls in
@@ -118,7 +121,7 @@ let start_proof_tac gls=
   tcl_change_info info gls
 
 let go_to_proof_mode () =
-  Pfedit.by start_proof_tac;
+  ignore (Pfedit.by (Proofview.V82.tactic start_proof_tac));
   let p = Proof_global.give_me_the_proof () in
   Decl_mode.focus p
 
@@ -126,50 +129,34 @@ let go_to_proof_mode () =
 
 let daimon_tac gls =
   set_daimon_flag ();
-  {it=[];sigma=sig_sig gls}
-
-
-(* marking closed blocks *)
-
-let rec is_focussing_instr = function
-    Pthus i | Pthen i | Phence i -> is_focussing_instr i
-  | Pescape | Pper _ | Pclaim _ | Pfocus _
-  | Psuppose _ | Pcase (_,_,_)  -> true
-  | _ -> false
-
-let mark_rule_as_done = function
-    Decl_proof true -> Decl_proof false
-  | Decl_proof false ->
-      anomaly "already marked as done"
-  | _ -> anomaly "mark_rule_as_done"
-
+  {it=[];sigma=sig_sig gls;}
 
 (* post-instruction focus management *)
 
 (* spiwack: This used to fail if there was no focusing command
    above, but I don't think it ever happened. I hope it doesn't mess
    things up*)
-let goto_current_focus pts = 
-  Decl_mode.maximal_unfocus pts
+let goto_current_focus () = 
+  Decl_mode.maximal_unfocus ()
 
-let goto_current_focus_or_top pts =
-  goto_current_focus pts
+let goto_current_focus_or_top () =
+  goto_current_focus ()
 
 (* return *)
 
-let close_tactic_mode pts =
-  try goto_current_focus pts
+let close_tactic_mode () =
+  try goto_current_focus ()
   with Not_found ->
     error "\"return\" cannot be used outside of Declarative Proof Mode."
 
 let return_from_tactic_mode () =
-  close_tactic_mode (Proof_global.give_me_the_proof ())
+  close_tactic_mode ()
 
 (* end proof/claim *)
 
 let close_block bt pts =
     if Proof.no_focused_goal pts then
-      goto_current_focus pts
+      goto_current_focus ()
     else
       let stack =
 	if Proof.is_done pts then
@@ -179,7 +166,7 @@ let close_block bt pts =
       in
       match bt,stack with
 	B_claim, Claim::_ | B_focus, Focus_claim::_ | B_proof, [] ->
-	  (goto_current_focus pts)
+	  (goto_current_focus ())
       | _, Claim::_ ->
 	  error "\"end claim\" expected."
       | _, Focus_claim::_ ->
@@ -192,7 +179,7 @@ let close_block bt pts =
 		ET_Case_analysis -> error "\"end cases\" expected."
 	      | ET_Induction ->  error "\"end induction\" expected."
 	  end
-      | _,_ -> anomaly "Lonely suppose on stack."
+      | _,_ -> anomaly (Pp.str "Lonely suppose on stack.")
 
 
 (* utility for suppose / suppose it is *)
@@ -202,15 +189,15 @@ let close_previous_case pts =
     Proof.is_done pts
   then
     match get_top_stack pts with
-	Per (et,_,_,_) :: _ -> anomaly "Weird case occured ..."
+	Per (et,_,_,_) :: _ -> anomaly (Pp.str "Weird case occured ...")
       | Suppose_case :: Per (et,_,_,_) :: _ ->
-	  goto_current_focus (pts)
+	  goto_current_focus ()
       | _ -> error "Not inside a proof per cases or induction."
   else
     match get_stack pts with
 	Per (et,_,_,_) :: _ -> ()
       | Suppose_case :: Per (et,_,_,_) :: _ ->
-	  goto_current_focus ((pts))
+	  goto_current_focus ()
       | _ -> error "Not inside a proof per cases or induction."
 
 (* Proof instructions *)
@@ -225,38 +212,38 @@ let filter_hyps f gls =
       tclTRY (clear [id])  in
     tclMAP filter_aux (pf_hyps gls) gls
 
-let local_hyp_prefix = id_of_string "___"
+let local_hyp_prefix = Id.of_string "___"
 
 let add_justification_hyps keep items gls =
   let add_aux c gls=
     match kind_of_term c with
 	Var id ->
-	  keep:=Idset.add id !keep;
+	  keep:=Id.Set.add id !keep;
 	  tclIDTAC gls
       | _ ->
 	  let id=pf_get_new_id local_hyp_prefix gls in
-	    keep:=Idset.add id !keep;
-	    tclTHEN (letin_tac None (Names.Name id) c None Tacexpr.nowhere)
+	    keep:=Id.Set.add id !keep;
+	    tclTHEN (Proofview.V82.of_tactic (letin_tac None (Names.Name id) c None Locusops.nowhere))
               (thin_body [id]) gls in
     tclMAP add_aux items gls
 
 let prepare_goal items gls =
-  let tokeep = ref Idset.empty in
+  let tokeep = ref Id.Set.empty in
   let auxres = add_justification_hyps tokeep items gls in
    tclTHENLIST
      [ (fun _ -> auxres);
-       filter_hyps (let keep = !tokeep in fun id -> Idset.mem id keep)] gls
+       filter_hyps (let keep = !tokeep in fun id -> Id.Set.mem id keep)] gls
 
 let my_automation_tac = ref
-  (fun gls -> anomaly "No automation registered")
+  (Proofview.tclZERO (Errors.make_anomaly (Pp.str"No automation registered")))
 
 let register_automation_tac tac = my_automation_tac:= tac
 
-let automation_tac gls = !my_automation_tac gls
+let automation_tac = Proofview.tclBIND (Proofview.tclUNIT ()) (fun () -> !my_automation_tac)
 
 let justification tac gls=
     tclORELSE
-      (tclSOLVE [tclTHEN tac assumption])
+      (tclSOLVE [tclTHEN tac (Proofview.V82.of_tactic assumption)])
       (fun gls ->
 	 if get_strictness () then
 	   error "Insufficient justification."
@@ -267,7 +254,7 @@ let justification tac gls=
 	   end) gls
 
 let default_justification elems gls=
-  justification (tclTHEN (prepare_goal elems) automation_tac) gls
+  justification (tclTHEN (prepare_goal elems) (Proofview.V82.of_tactic automation_tac)) gls
 
 (* code for conclusion refining *)
 
@@ -302,7 +289,7 @@ type stackd_elt =
 
 let rec replace_in_list m l = function
     [] -> raise Not_found
-  | c::q -> if m=fst c then l@q else c::replace_in_list m l q
+  | c::q -> if Int.equal m (fst c) then l@q else c::replace_in_list m l q
 
 let enstack_subsubgoals env se stack gls=
   let hd,params = decompose_app (special_whd gls se.se_type) in
@@ -316,7 +303,7 @@ let enstack_subsubgoals env se stack gls=
 	    let constructor = mkConstruct(ind,succ i)
 	      (* constructors numbering*) in
 	    let appterm = applist (constructor,params) in
-	    let apptype = Term.prod_applist gentyp params in
+	    let apptype = prod_applist gentyp params in
 	    let rc,_ = Reduction.dest_prod env apptype in
 	    let rec meta_aux last lenv = function
 		[] -> (last,lenv,[])
@@ -395,7 +382,7 @@ let concl_refiner metas body gls =
   let env = pf_env gls in
   let sort = family_of_sort (Typing.sort_of env evd concl) in
   let rec aux env avoid subst = function
-      [] -> anomaly "concl_refiner: cannot happen"
+      [] -> anomaly ~label:"concl_refiner" (Pp.str "cannot happen")
     | (n,typ)::rest ->
 	let _A = subst_meta subst typ in
 	let x = id_of_name_using_hdchar env _A Anonymous in
@@ -403,7 +390,7 @@ let concl_refiner metas body gls =
 	let nenv = Environ.push_named (_x,None,_A) env in
 	let asort = family_of_sort (Typing.sort_of nenv evd _A) in
 	let nsubst = (n,mkVar _x)::subst in
-	  if rest = [] then
+	  if List.is_empty rest then
 	    asort,_A,mkNamedLambda _x _A (subst_meta nsubst body)
 	  else
 	    let bsort,_B,nbody =
@@ -451,7 +438,7 @@ let thus_tac c ctyp submetas gls =
       find_subsubgoal c ctyp 0 submetas gls
     with Not_found ->
       error "I could not relate this statement to the thesis." in
-  if list = [] then
+  if List.is_empty list then
     exact_check proof gls
   else
     let refiner = concl_refiner list proof gls in
@@ -465,12 +452,13 @@ let mk_stat_or_thesis info gls = function
       error "\"thesis for ...\" is not applicable here."
   | Thesis Plain -> pf_concl gls
 
-let just_tac _then cut info gls0 = 
-  let last_item = if _then then 
-      let last_id = try get_last (pf_env gls0) with Failure _ -> 
-		error "\"then\" and \"hence\" require at least one previous fact"  in
-		[mkVar last_id]
-	    else []  
+let just_tac _then cut info gls0 =
+  let last_item =
+    if _then then
+      try [mkVar (get_last (pf_env gls0))]
+      with UserError _ ->
+	error "\"then\" and \"hence\" require at least one previous fact"
+    else []
   in
   let items_tac gls = 
     match cut.cut_by with
@@ -479,9 +467,9 @@ let just_tac _then cut info gls0 =
   let method_tac gls =
     match cut.cut_using with
         None ->
-	  automation_tac gls
+	  Proofview.V82.of_tactic automation_tac gls
       | Some tac ->
-	  (Tacinterp.eval_tactic tac) gls in
+	  Proofview.V82.of_tactic (Tacinterp.eval_tactic tac) gls in
     justification (tclTHEN items_tac method_tac) gls0
 
 let instr_cut mkstat _thus _then cut gls0 =
@@ -489,28 +477,27 @@ let instr_cut mkstat _thus _then cut gls0 =
   let stat = cut.cut_stat in
   let (c_id,_) = match stat.st_label with
       Anonymous ->
-	pf_get_new_id (id_of_string "_fact") gls0,false
+	pf_get_new_id (Id.of_string "_fact") gls0,false
     | Name id -> id,true in
   let c_stat = mkstat info gls0 stat.st_it in
   let thus_tac gls=
     if _thus then
       thus_tac (mkVar c_id) c_stat [] gls
     else tclIDTAC gls in
-    tclTHENS (assert_postpone c_id c_stat)
+    tclTHENS (Proofview.V82.of_tactic (assert_postpone c_id c_stat))
       [tclTHEN tcl_erase_info (just_tac _then cut info);
        thus_tac] gls0
 
 
-
 (* iterated equality *)
-let _eq = Libnames.constr_of_global (Coqlib.glob_eq)
+let _eq = Globnames.constr_of_global (Coqlib.glob_eq)
 
 let decompose_eq id gls =
   let typ = pf_get_hyp_typ gls id in
   let whd =  (special_whd gls typ) in
     match kind_of_term whd with
 	App (f,args)->
-	  if eq_constr f _eq && (Array.length args)=3
+	  if eq_constr f _eq && Int.equal (Array.length args) 3
 	  then (args.(0),
 		args.(1),
 		args.(2))
@@ -520,8 +507,7 @@ let decompose_eq id gls =
 let instr_rew _thus rew_side cut gls0 =
   let last_id =
     try get_last (pf_env gls0)
-    with e when Errors.noncritical e ->
-      error "No previous equality."
+    with UserError _ -> error "No previous equality."
   in
   let typ,lhs,rhs = decompose_eq last_id gls0 in
   let items_tac gls =
@@ -531,14 +517,14 @@ let instr_rew _thus rew_side cut gls0 =
   let method_tac gls =
     match cut.cut_using with
         None ->
-	  automation_tac gls
+	  Proofview.V82.of_tactic automation_tac gls
       | Some tac ->
-	  (Tacinterp.eval_tactic tac) gls in
+	  Proofview.V82.of_tactic (Tacinterp.eval_tactic tac) gls in
   let just_tac gls =
     justification (tclTHEN items_tac method_tac) gls in
   let (c_id,_) = match cut.cut_stat.st_label with
       Anonymous ->
-	pf_get_new_id (id_of_string "_eq") gls0,false
+	pf_get_new_id (Id.of_string "_eq") gls0,false
     | Name id -> id,true in
   let thus_tac new_eq gls=
     if _thus then
@@ -547,19 +533,18 @@ let instr_rew _thus rew_side cut gls0 =
     match rew_side with
 	Lhs ->
 	  let new_eq = mkApp(_eq,[|typ;cut.cut_stat.st_it;rhs|]) in
-	    tclTHENS (assert_postpone c_id new_eq)
+	    tclTHENS (Proofview.V82.of_tactic (assert_postpone c_id new_eq))
 	      [tclTHEN tcl_erase_info
-		 (tclTHENS (transitivity lhs)
+		 (tclTHENS (Proofview.V82.of_tactic (transitivity lhs))
 		    [just_tac;exact_check (mkVar last_id)]);
 	       thus_tac new_eq] gls0
       | Rhs ->
 	  let new_eq = mkApp(_eq,[|typ;lhs;cut.cut_stat.st_it|]) in
-	    tclTHENS (assert_postpone c_id new_eq)
+	    tclTHENS (Proofview.V82.of_tactic (assert_postpone c_id new_eq))
 	      [tclTHEN tcl_erase_info
-		 (tclTHENS (transitivity rhs)
+		 (tclTHENS (Proofview.V82.of_tactic (transitivity rhs))
 		    [exact_check (mkVar last_id);just_tac]);
 	       thus_tac new_eq] gls0
-
 
 
 (* tactics for claim/focus *)
@@ -567,7 +552,7 @@ let instr_rew _thus rew_side cut gls0 =
 let instr_claim _thus st gls0 =
   let info = get_its_info gls0 in
   let (id,_) = match st.st_label with
-      Anonymous -> pf_get_new_id (id_of_string "_claim") gls0,false
+      Anonymous -> pf_get_new_id (Id.of_string "_claim") gls0,false
     | Name id -> id,true in
   let thus_tac gls=
     if _thus then
@@ -575,7 +560,7 @@ let instr_claim _thus st gls0 =
     else tclIDTAC gls in
   let ninfo1 = {pm_stack=
       (if _thus then Focus_claim else Claim)::info.pm_stack} in
-    tclTHENS (assert_postpone id st.st_it)
+    tclTHENS (Proofview.V82.of_tactic (assert_postpone id st.st_it))
       [thus_tac;
        tcl_change_info ninfo1] gls0
 
@@ -584,10 +569,10 @@ let instr_claim _thus st gls0 =
 let push_intro_tac coerce nam gls =
       let (hid,_) =
 	match nam with
-	    Anonymous -> pf_get_new_id (id_of_string "_hyp") gls,false
+	    Anonymous -> pf_get_new_id (Id.of_string "_hyp") gls,false
 	  | Name id -> id,true in
 	tclTHENLIST
-	  [intro_mustbe_force hid;
+	  [Proofview.V82.of_tactic (intro_mustbe_force hid);
 	   coerce hid]
 	  gls
 
@@ -653,12 +638,12 @@ let rec build_applist prod = function
     [] -> [],prod
   | n::q ->
       let (_,typ,_) = destProd prod in
-      let ctx,head = build_applist (Term.prod_applist prod [mkMeta n]) q in
+      let ctx,head = build_applist (prod_applist prod [mkMeta n]) q in
 	(n,typ)::ctx,head
 
 let instr_suffices _then cut gls0 =
   let info = get_its_info gls0 in
-  let c_id = pf_get_new_id (id_of_string "_cofact") gls0 in
+  let c_id = pf_get_new_id (Id.of_string "_cofact") gls0 in
   let ctx,hd = cut.cut_stat in
   let c_stat = build_product ctx (mk_stat_or_thesis info gls0 hd) in
   let metas = metas_from 1 ctx in
@@ -666,7 +651,7 @@ let instr_suffices _then cut gls0 =
   let c_term = applist (mkVar c_id,List.map mkMeta metas) in
   let thus_tac gls=
     thus_tac c_term c_head c_ctx gls in
-   tclTHENS (assert_postpone c_id c_stat)
+   tclTHENS (Proofview.V82.of_tactic (assert_postpone c_id c_stat))
      [tclTHENLIST
 	 [ assume_tac ctx;
 	   tcl_erase_info;
@@ -685,8 +670,8 @@ let conjunction_arity id gls =
 	    Inductive.lookup_mind_specif env ind in
           let gentypes=
             Inductive.arities_of_constructors ind (mib,oib) in
-	  let _ = if Array.length gentypes <> 1 then raise Not_found in
-	  let apptype = Term.prod_applist gentypes.(0) params in
+	  let _ = if not (Int.equal (Array.length gentypes) 1) then raise Not_found in
+	  let apptype = prod_applist gentypes.(0) params in
 	  let rc,_ = Reduction.dest_prod env apptype in
 	    List.length rc
       | _ -> raise Not_found
@@ -695,9 +680,9 @@ let rec intron_then n ids ltac gls =
   if n<=0 then
     ltac ids gls
   else
-    let id = pf_get_new_id (id_of_string "_tmp") gls in
+    let id = pf_get_new_id (Id.of_string "_tmp") gls in
       tclTHEN
-	(intro_mustbe_force id)
+	(Proofview.V82.of_tactic (intro_mustbe_force id))
 	(intron_then (pred n) (id::ids) ltac) gls
 
 
@@ -710,9 +695,9 @@ let rec consider_match may_intro introduced available expected gls =
     | [],hyps ->
 	if may_intro then
 	  begin
- 	    let id = pf_get_new_id (id_of_string "_tmp") gls in
+ 	    let id = pf_get_new_id (Id.of_string "_tmp") gls in
 	      tclIFTHENELSE
-		(intro_mustbe_force id)
+		(Proofview.V82.of_tactic (intro_mustbe_force id))
 		(consider_match true [] [id] hyps)
 		(fun _ ->
 		   error "Not enough sub-hypotheses to match statements.")
@@ -738,7 +723,7 @@ let rec consider_match may_intro introduced available expected gls =
 		 try conjunction_arity id gls with
 		     Not_found -> error "Matching hypothesis not found." in
 		 tclTHENLIST
-		   [general_case_analysis false (mkVar id,NoBindings);
+		   [Proofview.V82.of_tactic (general_case_analysis false (mkVar id,NoBindings));
 		    intron_then nhyps []
 		      (fun l -> consider_match may_intro introduced
 			 (List.rev_append l rest_ids) expected)] gls)
@@ -750,9 +735,9 @@ let consider_tac c hyps gls =
       Var id ->
 	consider_match false [] [id] hyps gls
     | _ ->
-	let id = pf_get_new_id (id_of_string "_tmp") gls in
+	let id = pf_get_new_id (Id.of_string "_tmp") gls in
 	tclTHEN
-	  (forward None (Some (dummy_loc, Genarg.IntroIdentifier id)) c)
+	  (Proofview.V82.of_tactic (forward None (Some (Loc.ghost, IntroIdentifier id)) c))
  	  (consider_match false [] [id] hyps) gls
 
 
@@ -783,7 +768,7 @@ let rec build_function args body =
 
 let define_tac id args body gls =
   let t = build_function args body in
-    letin_tac None (Name id) t None Tacexpr.nowhere gls
+    Proofview.V82.of_tactic (letin_tac None (Name id) t None Locusops.nowhere) gls
 
 (* tactics for reconsider *)
 
@@ -804,7 +789,7 @@ let is_rec_pos (main_ind,wft) =
       None -> false
     | Some index ->
 	match fst (Rtree.dest_node wft) with
-	    Mrec (_,i) when i = index -> true
+	    Mrec (_,i) when Int.equal i index -> true
 	  | _ -> false
 
 let rec constr_trees (main_ind,wft) ind =
@@ -841,7 +826,7 @@ let map_tree id_fun mapi = function
 
 
 let start_tree env ind rp =
-  init_tree Idset.empty ind rp (fun _ _ -> None)
+  init_tree Id.Set.empty ind rp (fun _ _ -> None)
 
 let build_per_info etype casee gls =
   let concl=pf_concl gls in
@@ -852,14 +837,14 @@ let build_per_info etype casee gls =
   let ind =
     try
       destInd hd
-    with e when Errors.noncritical e ->
+    with DestKO ->
       error "Case analysis must be done on an inductive object." in
   let mind,oind = Global.lookup_inductive ind in
   let nparams,index =
     match etype with
 	ET_Induction -> mind.mind_nparams_rec,Some (snd ind)
       | _ -> mind.mind_nparams,None in
-  let params,real_args = list_chop nparams args in
+  let params,real_args = List.chop nparams args in
   let abstract_obj c body =
     let typ=pf_type_of gls c in
       lambda_create env (typ,subst_term c body) in
@@ -889,8 +874,8 @@ let per_tac etype casee gls=
 	      {pm_stack=
 		  Per(etype,per_info,ek,[])::info.pm_stack} gls
       | Virtual cut ->
-	  assert (cut.cut_stat.st_label=Anonymous);
-	  let id = pf_get_new_id (id_of_string "anonymous_matched") gls in
+	  assert (cut.cut_stat.st_label == Anonymous);
+	  let id = pf_get_new_id (Id.of_string "anonymous_matched") gls in
 	  let c = mkVar id in
 	  let modified_cut =
 	    {cut with cut_stat={cut.cut_stat with st_label=Name id}} in
@@ -914,17 +899,17 @@ let register_nodep_subcase id= function
 	  | EK_nodep -> clauses,Per(et,pi,EK_nodep,id::clauses)::s
 	  | EK_dep _ -> error "Do not mix \"suppose\" with \"suppose it is\"."
       end
-  | _ -> anomaly "wrong stack state"
+  | _ -> anomaly (Pp.str "wrong stack state")
 
 let suppose_tac hyps gls0 =
   let info = get_its_info gls0 in
   let thesis = pf_concl gls0 in
-  let id = pf_get_new_id (id_of_string "subcase_") gls0 in
+  let id = pf_get_new_id (Id.of_string "subcase_") gls0 in
   let clause = build_product hyps thesis in
   let ninfo1 = {pm_stack=Suppose_case::info.pm_stack} in
   let old_clauses,stack = register_nodep_subcase id info.pm_stack in
   let ninfo2 = {pm_stack=stack} in
-    tclTHENS (assert_postpone id clause)
+    tclTHENS (Proofview.V82.of_tactic (assert_postpone id clause))
       [tclTHENLIST [tcl_change_info ninfo1;
 		    assume_tac hyps;
 		    clear old_clauses];
@@ -949,17 +934,17 @@ let rec tree_of_pats ((id,_) as cpl) pats =
 	  | (patt,rp) :: rest_args ->
 	      match patt with
 		  PatVar (_,v) ->
-		    Skip_patt (Idset.singleton id,
+		    Skip_patt (Id.Set.singleton id,
 			       tree_of_pats cpl (rest_args::stack))
 		| PatCstr (_,(ind,cnum),args,nam) ->
 		    let nexti i ati =
-		      if i = pred cnum then
+		      if Int.equal i (pred cnum) then
 			let nargs =
-			  list_map_i (fun j a -> (a,ati.(j))) 0 args in
-			  Some (Idset.singleton id,
+			  List.map_i (fun j a -> (a,ati.(j))) 0 args in
+			  Some (Id.Set.singleton id,
 				tree_of_pats cpl (nargs::rest_args::stack))
 		      else None
-		      in init_tree Idset.empty ind rp nexti
+		      in init_tree Id.Set.empty ind rp nexti
 
 let rec add_branch ((id,_) as cpl) pats tree=
   match pats with
@@ -968,7 +953,7 @@ let rec add_branch ((id,_) as cpl) pats tree=
 	  match tree with
 	      End_patt cpl0 -> End_patt cpl0
 		(* this ensures precedence for overlapping patterns *)
-	    | _ -> anomaly "tree is expected to end here"
+	    | _ -> anomaly (Pp.str "tree is expected to end here")
 	end
     | args::stack ->
 	match args with
@@ -977,7 +962,7 @@ let rec add_branch ((id,_) as cpl) pats tree=
 		match tree with
 		   Close_patt t ->
 		     Close_patt (add_branch cpl stack t)
-		  | _ -> anomaly "we should pop here"
+		  | _ -> anomaly (Pp.str "we should pop here")
 	      end
 	  | (patt,rp) :: rest_args ->
 	      match patt with
@@ -985,23 +970,23 @@ let rec add_branch ((id,_) as cpl) pats tree=
 		    begin
 		      match tree with
 			  Skip_patt (ids,t) ->
-			    Skip_patt (Idset.add id ids,
+			    Skip_patt (Id.Set.add id ids,
 				       add_branch cpl (rest_args::stack) t)
 			| Split_patt (_,_,_) ->
-			    map_tree (Idset.add id)
+			    map_tree (Id.Set.add id)
 			      (fun i bri ->
 				 append_branch cpl 1 (rest_args::stack) bri)
 			      tree
-			| _ -> anomaly "No pop/stop expected here"
+			| _ -> anomaly (Pp.str "No pop/stop expected here")
 		    end
 		| PatCstr (_,(ind,cnum),args,nam) ->
 		      match tree with
 			Skip_patt (ids,t) ->
 			  let nexti i ati =
-			    if i = pred cnum then
+			    if Int.equal i (pred cnum) then
 			      let nargs =
-				list_map_i (fun j a -> (a,ati.(j))) 0 args in
-				Some (Idset.add id ids,
+				List.map_i (fun j a -> (a,ati.(j))) 0 args in
+				Some (Id.Set.add id ids,
 				      add_branch cpl (nargs::rest_args::stack)
 					(skip_args t ids (Array.length ati)))
 			    else
@@ -1009,51 +994,51 @@ let rec add_branch ((id,_) as cpl) pats tree=
 				    skip_args t ids (Array.length ati))
 			  in init_tree ids ind rp nexti
 		      | Split_patt (_,ind0,_) ->
-			  if (ind <> ind0) then error
+			  if (not (eq_ind ind ind0)) then error
 			    (* this can happen with coercions *)
 	                    "Case pattern belongs to wrong inductive type.";
 			  let mapi i ati bri =
-			    if i = pred cnum then
+			    if Int.equal i (pred cnum) then
 			      let nargs =
-				list_map_i (fun j a -> (a,ati.(j))) 0 args in
+				List.map_i (fun j a -> (a,ati.(j))) 0 args in
 				append_branch cpl 0
 				  (nargs::rest_args::stack) bri
 			    else bri in
 			    map_tree_rp rp (fun ids -> ids) mapi tree
-		      | _ -> anomaly "No pop/stop expected here"
+		      | _ -> anomaly (Pp.str "No pop/stop expected here")
 and append_branch ((id,_) as cpl) depth pats = function
     Some (ids,tree) ->
-      Some (Idset.add id ids,append_tree cpl depth pats tree)
+      Some (Id.Set.add id ids,append_tree cpl depth pats tree)
   | None ->
-      Some (Idset.singleton id,tree_of_pats cpl pats)
+      Some (Id.Set.singleton id,tree_of_pats cpl pats)
 and append_tree ((id,_) as cpl) depth pats tree =
   if depth<=0 then add_branch cpl pats tree
   else match tree with
       Close_patt t ->
 	Close_patt (append_tree cpl (pred depth) pats t)
     | Skip_patt (ids,t) ->
-	Skip_patt (Idset.add id ids,append_tree cpl depth pats t)
-    | End_patt _ -> anomaly "Premature end of branch"
+	Skip_patt (Id.Set.add id ids,append_tree cpl depth pats t)
+    | End_patt _ -> anomaly (Pp.str "Premature end of branch")
     | Split_patt (_,_,_) ->
-	map_tree (Idset.add id)
+	map_tree (Id.Set.add id)
 	  (fun i bri -> append_branch cpl (succ depth) pats bri) tree
 
 (* suppose it is *)
 
 let rec st_assoc id = function
     [] -> raise Not_found
-  | st::_ when st.st_label = id  -> st.st_it
+  | st::_ when Name.equal st.st_label id  -> st.st_it
   | _ :: rest -> st_assoc id rest
 
 let thesis_for obj typ per_info env=
   let rc,hd1=decompose_prod typ in
   let cind,all_args=decompose_app typ in
   let ind = destInd cind in
-  let _ = if ind <> per_info.per_ind then
+  let _ = if not (eq_ind ind per_info.per_ind) then
     errorlabstrm "thesis_for"
       ((Printer.pr_constr_env env obj) ++ spc () ++
 	 str"cannot give an induction hypothesis (wrong inductive type).") in
-  let params,args = list_chop per_info.per_nparams all_args in
+  let params,args = List.chop per_info.per_nparams all_args in
   let _ = if not (List.for_all2 eq_constr params per_info.per_params) then
     errorlabstrm "thesis_for"
       ((Printer.pr_constr_env env obj) ++ spc () ++
@@ -1119,18 +1104,18 @@ let rec register_dep_subcase id env per_info pat = function
 
 let case_tac params pat_info hyps gls0 =
   let info = get_its_info gls0 in
-  let id = pf_get_new_id (id_of_string "subcase_") gls0 in
+  let id = pf_get_new_id (Id.of_string "subcase_") gls0 in
   let et,per_info,ek,old_clauses,rest =
     match info.pm_stack with
 	Per (et,pi,ek,old_clauses)::rest -> (et,pi,ek,old_clauses,rest)
-      | _ -> anomaly "wrong place for cases" in
+      | _ -> anomaly (Pp.str "wrong place for cases") in
   let clause = build_dep_clause params pat_info per_info hyps gls0 in
   let ninfo1 = {pm_stack=Suppose_case::info.pm_stack} in
   let nek = 
     register_dep_subcase (id,(List.length params,List.length hyps)) 
       (pf_env gls0) per_info pat_info.pat_pat ek in  
   let ninfo2 = {pm_stack=Per(et,per_info,nek,id::old_clauses)::rest} in
-    tclTHENS (assert_postpone id clause)
+    tclTHENS (Proofview.V82.of_tactic (assert_postpone id clause))
       [tclTHENLIST
 	 [tcl_change_info ninfo1;
 	  assume_st (params@pat_info.pat_vars);
@@ -1141,14 +1126,14 @@ let case_tac params pat_info hyps gls0 =
 
 (* end cases *)
 
-type instance_stack =
-    (constr option*(constr list) list) list
+type ('a, 'b) instance_stack =
+    ('b * (('a option * constr list) list)) list
 
-let initial_instance_stack ids =
+let initial_instance_stack ids : (_, _) instance_stack =
   List.map (fun id -> id,[None,[]]) ids
 
 let push_one_arg arg = function
-    [] -> anomaly "impossible"
+    [] -> anomaly (Pp.str "impossible")
   | (head,args) :: ctx ->
       ((head,(arg::args)) :: ctx)
 
@@ -1157,7 +1142,7 @@ let push_arg arg stacks =
 
 
 let push_one_head c ids (id,stack) =
-  let head = if Idset.mem id ids then Some c else None in
+  let head = if Id.Set.mem id ids then Some c else None in
     id,(head,[]) :: stack
 
 let push_head c ids stacks =
@@ -1166,7 +1151,7 @@ let push_head c ids stacks =
 let pop_one (id,stack) =
   let nstack=
     match stack with
-	[] -> anomaly "impossible"
+	[] -> anomaly (Pp.str "impossible")
       | [c] as l -> l
       | (Some head,args)::(head0,args0)::ctx ->
 	  let arg = applist (head,(List.rev args)) in
@@ -1183,8 +1168,8 @@ let hrec_for fix_id per_info gls obj_id =
   let typ=pf_get_hyp_typ gls obj_id in
   let rc,hd1=decompose_prod typ in
   let cind,all_args=decompose_app typ in
-  let ind = destInd cind in assert (ind=per_info.per_ind);
-  let params,args= list_chop per_info.per_nparams all_args in
+  let ind = destInd cind in assert (eq_ind ind per_info.per_ind);
+  let params,args= List.chop per_info.per_nparams all_args in
   assert begin
     try List.for_all2 eq_constr params per_info.per_params with
         Invalid_argument _ -> false end;
@@ -1202,18 +1187,18 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 	  execute_cases fix_name per_info tacnext args0 next_objs nhrec t gls
     | End_patt (id,(nparams,nhyps)),[] -> 
 	begin
-	  match List.assoc id args with
+	  match Id.List.assoc id args with
 	      [None,br_args] -> 
 		let all_metas = 
-		  list_tabulate (fun n -> mkMeta (succ n)) (nparams + nhyps)  in
-		let param_metas,hyp_metas = list_chop nparams all_metas in
+		  List.init (nparams + nhyps) (fun n -> mkMeta (succ n))  in
+		let param_metas,hyp_metas = List.chop nparams all_metas in
 		  tclTHEN
-		    (tclDO nhrec introf)
+		    (tclDO nhrec (Proofview.V82.of_tactic introf))
 		    (tacnext 
 		       (applist (mkVar id,
 				 List.append param_metas 
 				   (List.rev_append br_args hyp_metas)))) gls
-	    | _ -> anomaly "wrong stack size"
+	    | _ -> anomaly (Pp.str "wrong stack size")
 	end
     | Split_patt (ids,ind,br), casee::next_objs ->
 	let (mind,oind) as spec = Global.lookup_inductive ind in
@@ -1222,8 +1207,8 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 	let env=pf_env gls in
 	let ctyp=pf_type_of gls casee in
 	let hd,all_args = decompose_app (special_whd gls ctyp) in
-	let _ = assert (destInd hd = ind) in (* just in case *)
-	let params,real_args = list_chop nparams all_args in
+	let _ = assert (eq_ind (destInd hd) ind) in (* just in case *)
+	let params,real_args = List.chop nparams all_args in
 	let abstract_obj c body =
 	  let typ=pf_type_of gls c in
 	    lambda_create env (typ,subst_term c body) in
@@ -1233,7 +1218,7 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 	let gen_arities = Inductive.arities_of_constructors ind spec in
 	let f_ids typ =
 	  let sign =
-	    (prod_assum (Term.prod_applist typ params)) in
+	    (prod_assum (prod_applist typ params)) in
 	    find_intro_names sign gls in
 	let constr_args_ids = Array.map f_ids gen_arities in
 	let case_term =
@@ -1243,7 +1228,7 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 	  let args_ids = constr_args_ids.(i) in
 	  let rec aux n = function
 	      [] ->
-		assert (n=Array.length recargs);
+		assert (Int.equal n (Array.length recargs));
 		next_objs,[],nhrec
 	    | id :: q ->
 		let objs,recs,nrec = aux (succ n) q in
@@ -1252,7 +1237,7 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 		  else (mkVar id::objs),recs,nrec in
 	  let objs,recs,nhrec = aux 0 args_ids in
 	    tclTHENLIST
-	      [tclMAP intro_mustbe_force args_ids;
+	      [tclMAP (fun id -> Proofview.V82.of_tactic (intro_mustbe_force id)) args_ids;
 	       begin
 		 fun gls1 ->
 		   let hrecs =
@@ -1269,7 +1254,7 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 		 | Some (sub_ids,tree) ->
 		     let br_args =
 		       List.filter
-			 (fun (id,_) -> Idset.mem id sub_ids) args in
+			 (fun (id,_) -> Id.Set.mem id sub_ids) args in
 		     let construct =
 		       applist (mkConstruct(ind,succ i),params) in
 		     let p_args =
@@ -1280,22 +1265,25 @@ let rec execute_cases fix_name per_info tacnext args objs nhrec tree gls =
 	    (refine case_term)
 	    (Array.mapi branch_tac br) gls
     | Split_patt (_, _, _) , [] ->
-	anomaly "execute_cases : Nothing to split"
+	anomaly ~label:"execute_cases " (Pp.str "Nothing to split")
     | Skip_patt _ , [] ->
-	anomaly "execute_cases : Nothing to skip"
+	anomaly ~label:"execute_cases " (Pp.str "Nothing to skip")
     | End_patt (_,_) , _ :: _  ->
-	anomaly "execute_cases : End of branch with garbage left"
+	anomaly ~label:"execute_cases " (Pp.str "End of branch with garbage left")
 
 let understand_my_constr c gls =
   let env = pf_env gls in
   let nc = names_of_rel_context env in
   let rawc = Detyping.detype false [] nc c in
-  let rec frob = function GEvar _ -> GHole (dummy_loc,QuestionMark Expand) | rc ->  map_glob_constr frob rc in
-    Pretyping.Default.understand_tcc (sig_sig gls) env ~expected_type:(pf_concl gls) (frob rawc)
+  let rec frob = function
+    | GEvar _ -> GHole (Loc.ghost,Evar_kinds.QuestionMark Evar_kinds.Expand,None)
+    | rc ->  map_glob_constr frob rc
+  in
+  Pretyping.understand_tcc (sig_sig gls) env ~expected_type:(Pretyping.OfType (pf_concl gls)) (frob rawc)
 
 let my_refine c gls =
   let oc = understand_my_constr c gls in
-  Refine.refine oc gls
+  Proofview.V82.of_tactic (Tactics.New.refine oc) gls
 
 (* end focus/claim *)
 
@@ -1304,43 +1292,41 @@ let end_tac et2 gls =
   let et1,pi,ek,clauses =
     match info.pm_stack with
 	Suppose_case::_ ->
-	  anomaly "This case should already be trapped"
+	  anomaly (Pp.str "This case should already be trapped")
       | Claim::_ ->
 	  error "\"end claim\" expected."
       | Focus_claim::_ ->
 	  error "\"end focus\" expected."
       | Per(et',pi,ek,clauses)::_ -> (et',pi,ek,clauses)
       | [] ->
-	  anomaly "This case should already be trapped" in
-  let et =
-    if et1 <> et2 then
-      match et1 with
-	  ET_Case_analysis ->
-	    error "\"end cases\" expected."
-	| ET_Induction ->
-	    error "\"end induction\" expected."
-    else et1 in
+	  anomaly (Pp.str "This case should already be trapped") in
+  let et = match et1, et2 with
+  | ET_Case_analysis, ET_Case_analysis -> et1
+  | ET_Induction, ET_Induction -> et1
+  | ET_Case_analysis, _ -> error "\"end cases\" expected."
+  | ET_Induction, _ -> error "\"end induction\" expected."
+  in
     tclTHEN
       tcl_erase_info
       begin
 	match et,ek with
 	    _,EK_unknown ->
-	      tclSOLVE [simplest_elim pi.per_casee]
+	      tclSOLVE [Proofview.V82.of_tactic (simplest_elim pi.per_casee)]
 	  | ET_Case_analysis,EK_nodep ->
 	      tclTHEN
-		(general_case_analysis false (pi.per_casee,NoBindings))
+		(Proofview.V82.of_tactic (general_case_analysis false (pi.per_casee,NoBindings)))
 		(default_justification (List.map mkVar clauses))
 	  | ET_Induction,EK_nodep ->
 	      tclTHENLIST
 		[generalize (pi.per_args@[pi.per_casee]);
-		 simple_induct (AnonHyp (succ (List.length pi.per_args)));
+		 Proofview.V82.of_tactic (simple_induct (AnonHyp (succ (List.length pi.per_args))));
 		 default_justification (List.map mkVar clauses)]
 	  | ET_Case_analysis,EK_dep tree ->
 		 execute_cases Anonymous pi 
 		   (fun c -> tclTHENLIST 
 		      [my_refine c;
 		       clear clauses;
-		       justification assumption])
+		       justification (Proofview.V82.of_tactic assumption)])
 		   (initial_instance_stack clauses) [pi.per_casee] 0 tree
 	  | ET_Induction,EK_dep tree ->
 	      let nargs = (List.length pi.per_args) in
@@ -1348,20 +1334,20 @@ let end_tac et2 gls =
 		  begin
 		    fun gls0 ->
 		      let fix_id =
-			pf_get_new_id (id_of_string "_fix") gls0 in
+			pf_get_new_id (Id.of_string "_fix") gls0 in
 		      let c_id =
-			pf_get_new_id (id_of_string "_main_arg") gls0 in
+			pf_get_new_id (Id.of_string "_main_arg") gls0 in
 			tclTHENLIST
 			  [fix (Some fix_id) (succ nargs);
-			   tclDO nargs introf;
-			   intro_mustbe_force c_id;
+			   tclDO nargs (Proofview.V82.of_tactic introf);
+			   Proofview.V82.of_tactic (intro_mustbe_force c_id);
 			   execute_cases (Name fix_id) pi
 			     (fun c ->
 				tclTHENLIST
 				  [clear [fix_id];
 				   my_refine c;
 				   clear clauses;
-				   justification assumption])
+				   justification (Proofview.V82.of_tactic assumption)])
 			     (initial_instance_stack clauses)
 			     [mkVar c_id]  0 tree] gls0
 		  end
@@ -1409,7 +1395,7 @@ let rec do_proof_instr_gen _thus _then instr =
     | Psuppose hyps      -> suppose_tac hyps
     | Pcase (params,pat_info,hyps) -> case_tac params pat_info hyps
     | Pend (B_elim et) -> end_tac et
-    | Pend _ -> anomaly "Not applicable"
+    | Pend _ -> anomaly (Pp.str "Not applicable")
     | Pescape -> escape_tac
 
 let eval_instr {instr=instr} =
@@ -1454,33 +1440,33 @@ let rec postprocess pts instr =
 	  in
 	    try
 	      Inductiveops.control_only_guard env pfterm;
-	      goto_current_focus_or_top pts
+	      goto_current_focus_or_top ()
  	    with
 		Type_errors.TypeError(env,
 				      Type_errors.IllFormedRecBody(_,_,_,_,_)) ->
-		  anomaly "\"end induction\" generated an ill-formed fixpoint"
+		  anomaly (Pp.str "\"end induction\" generated an ill-formed fixpoint")
 	end
     | Pend _ ->
-	goto_current_focus_or_top (pts)
+	goto_current_focus_or_top ()
 
 let do_instr raw_instr pts =
   let has_tactic = preprocess pts raw_instr.instr in
   begin
     if has_tactic then
-      let { it=gls ; sigma=sigma } = Proof.V82.subgoals pts in
-      let gl = { it=List.hd gls ; sigma=sigma } in
+            let { it=gls ; sigma=sigma; } = Proof.V82.subgoals pts in
+      let gl = { it=List.hd gls ; sigma=sigma; } in
       let env=  pf_env gl in
-      let ist = {ltacvars = ([],[]); ltacrecvars = [];
+      let ist = {ltacvars = Id.Set.empty; ltacrecvars = Id.Map.empty;
 		 gsigma = sigma; genv = env} in
       let glob_instr = intern_proof_instr ist raw_instr in
       let instr =
 	interp_proof_instr (get_its_info gl) sigma env glob_instr in
-      Pfedit.by (tclTHEN (eval_instr instr) clean_tmp)
+      ignore (Pfedit.by (Proofview.V82.tactic (tclTHEN (eval_instr instr) clean_tmp)))
     else () end;
   postprocess pts raw_instr.instr;
   (* spiwack: this should restore a compatible semantics with
      v8.3 where we never stayed focused on 0 goal. *)
-  Decl_mode.maximal_unfocus pts
+  Decl_mode.maximal_unfocus ()
 
 let proof_instr raw_instr =
   let p = Proof_global.give_me_the_proof () in

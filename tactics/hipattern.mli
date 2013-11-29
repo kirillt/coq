@@ -6,10 +6,9 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
 open Names
 open Term
-open Sign
+open Context
 open Evd
 open Pattern
 open Coqlib
@@ -52,13 +51,13 @@ val is_non_recursive_type         : testing_function
 
 (** Non recursive type with no indices and exactly one argument for each
    constructor; canonical definition of n-ary disjunction if strict *)
-val match_with_disjunction : ?strict:bool -> (constr * constr list) matching_function
-val is_disjunction         : ?strict:bool -> testing_function
+val match_with_disjunction : ?strict:bool -> ?onlybinary:bool -> (constr * constr list) matching_function
+val is_disjunction         : ?strict:bool -> ?onlybinary:bool -> testing_function
 
 (** Non recursive tuple (one constructor and no indices) with no inner
    dependencies; canonical definition of n-ary conjunction if strict *)
-val match_with_conjunction : ?strict:bool -> (constr * constr list) matching_function
-val is_conjunction         : ?strict:bool -> testing_function
+val match_with_conjunction : ?strict:bool -> ?onlybinary:bool -> (constr * constr list) matching_function
+val is_conjunction         : ?strict:bool -> ?onlybinary:bool -> testing_function
 
 (** Non recursive tuple, possibly with inner dependencies *)
 val match_with_record      : (constr * constr list) matching_function
@@ -87,7 +86,7 @@ val is_equality_type       : testing_function
 val match_with_nottype     : (constr * constr) matching_function
 val is_nottype             : testing_function
 
-val match_with_forall_term    : (name * constr * constr) matching_function
+val match_with_forall_term    : (Name.t * constr * constr) matching_function
 val is_forall_term            : testing_function
 
 val match_with_imp_term    : (constr * constr) matching_function

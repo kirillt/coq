@@ -7,10 +7,8 @@
 (************************************************************************)
 
 open Util
-open Formula
-open Tacmach
 open Term
-open Names
+open Vars
 open Termops
 open Reductionops
 
@@ -34,7 +32,7 @@ let unif t1 t2=
     match kind_of_term t with
 	Meta i->
 	  (try
-	     head_reduce (List.assoc i !sigma)
+	     head_reduce (Int.List.assoc i !sigma)
 	   with Not_found->t)
       | _->t in
     Queue.add (t1,t2) bige;
@@ -44,17 +42,17 @@ let unif t1 t2=
       and nt2=head_reduce (whd_betaiotazeta Evd.empty t2) in
 	match (kind_of_term nt1),(kind_of_term nt2) with
 	    Meta i,Meta j->
-	      if i<>j then
+	      if not (Int.equal i j) then
 		if i<j then bind j nt1
 		else bind i nt2
 	  | Meta i,_ ->
 	      let t=subst_meta !sigma nt2 in
-		if Intset.is_empty (free_rels t) &&
+		if Int.Set.is_empty (free_rels t) &&
 		  not (occur_term (mkMeta i) t) then
 		    bind i t else raise (UFAIL(nt1,nt2))
 	  | _,Meta i ->
 	      let t=subst_meta !sigma nt1 in
-		if Intset.is_empty (free_rels t) &&
+		if Int.Set.is_empty (free_rels t) &&
 		  not (occur_term (mkMeta i) t) then
 		    bind i t else raise (UFAIL(nt1,nt2))
 	  | Cast(_,_,_),_->Queue.add (strip_outer_cast nt1,nt2) bige
@@ -65,7 +63,7 @@ let unif t1 t2=
 	      Queue.add (pa,pb) bige;
 	      Queue.add (ca,cb) bige;
 	      let l=Array.length va in
-		if l<>(Array.length vb) then
+		if not (Int.equal l (Array.length vb)) then
 		  raise (UFAIL (nt1,nt2))
 		else
 		  for i=0 to l-1 do
@@ -74,7 +72,7 @@ let unif t1 t2=
 	  | App(ha,va),App(hb,vb)->
 	      Queue.add (ha,hb) bige;
 	      let l=Array.length va in
-		if l<>(Array.length vb) then
+		if not (Int.equal l (Array.length vb)) then
 		  raise (UFAIL (nt1,nt2))
 		else
 		  for i=0 to l-1 do
@@ -90,7 +88,7 @@ let value i t=
   let add x y=
     if x<0 then y else if y<0 then x else x+y in
   let rec vaux term=
-    if isMeta term && destMeta term = i then 0 else
+    if isMeta term && Int.equal (destMeta term) i then 0 else
       let f v t=add v (vaux t) in
       let vr=fold_constr f (-1) term in
 	if vr<0 then -1 else vr+1 in
@@ -107,7 +105,7 @@ let mk_rel_inst t=
     match kind_of_term t with
 	Meta n->
 	  (try
-	     mkRel (d+(List.assoc n !rel_env))
+	     mkRel (d+(Int.List.assoc n !rel_env))
 	   with Not_found->
 	     let m= !new_rel in
 	       incr new_rel;
@@ -119,7 +117,7 @@ let mk_rel_inst t=
 
 let unif_atoms i dom t1 t2=
   try
-    let t=List.assoc i (unif t1 t2) in
+    let t=Int.List.assoc i (unif t1 t2) in
       if isMeta t then Some (Phantom dom)
       else Some (Real(mk_rel_inst t,value i t1))
   with
@@ -127,7 +125,7 @@ let unif_atoms i dom t1 t2=
     | Not_found ->Some (Phantom dom)
 
 let renum_metas_from k n t= (* requires n = max (free_rels t) *)
-  let l=list_tabulate (fun i->mkMeta (k+i)) n in
+  let l=List.init n (fun i->mkMeta (k+i)) in
     substl l t
 
 let more_general (m1,t1) (m2,t2)=

@@ -8,8 +8,8 @@
 
 open Names
 open Term
+open Context
 open Declarations
-open Sign
 
 (** Unsafe environments. We define here a datatype for environments.
    Since typing is not yet defined, it is not possible to check the
@@ -32,6 +32,8 @@ open Sign
 type env
 val pre_env : env -> Pre_env.env
 val env_of_pre_env : Pre_env.env -> env
+val oracle : env -> Conv_oracle.oracle
+val set_oracle : env -> Conv_oracle.oracle -> env
 
 type named_context_val
 val eq_named_context_val : named_context_val -> named_context_val -> bool
@@ -81,13 +83,14 @@ val map_named_val :
    (constr -> constr) -> named_context_val -> named_context_val
 
 val push_named : named_declaration -> env -> env
+val push_named_context : named_context -> env -> env
 val push_named_context_val  :
     named_declaration -> named_context_val -> named_context_val
 
 
 
 (** Looks up in the context of local vars referred by names ([named_context]) 
-   raises [Not_found] if the identifier is not found *)
+   raises [Not_found] if the Id.t is not found *)
 
 val lookup_named     : variable -> env -> named_declaration
 val lookup_named_val : variable -> named_context_val -> named_declaration
@@ -142,10 +145,10 @@ val lookup_mind : mutual_inductive -> env -> mutual_inductive_body
 
 (** {5 Modules } *)
 
-val add_modtype : module_path -> module_type_body -> env -> env
+val add_modtype : module_type_body -> env -> env
 
 (** [shallow_add_module] does not add module components *)
-val shallow_add_module : module_path -> module_body -> env -> env
+val shallow_add_module : module_body -> env -> env
 
 val lookup_module : module_path -> env -> module_body
 val lookup_modtype : module_path -> env -> module_type_body
@@ -161,12 +164,12 @@ val set_engagement : engagement -> env -> env
    directly as [Var id] in [c] or indirectly as a section variable
    dependent in a global reference occurring in [c] *)
 
-val global_vars_set : env -> constr -> Idset.t
+val global_vars_set : env -> constr -> Id.Set.t
 
 (** the constr must be a global reference *)
-val vars_of_global : env -> constr -> identifier list
+val vars_of_global : env -> constr -> Id.Set.t
 
-val keep_hyps : env -> Idset.t -> section_context
+val keep_hyps : env -> Id.Set.t -> section_context
 
 (** {5 Unsafe judgments. }
     We introduce here the pre-type of judgments, which is
@@ -211,7 +214,7 @@ val insert_after_hyp : named_context_val -> variable ->
   named_declaration ->
     (named_context -> unit) -> named_context_val
 
-val remove_hyps : identifier list -> (named_declaration -> named_declaration) -> (Pre_env.lazy_val -> Pre_env.lazy_val) -> named_context_val -> named_context_val
+val remove_hyps : Id.Set.t -> (named_declaration -> named_declaration) -> (Pre_env.lazy_val -> Pre_env.lazy_val) -> named_context_val -> named_context_val
 
 
 

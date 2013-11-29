@@ -12,6 +12,12 @@ val boot : bool ref
 
 val batch_mode : bool ref
 
+val ide_slave_mode : bool ref
+val coq_slave_mode : int ref
+val coq_slaves_number : int ref
+
+val coq_slave_options : string option ref
+
 val debug : bool ref
 
 val print_emacs : bool ref
@@ -20,13 +26,19 @@ val term_quality : bool ref
 
 val xml_export : bool ref
 
+val ide_slave : bool ref
+
+val time : bool ref
+
+val we_are_parsing : bool ref
+
 type load_proofs = Force | Lazy | Dont
 val load_proofs : load_proofs ref
 
 val raw_print : bool ref
 val record_print : bool ref
 
-type compat_version = V8_2 | V8_3 | Current
+type compat_version = V8_2 | V8_3 | V8_4 | Current
 val compat_version : compat_version ref
 val version_strictly_greater : compat_version -> bool
 val version_less_or_equal : compat_version -> bool
@@ -48,17 +60,28 @@ val if_verbose : ('a -> unit) -> 'a -> unit
 val make_auto_intros : bool -> unit
 val is_auto_intros : unit -> bool
 
+(** Terminal colouring *)
+val make_term_color : bool -> unit
+val is_term_color : unit -> bool
+
+val program_mode : bool ref
+val is_program_mode : unit -> bool
+
 val make_warn : bool -> unit
 val if_warn : ('a -> unit) -> 'a -> unit
 
-val hash_cons_proofs : bool ref
-
-(** Temporary activate an option (to activate option [o] on [f x y z],
+(** Temporarily activate an option (to activate option [o] on [f x y z],
    use [with_option o (f x y) z]) *)
 val with_option : bool ref -> ('a -> 'b) -> 'a -> 'b
 
-(** Temporary deactivate an option *)
+(** As [with_option], but on several flags. *)
+val with_options : bool ref list -> ('a -> 'b) -> 'a -> 'b
+
+(** Temporarily deactivate an option *)
 val without_option : bool ref -> ('a -> 'b) -> 'a -> 'b
+
+(** Temporarily extends the reference to a list *)
+val with_extra_values : 'c list ref -> 'c list -> ('a -> 'b) -> 'a -> 'b
 
 (** If [None], no limit *)
 val set_print_hyps_limit : int option -> unit
@@ -74,9 +97,6 @@ val browser_cmd_fmt : string
 
 val is_standard_doc_url : string -> bool
 
-(** Substitute %s in the first chain by the second chain *)
-val subst_command_placeholder : string -> string -> string
-
 (** Options for specifying where coq librairies reside *)
 val coqlib_spec : bool ref
 val coqlib : string ref
@@ -91,3 +111,13 @@ val camlp4bin : string ref
 val set_inline_level : int -> unit
 val get_inline_level : unit -> int
 val default_inline_level : int
+
+(* Disabling native code compilation for conversion and normalization *)
+val no_native_compiler : bool ref
+
+(* Print the mod uid associated to a vo file by the native compiler *)
+val print_mod_uid : bool ref
+
+val tactic_context_compat : bool ref
+(** Set to [true] to trigger the compatibility bugged context matching (old
+    context vs. appcontext) is set. *)

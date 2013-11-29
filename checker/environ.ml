@@ -1,6 +1,8 @@
+open Errors
 open Util
 open Names
 open Univ
+open Cic
 open Term
 open Declarations
 
@@ -18,7 +20,6 @@ type stratification = {
 
 type env = {
     env_globals       : globals;
-    env_named_context : named_context;
     env_rel_context   : rel_context;
     env_stratification : stratification;
     env_imports : Digest.t MPmap.t }
@@ -30,7 +31,6 @@ let empty_env = {
     env_inductives_eq = KNmap.empty;
     env_modules = MPmap.empty;
     env_modtypes = MPmap.empty};
-  env_named_context = [];
   env_rel_context = [];
   env_stratification =
   { env_universes = Univ.initial_universes;
@@ -39,7 +39,6 @@ let empty_env = {
 
 let engagement env = env.env_stratification.env_engagement
 let universes env = env.env_stratification.env_universes
-let named_context env = env.env_named_context
 let rel_context env = env.env_rel_context
 
 let set_engagement c env =
@@ -73,28 +72,8 @@ let push_rel d env =
 let push_rel_context ctxt x = fold_rel_context push_rel ctxt ~init:x
 
 let push_rec_types (lna,typarray,_) env =
-  let ctxt = array_map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
+  let ctxt = Array.map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
   Array.fold_left (fun e assum -> push_rel assum e) env ctxt
-
-(* Named context *)
-
-let push_named d env =
-(*  if not (env.env_rel_context = []) then raise (ASSERT env.env_rel_context);
-  assert (env.env_rel_context = []); *)
-    { env with
-      env_named_context = d :: env.env_named_context }
-
-let lookup_named id env =
-  let rec lookup_named id = function
-    | (id',_,_ as decl) :: _ when id=id' -> decl
-    | _ :: sign -> lookup_named id sign
-    | [] -> raise Not_found in
-  lookup_named id env.env_named_context
-
-(* A local const is evaluable if it is defined  *)
-
-let named_type id env =
-  let (_,_,t) = lookup_named id env in t
 
 (* Universe constraints *)
 let add_constraints c env =
@@ -110,9 +89,11 @@ let add_constraints c env =
 let lookup_constant kn env =
   Cmap_env.find kn env.env_globals.env_constants
 
+let anomaly s = anomaly (Pp.str s)
+
 let add_constant kn cs env =
   if Cmap_env.mem kn env.env_globals.env_constants then
-    Printf.ksprintf anomaly "Constant %s is already defined"
+    Printf.ksprintf anomaly ("Constant %s is already defined")
       (string_of_con kn);
   let new_constants =
     Cmap_env.add kn cs env.env_globals.env_constants in
@@ -154,7 +135,7 @@ let lookup_mind kn env =
 
 let add_mind kn mib env =
   if Mindmap_env.mem kn env.env_globals.env_inductives then
-    Printf.ksprintf anomaly "Inductive %s is already defined"
+    Printf.ksprintf anomaly ("Inductive %s is already defined")
       (string_of_mind kn);
   let new_inds = Mindmap_env.add kn mib env.env_globals.env_inductives in
   let kn1,kn2 =  user_mind kn,canonical_mind kn in
@@ -173,7 +154,7 @@ let add_mind kn mib env =
 
 let add_modtype ln mtb env =
   if MPmap.mem ln env.env_globals.env_modtypes then
-    Printf.ksprintf anomaly "Module type %s is already defined"
+    Printf.ksprintf anomaly ("Module type %s is already defined")
       (string_of_mp ln);
   let new_modtypes = MPmap.add ln mtb env.env_globals.env_modtypes in
   let new_globals =
@@ -183,7 +164,7 @@ let add_modtype ln mtb env =
 
 let shallow_add_module mp mb env =
   if MPmap.mem mp env.env_globals.env_modules then
-    Printf.ksprintf anomaly "Module %s is already defined"
+    Printf.ksprintf anomaly ("Module %s is already defined")
       (string_of_mp mp);
   let new_mods = MPmap.add mp mb env.env_globals.env_modules in
   let new_globals =
@@ -193,7 +174,7 @@ let shallow_add_module mp mb env =
 
 let shallow_remove_module mp env =
   if not (MPmap.mem mp env.env_globals.env_modules) then
-    Printf.ksprintf anomaly "Module %s is unknown"
+    Printf.ksprintf anomaly ("Module %s is unknown")
       (string_of_mp mp);
   let new_mods = MPmap.remove mp env.env_globals.env_modules in
   let new_globals =

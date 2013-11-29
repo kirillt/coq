@@ -14,9 +14,9 @@ des inéquations et équations sont entiers. En attendant la tactique Field.
 
 open Term
 open Tactics
-open Clenv
 open Names
 open Libnames
+open Globnames
 open Tacticals
 open Tacmach
 open Fourier
@@ -40,12 +40,11 @@ type flin = {fhom: rational Constrhash.t;
 
 let flin_zero () = {fhom=Constrhash.create 50;fcste=r0};;
 
-let flin_coef f x = try (Constrhash.find f.fhom x) with Not_found -> r0;;
+let flin_coef f x = try Constrhash.find f.fhom x with Not_found -> r0;;
 
 let flin_add f x c =
     let cx = flin_coef f x in
-    Constrhash.remove f.fhom x;
-    Constrhash.add f.fhom x (rplus cx c);
+    Constrhash.replace f.fhom x (rplus cx c);
     f
 ;;
 let flin_add_cste f c =
@@ -75,16 +74,15 @@ let flin_emult a f =
 ;;
 
 (*****************************************************************************)
-open Vernacexpr
 
 type ineq = Rlt | Rle | Rgt | Rge
 
 let string_of_R_constant kn =
   match Names.repr_con kn with
     | MPfile dir, sec_dir, id when
-	sec_dir = empty_dirpath &&
-	string_of_dirpath dir = "Coq.Reals.Rdefinitions"
-	-> string_of_label id
+	sec_dir = DirPath.empty &&
+	DirPath.to_string dir = "Coq.Reals.Rdefinitions"
+	-> Label.to_string id
     | _ -> "constant_not_of_R"
 
 let rec string_of_R_constr c =
@@ -92,6 +90,8 @@ let rec string_of_R_constr c =
    Cast (c,_,_) -> string_of_R_constr c
   |Const c -> string_of_R_constant c
   | _ -> "not_of_constant"
+
+exception NoRational
 
 let rec rational_of_constr c =
   match kind_of_term c with
@@ -114,14 +114,16 @@ let rec rational_of_constr c =
 	 | "Rminus" ->
 	     rminus (rational_of_constr args.(0))
                     (rational_of_constr args.(1))
-	 | _ -> failwith "not a rational")
+	 | _ -> raise NoRational)
   | Const kn ->
       (match (string_of_R_constant kn) with
 	       "R1" -> r1
               |"R0" -> r0
-              |  _ -> failwith "not a rational")
-  |  _ -> failwith "not a rational"
+              |  _ -> raise NoRational)
+  |  _ -> raise NoRational
 ;;
+
+exception NoLinear
 
 let rec flin_of_constr c =
   try(
@@ -138,39 +140,34 @@ let rec flin_of_constr c =
              flin_minus (flin_of_constr args.(0))
 	                (flin_of_constr args.(1))
 	 | "Rmult"->
-	     (try (let a=(rational_of_constr args.(0)) in
-                     try (let b = (rational_of_constr args.(1)) in
-			    (flin_add_cste (flin_zero()) (rmult a b)))
-		     with e when Errors.noncritical e ->
-                       (flin_add (flin_zero())
-				 args.(1)
-				 a))
-	      with e when Errors.noncritical e ->
-                (flin_add (flin_zero())
-			  args.(0)
-			  (rational_of_constr args.(1))))
+	     (try
+                let a = rational_of_constr args.(0) in
+                try
+                  let b = rational_of_constr args.(1) in
+		  flin_add_cste (flin_zero()) (rmult a b)
+		with NoRational ->
+                  flin_add (flin_zero()) args.(1) a
+	      with NoRational ->
+                flin_add (flin_zero()) args.(0)
+		  (rational_of_constr args.(1)))
 	 | "Rinv"->
-	     let a=(rational_of_constr args.(0)) in
-	       flin_add_cste (flin_zero()) (rinv a)
+	     let a = rational_of_constr args.(0) in
+	     flin_add_cste (flin_zero()) (rinv a)
 	 | "Rdiv"->
-	     (let b=(rational_of_constr args.(1)) in
-		try (let a = (rational_of_constr args.(0)) in
-		       (flin_add_cste (flin_zero()) (rdiv a b)))
-		with e when Errors.noncritical e ->
-                  (flin_add (flin_zero())
-		            args.(0)
-                            (rinv b)))
-         |_->assert false)
+	     (let b = rational_of_constr args.(1) in
+	      try
+                let a = rational_of_constr args.(0) in
+	        flin_add_cste (flin_zero()) (rdiv a b)
+	      with NoRational ->
+                flin_add (flin_zero()) args.(0) (rinv b))
+         |_-> raise NoLinear)
   | Const c ->
         (match (string_of_R_constant c) with
 	       "R1" -> flin_one ()
               |"R0" -> flin_zero ()
-              |_-> assert false)
-  |_-> assert false)
-  with e when Errors.noncritical e ->
-    flin_add (flin_zero())
-                     c
-	             r1
+              |_-> raise NoLinear)
+  |_-> raise NoLinear)
+  with NoRational | NoLinear -> flin_add (flin_zero()) c r1
 ;;
 
 let flin_to_alist f =
@@ -191,52 +188,55 @@ type hineq={hname:constr; (* le nom de l'hypothèse *)
 
 (* Transforme une hypothese h:t en inéquation flin<0 ou flin<=0
 *)
+
+exception NoIneq
+
 let ineq1_of_constr (h,t) =
     match (kind_of_term t) with
-       App (f,args) ->
-         (match kind_of_term f with
-           Const c when Array.length args = 2 ->
-             let t1= args.(0) in
-             let t2= args.(1) in
+      | App (f,args) ->
+        (match kind_of_term f with
+          | Const c when Array.length args = 2 ->
+            let t1= args.(0) in
+            let t2= args.(1) in
             (match (string_of_R_constant c) with
-		 "Rlt" -> [{hname=h;
+	      |"Rlt" -> [{hname=h;
                            htype="Rlt";
 		           hleft=t1;
 			   hright=t2;
 			   hflin= flin_minus (flin_of_constr t1)
                                              (flin_of_constr t2);
 			   hstrict=true}]
-		|"Rgt" -> [{hname=h;
+	      |"Rgt" -> [{hname=h;
                            htype="Rgt";
 		           hleft=t2;
 			   hright=t1;
 			   hflin= flin_minus (flin_of_constr t2)
                                              (flin_of_constr t1);
 			   hstrict=true}]
-		|"Rle" -> [{hname=h;
+	      |"Rle" -> [{hname=h;
                            htype="Rle";
 		           hleft=t1;
 			   hright=t2;
 			   hflin= flin_minus (flin_of_constr t1)
                                              (flin_of_constr t2);
 			   hstrict=false}]
-		|"Rge" -> [{hname=h;
+	      |"Rge" -> [{hname=h;
                            htype="Rge";
 		           hleft=t2;
 			   hright=t1;
 			   hflin= flin_minus (flin_of_constr t2)
                                              (flin_of_constr t1);
 			   hstrict=false}]
-                |_->assert false)
+              |_-> raise NoIneq)
           | Ind (kn,i) ->
-	      if IndRef(kn,i) = Coqlib.glob_eq then
-		           let t0= args.(0) in
-                           let t1= args.(1) in
-                           let t2= args.(2) in
-		    (match (kind_of_term t0) with
-                         Const c ->
-			   (match (string_of_R_constant c) with
-			      "R"->
+            if not (eq_gr (IndRef(kn,i)) Coqlib.glob_eq) then raise NoIneq;
+            let t0= args.(0) in
+            let t1= args.(1) in
+            let t2= args.(2) in
+	    (match (kind_of_term t0) with
+              | Const c ->
+		(match (string_of_R_constant c) with
+		  | "R"->
                          [{hname=h;
                            htype="eqTLR";
 		           hleft=t1;
@@ -251,12 +251,10 @@ let ineq1_of_constr (h,t) =
 			   hflin= flin_minus (flin_of_constr t2)
                                              (flin_of_constr t1);
 			   hstrict=false}]
-                           |_-> assert false)
-                         |_-> assert false)
-	      else
-		assert false
-          |_-> assert false)
-        |_-> assert false
+                  |_-> raise NoIneq)
+              |_-> raise NoIneq)
+          |_-> raise NoIneq)
+      |_-> raise NoIneq
 ;;
 
 (* Applique la méthode de Fourier à une liste d'hypothèses (type hineq)
@@ -273,7 +271,7 @@ let fourier_lineq lineq1 =
                   f.hflin.fhom)
              lineq1;
    let sys= List.map (fun h->
-               let v=Array.create ((!nvar)+1) r0 in
+               let v=Array.make ((!nvar)+1) r0 in
                Constrhash.iter (fun x c -> v.(Constrhash.find hvar x)<-c)
                   h.hflin.fhom;
                ((Array.to_list v)@[rop h.hflin.fcste],h.hstrict))
@@ -352,7 +350,7 @@ let is_int x = (x.den)=1
 ;;
 
 (* fraction = couple (num,den) *)
-let rec rational_to_fraction x= (x.num,x.den)
+let rational_to_fraction x= (x.num,x.den)
 ;;
 
 (* traduction -3 -> (Ropp (Rplus R1 (Rplus R1 R1)))
@@ -363,7 +361,7 @@ let int_to_real n =
    then get coq_R0
    else
      (let s=ref (get coq_R1) in
-      for i=1 to (nn-1) do s:=mkApp (get coq_Rplus,[|get coq_R1;!s|]) done;
+      for _i = 1 to (nn-1) do s:=mkApp (get coq_Rplus,[|get coq_R1;!s|]) done;
       if n<0 then mkApp (get coq_Ropp, [|!s|]) else !s)
 ;;
 (* -1/2 -> (Rmult (Ropp R1) (Rinv (Rplus R1 R1)))
@@ -379,9 +377,9 @@ let rational_to_real x =
 let tac_zero_inf_pos gl (n,d) =
    let tacn=ref (apply (get coq_Rlt_zero_1)) in
    let tacd=ref (apply (get coq_Rlt_zero_1)) in
-   for i=1 to n-1 do
+   for _i = 1 to n - 1 do
        tacn:=(tclTHEN (apply (get coq_Rlt_zero_pos_plus1)) !tacn); done;
-   for i=1 to d-1 do
+   for _i = 1 to d - 1 do
        tacd:=(tclTHEN (apply (get coq_Rlt_zero_pos_plus1)) !tacd); done;
    (tclTHENS (apply (get coq_Rlt_mult_inv_pos)) [!tacn;!tacd])
 ;;
@@ -393,9 +391,9 @@ let tac_zero_infeq_pos gl (n,d)=
                  then (apply (get coq_Rle_zero_zero))
                  else (apply (get coq_Rle_zero_1))) in
    let tacd=ref (apply (get coq_Rlt_zero_1)) in
-   for i=1 to n-1 do
+   for  _i = 1 to n - 1 do
        tacn:=(tclTHEN (apply (get coq_Rle_zero_pos_plus1)) !tacn); done;
-   for i=1 to d-1 do
+   for _i = 1 to d - 1 do
        tacd:=(tclTHEN (apply (get coq_Rlt_zero_pos_plus1)) !tacd); done;
    (tclTHENS (apply (get coq_Rle_mult_inv_pos)) [!tacn;!tacd])
 ;;
@@ -464,11 +462,13 @@ let mkAppL a =
    mkApp(List.hd l, Array.of_list (List.tl l))
 ;;
 
+exception GoalDone
+
 (* Résolution d'inéquations linéaires dans R *)
 let rec fourier gl=
     Coqlib.check_required_library ["Coq";"fourier";"Fourier"];
     let goal = strip_outer_cast (pf_concl gl) in
-    let fhyp=id_of_string "new_hyp_for_fourier" in
+    let fhyp=Id.of_string "new_hyp_for_fourier" in
     (* si le but est une inéquation, on introduit son contraire,
        et le but à prouver devient False *)
     try (let tac =
@@ -478,40 +478,40 @@ let rec fourier gl=
 	     "Rlt" ->
 	       (tclTHEN
 	         (tclTHEN (apply (get coq_Rfourier_not_ge_lt))
-			  (intro_using  fhyp))
+			  (Proofview.V82.of_tactic (intro_using  fhyp)))
 		 fourier)
 	    |"Rle" ->
 	     (tclTHEN
 	      (tclTHEN (apply (get coq_Rfourier_not_gt_le))
-		       (intro_using  fhyp))
+		       (Proofview.V82.of_tactic (intro_using  fhyp)))
 			fourier)
 	    |"Rgt" ->
 	     (tclTHEN
 	      (tclTHEN (apply (get coq_Rfourier_not_le_gt))
-		       (intro_using  fhyp))
+		       (Proofview.V82.of_tactic (intro_using  fhyp)))
 	      fourier)
 	    |"Rge" ->
 	     (tclTHEN
 	      (tclTHEN (apply (get coq_Rfourier_not_lt_ge))
-		       (intro_using  fhyp))
+		       (Proofview.V82.of_tactic (intro_using  fhyp)))
 	      fourier)
-	    |_->assert false)
-        |_->assert false
+	    |_-> raise GoalDone)
+        |_-> raise GoalDone
       in tac gl)
-     with e when Errors.noncritical e ->
+     with GoalDone ->
     (* les hypothèses *)
     let hyps = List.map (fun (h,t)-> (mkVar h,t))
                         (list_of_sign (pf_hyps gl)) in
     let lineq =ref [] in
     List.iter (fun h -> try (lineq:=(ineq1_of_constr h)@(!lineq))
-		        with e when Errors.noncritical e -> ())
+		        with NoIneq -> ())
               hyps;
     (* lineq = les inéquations découlant des hypothèses *)
-    if !lineq=[] then Util.error "No inequalities";
+    if !lineq=[] then Errors.error "No inequalities";
     let res=fourier_lineq (!lineq) in
     let tac=ref tclIDTAC in
     if res=[]
-    then Util.error "fourier failed"
+    then Errors.error "fourier failed"
     (* l'algorithme de Fourier a réussi: on va en tirer une preuve Coq *)
     else (match res with
         [(cres,sres,lc)]->
@@ -595,20 +595,20 @@ let rec fourier gl=
 				       ))
 		      (tclTHEN (apply (if sres then get coq_Rnot_lt_lt
 					       else get coq_Rnot_le_le))
-			    (tclTHENS (Equality.replace
+			    (tclTHENS (Proofview.V82.of_tactic (Equality.replace
 				       (mkAppL [|get coq_Rminus;!t2;!t1|]
 					       )
-				       tc)
+				       tc))
 		 	       [tac2;
                                 (tclTHENS
-				  (Equality.replace
+				  (Proofview.V82.of_tactic (Equality.replace
 				    (mkApp (get coq_Rinv,
 				      [|get coq_R1|]))
-				    (get coq_R1))
+				    (get coq_R1)))
 (* en attendant Field, ça peut aider Ring de remplacer 1/1 par 1 ... *)
 
       			        [tclORELSE
-                                   (Ring.polynom [])
+                                   (* TODO : Ring.polynom []*) tclIDTAC
                                    tclIDTAC;
 					  (tclTHEN (apply (get coq_sym_eqT))
 						(apply (get coq_Rinv_1)))]
@@ -617,7 +617,7 @@ let rec fourier gl=
 				]));
                        !tac1]);
 	   tac:=(tclTHENS (cut (get coq_False))
-				  [tclTHEN intro (contradiction None);
+				  [tclTHEN (Proofview.V82.of_tactic intro) (Proofview.V82.of_tactic (contradiction None));
 				   !tac])
       |_-> assert false) |_-> assert false
 	  );

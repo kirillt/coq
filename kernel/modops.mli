@@ -6,7 +6,6 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
 open Names
 open Univ
 open Term
@@ -15,33 +14,51 @@ open Declarations
 open Entries
 open Mod_subst
 
-(** Various operations on modules and module types *)
+(** {6 Various operations on modules and module types } *)
 
+(** Functors *)
 
-val module_body_of_type : module_path -> module_type_body  -> module_body 
+val is_functor : ('ty,'a) functorize -> bool
 
-val module_type_of_module : module_path option -> module_body ->
-  module_type_body
+val destr_functor : ('ty,'a) functorize -> MBId.t * 'ty * ('ty,'a) functorize
 
-val destr_functor :
-  env -> struct_expr_body -> mod_bound_id * module_type_body * struct_expr_body
+val destr_nofunctor : ('ty,'a) functorize -> 'a
 
-val subst_struct_expr :  substitution -> struct_expr_body -> struct_expr_body
+(** Conversions between [module_body] and [module_type_body] *)
 
-val subst_signature : substitution -> structure_body -> structure_body
+val module_type_of_module : module_body -> module_type_body
+val module_body_of_type : module_path -> module_type_body -> module_body
 
-val add_signature :
+val check_modpath_equiv : env -> module_path -> module_path -> unit
+
+val implem_smartmap :
+  (module_signature -> module_signature) ->
+  (module_expression -> module_expression) ->
+  (module_implementation -> module_implementation)
+
+(** {6 Substitutions } *)
+
+val subst_signature : substitution -> module_signature -> module_signature
+val subst_structure : substitution -> structure_body -> structure_body
+
+(** {6 Adding to an environment } *)
+
+val add_structure :
   module_path -> structure_body -> delta_resolver -> env -> env
 
 (** adds a module and its components, but not the constraints *)
 val add_module : module_body -> env -> env
 
-val check_modpath_equiv : env -> module_path -> module_path -> unit
+
+(** same, for a module type *)
+val add_module_type : module_path -> module_type_body -> env -> env
+
+(** {6 Strengthening } *)
 
 val strengthen : module_type_body -> module_path -> module_type_body
 
 val inline_delta_resolver :
-  env -> inline -> module_path -> mod_bound_id -> module_type_body ->
+  env -> inline -> module_path -> MBId.t -> module_type_body ->
   delta_resolver -> delta_resolver
 
 val strengthen_and_subst_mb : module_body -> module_path -> bool -> module_body
@@ -49,17 +66,30 @@ val strengthen_and_subst_mb : module_body -> module_path -> bool -> module_body
 val subst_modtype_and_resolver : module_type_body -> module_path ->
   module_type_body
 
-val clean_bounded_mod_expr : struct_expr_body -> struct_expr_body
+(** {6 Cleaning a module expression from bounded parts }
 
-(** Errors *)
+     For instance:
+       functor(X:T)->struct module M:=X end)
+     becomes:
+       functor(X:T)->struct module M:=<content of T> end)
+*)
+
+val clean_bounded_mod_expr : module_signature -> module_signature
+
+(** {6 Stm machinery } *)
+
+val join_module : module_body -> unit
+val join_structure : structure_body -> unit
+
+(** {6 Errors } *)
 
 type signature_mismatch_error =
   | InductiveFieldExpected of mutual_inductive_body
   | DefinitionFieldExpected
   | ModuleFieldExpected
   | ModuleTypeFieldExpected
-  | NotConvertibleInductiveField of identifier
-  | NotConvertibleConstructorField of identifier
+  | NotConvertibleInductiveField of Id.t
+  | NotConvertibleConstructorField of Id.t
   | NotConvertibleBodyField
   | NotConvertibleTypeField of env * types * types
   | NotSameConstructorNamesField
@@ -68,33 +98,32 @@ type signature_mismatch_error =
   | InductiveNumbersFieldExpected of int
   | InductiveParamsNumberField of int
   | RecordFieldExpected of bool
-  | RecordProjectionsExpected of name list
+  | RecordProjectionsExpected of Name.t list
   | NotEqualInductiveAliases
   | NoTypeConstraintExpected
 
 type module_typing_error =
-  | SignatureMismatch of label * structure_field_body * signature_mismatch_error
-  | LabelAlreadyDeclared of label
+  | SignatureMismatch of
+      Label.t * structure_field_body * signature_mismatch_error
+  | LabelAlreadyDeclared of Label.t
   | ApplicationToNotPath of module_struct_entry
-  | NotAFunctor of struct_expr_body
+  | NotAFunctor
+  | IsAFunctor
   | IncompatibleModuleTypes of module_type_body * module_type_body
   | NotEqualModulePaths of module_path * module_path
-  | NoSuchLabel of label
-  | IncompatibleLabels of label * label
-  | SignatureExpected of struct_expr_body
-  | NoModuleToEnd
-  | NoModuleTypeToEnd
+  | NoSuchLabel of Label.t
+  | IncompatibleLabels of Label.t * Label.t
   | NotAModule of string
   | NotAModuleType of string
-  | NotAConstant of label
-  | IncorrectWithConstraint of label
-  | GenerativeModuleExpected of label
-  | NonEmptyLocalContect of label option
-  | LabelMissing of label * string
+  | NotAConstant of Label.t
+  | IncorrectWithConstraint of Label.t
+  | GenerativeModuleExpected of Label.t
+  | LabelMissing of Label.t * string
+  | HigherOrderInclude
 
 exception ModuleTypingError of module_typing_error
 
-val error_existing_label : label -> 'a
+val error_existing_label : Label.t -> 'a
 
 val error_application_to_not_path : module_struct_entry -> 'a
 
@@ -102,26 +131,20 @@ val error_incompatible_modtypes :
   module_type_body -> module_type_body -> 'a
 
 val error_signature_mismatch :
-  label -> structure_field_body -> signature_mismatch_error -> 'a
+  Label.t -> structure_field_body -> signature_mismatch_error -> 'a
 
-val error_incompatible_labels : label -> label -> 'a
+val error_incompatible_labels : Label.t -> Label.t -> 'a
 
-val error_no_such_label : label -> 'a
-
-val error_signature_expected : struct_expr_body -> 'a
-
-val error_no_module_to_end : unit -> 'a
-
-val error_no_modtype_to_end : unit -> 'a
+val error_no_such_label : Label.t -> 'a
 
 val error_not_a_module : string -> 'a
 
-val error_not_a_constant : label -> 'a
+val error_not_a_constant : Label.t -> 'a
 
-val error_incorrect_with_constraint : label -> 'a
+val error_incorrect_with_constraint : Label.t -> 'a
 
-val error_generative_module_expected : label -> 'a
+val error_generative_module_expected : Label.t -> 'a
 
-val error_non_empty_local_context : label option -> 'a
+val error_no_such_label_sub : Label.t->string->'a
 
-val error_no_such_label_sub : label->string->'a
+val error_higher_order_include : unit -> 'a

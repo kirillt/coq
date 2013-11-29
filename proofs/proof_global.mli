@@ -28,14 +28,13 @@ type proof_mode = {
     It corresponds to Coq default setting are they are set when coqtop starts. *)
 val register_proof_mode : proof_mode -> unit
 
-val there_is_a_proof : unit -> bool
 val there_are_pending_proofs : unit -> bool
 val check_no_pending_proof : unit -> unit
 
-val get_current_proof_name : unit -> Names.identifier
-val get_all_proof_names : unit -> Names.identifier list
+val get_current_proof_name : unit -> Names.Id.t
+val get_all_proof_names : unit -> Names.Id.t list
 
-val discard : Names.identifier Util.located -> unit
+val discard : Names.Id.t Loc.located -> unit
 val discard_current : unit -> unit
 val discard_all : unit -> unit
 
@@ -45,7 +44,7 @@ val set_proof_mode : string -> unit
 
 exception NoCurrentProof
 val give_me_the_proof : unit -> Proof.proof
-
+(** @raise NoCurrentProof when outside proof mode. *)
 
 (** [start_proof s str goals ~init_tac ~compute_guard hook] starts 
     a proof of name [s] and
@@ -53,45 +52,64 @@ val give_me_the_proof : unit -> Proof.proof
     proof end (e.g. to declare the built constructions as a coercion
     or a setoid morphism). *)
 type lemma_possible_guards = int list list
-val start_proof : Names.identifier -> 
+val start_proof : Names.Id.t -> 
                           Decl_kinds.goal_kind ->
                           (Environ.env * Term.types) list  ->
                           ?compute_guard:lemma_possible_guards -> 
-                          Tacexpr.declaration_hook -> 
+                          unit Tacexpr.declaration_hook -> 
                           unit
 
-val close_proof : unit -> 
-                           Names.identifier * 
-                          (Entries.definition_entry list * 
-			    lemma_possible_guards * 
-			    Decl_kinds.goal_kind * 
-			    Tacexpr.declaration_hook)
+type closed_proof =
+  Names.Id.t *
+  (Entries.definition_entry list * lemma_possible_guards *
+    Decl_kinds.goal_kind * unit Tacexpr.declaration_hook Ephemeron.key)
+
+(* Takes a function to add to the exceptions data relative to the
+   state in which the proof was built *)
+val close_proof : (exn -> exn) -> closed_proof
+
+(* Intermediate step necessary to delegate the future.
+ * Both access the current proof state. The formes is supposed to be
+ * chained with a computation that completed the proof *)
+val return_proof : unit -> Entries.proof_output list
+val close_future_proof :
+  Entries.proof_output list Future.computation -> closed_proof
 
 exception NoSuchProof
 
-(** Runs a tactic on the current proof. Raises [NoCurrentProof] is there is 
-   no current proof. *)
-val run_tactic : unit Proofview.tactic -> unit
+val get_open_goals : unit -> int
+
+(** Runs a tactic on the current proof. Raises [NoCurrentProof] is there is
+    no current proof.
+    The return boolean is set to [false] if an unsafe tactic has been used. *)
+val with_current_proof :
+  (unit Proofview.tactic -> Proof.proof -> Proof.proof*bool) -> bool
+val simple_with_current_proof :
+  (unit Proofview.tactic -> Proof.proof -> Proof.proof) -> unit
 
 (** Sets the tactic to be used when a tactic line is closed with [...] *)
-val set_endline_tactic : unit Proofview.tactic -> unit
+val set_endline_tactic : Tacexpr.raw_tactic_expr -> unit
+val set_interp_tac :
+  (Tacexpr.raw_tactic_expr -> unit Proofview.tactic)
+    -> unit
 
 (** Sets the section variables assumed by the proof *)
-val set_used_variables : Names.identifier list -> unit
-val get_used_variables : unit -> Sign.section_context option
+val set_used_variables : Names.Id.t list -> unit
+val get_used_variables : unit -> Context.section_context option
 
-(** Appends the endline tactic of the current proof to a tactic. *)
-val with_end_tac : unit Proofview.tactic -> unit Proofview.tactic
+val discard : Names.identifier Loc.located -> unit
+val discard_current : unit -> unit
+val discard_all : unit -> unit
 
 (**********************************************************)
-(*                                                                                                  *)
-(*                              Utility functions                                          *)
-(*                                                                                                  *)
+(*                                                        *)
+(*                            Proof modes                 *)
+(*                                                        *)
 (**********************************************************)
 
-(** [maximal_unfocus k p] unfocuses [p] until [p] has at least a
-    focused goal or that the last focus isn't of kind [k]. *)
-val maximal_unfocus : 'a Proof.focus_kind -> Proof.proof -> unit
+
+val activate_proof_mode : string -> unit
+val disactivate_proof_mode : string -> unit
 
 (**********************************************************)
 (*                                                        *)
@@ -107,7 +125,7 @@ module Bullet : sig
       with a name to identify it. *)
   type behavior = {
     name : string;
-    put : Proof.proof -> t -> unit
+    put : Proof.proof -> t -> Proof.proof
   }
 
   (** A registered behavior can then be accessed in Coq
@@ -123,9 +141,23 @@ module Bullet : sig
 
   (** Handles focusing/defocusing with bullets:
        *)
-  val put : Proof.proof -> t -> unit
+  val put : Proof.proof -> t -> Proof.proof
 end
 
+
+(**********************************************************)
+(*                                                        *)
+(*                     Default goal selector              *)
+(*                                                        *)
+(**********************************************************)
+
+val get_default_goal_selector : unit -> Vernacexpr.goal_selector
+
 module V82 : sig
-  val get_current_initial_conclusions : unit -> Names.identifier *(Term.types list * Decl_kinds.goal_kind * Tacexpr.declaration_hook)
+  val get_current_initial_conclusions : unit -> Names.Id.t *(Term.types list *
+  Decl_kinds.goal_kind * unit Tacexpr.declaration_hook Ephemeron.key)
 end
+
+type state
+val freeze : marshallable:[`Yes | `No | `Shallow] -> state
+val unfreeze : state -> unit

@@ -8,7 +8,6 @@
 
 open Util
 
-
 (* Type of regular trees:
    - Param denotes tree variables (like de Bruijn indices)
      the first int is the depth of the occurrence, and the second int
@@ -36,27 +35,26 @@ let rec lift_rtree_rec depth n = function
   | Rec(j,defs) ->
       Rec(j, Array.map (lift_rtree_rec (depth+1) n) defs)
 
-let lift n t = if n=0 then t else lift_rtree_rec 0 n t
+let lift n t = if Int.equal n 0 then t else lift_rtree_rec 0 n t
 
 (* The usual subst operation *)
 let rec subst_rtree_rec depth sub = function
     Param (i,j) as t ->
       if i < depth then t
-      else if i-depth < Array.length sub then
-        lift depth sub.(i-depth).(j)
-      else Param (i-Array.length sub,j)
+      else if i = depth then
+        lift depth (Rec (j, sub))
+      else Param (i - 1, j)
   | Node (l,sons) -> Node (l,Array.map (subst_rtree_rec depth sub) sons)
   | Rec(j,defs) ->
       Rec(j, Array.map (subst_rtree_rec (depth+1) sub) defs)
 
-let subst_rtree sub t = subst_rtree_rec 0 [|sub|] t
+let subst_rtree sub t = subst_rtree_rec 0 sub t
 
 (* To avoid looping, we must check that every body introduces a node
    or a parameter *)
 let rec expand = function
   | Rec(j,defs) ->
-      let sub = Array.init (Array.length defs) (fun i -> Rec(i,defs)) in
-      expand (subst_rtree sub defs.(j))
+      expand (subst_rtree defs defs.(j))
   | t -> t
 
 (* Given a vector of n bodies, builds the n mutual recursive trees.
@@ -65,12 +63,13 @@ let rec expand = function
    directly one of the parameters of depth 0. Some care is taken to
    accept definitions like  rec X=Y and Y=f(X,Y) *)
 let mk_rec defs =
-  let rec check histo d =
-    match expand d with
-        Param(0,j) when List.mem j histo -> failwith "invalid rec call"
-      | Param(0,j) -> check (j::histo) defs.(j)
-      | _ -> () in
-  Array.mapi (fun i d -> check [i] d; Rec(i,defs)) defs
+  let rec check histo d = match expand d with
+  | Param (0, j) ->
+    if Int.Set.mem j histo then failwith "invalid rec call"
+    else check (Int.Set.add j histo) defs.(j)
+  | _ -> ()
+  in
+  Array.mapi (fun i d -> check (Int.Set.singleton i) d; Rec(i,defs)) defs
 (*
 let v(i,j) = lift i (mk_rec_calls(j+1)).(j);;
 let r = (mk_rec[|(mk_rec[|v(1,0)|]).(0)|]).(0);;
@@ -100,69 +99,64 @@ let rec map f t = match t with
   | Node (a,sons) -> Node (f a, Array.map (map f) sons)
   | Rec(j,defs) -> Rec (j, Array.map (map f) defs)
 
-let rec smartmap f t = match t with
+let smartmap f t = match t with
     Param _ -> t
   | Node (a,sons) ->
-      let a'=f a and sons' = Util.array_smartmap (map f) sons in
-	if a'==a && sons'==sons then
-	  t
-	else
-	  Node (a',sons')
+      let a'=f a and sons' = Array.smartmap (map f) sons in
+      if a'==a && sons'==sons then t
+      else Node (a',sons')
   | Rec(j,defs) ->
-      let defs' = Util.array_smartmap (map f) defs in
-	if defs'==defs then
-	  t
-	else
-	  Rec(j,defs')
+      let defs' = Array.smartmap (map f) defs in
+      if defs'==defs then t
+      else Rec(j,defs')
 
-(* Fixpoint operator on trees:
-   f is the body of the fixpoint. Arguments passed to f are:
-   - a boolean telling if the subtree has already been seen
-   - the current subtree
-   - a function to make recursive calls on subtrees
- *)
-let fold f t =
-  let rec fold histo t =
-    let seen = List.mem t histo in
-    let nhisto = if not seen then t::histo else histo in
-    f seen (expand t) (fold nhisto) in
-  fold [] t
+(** Structural equality test, parametrized by an equality on elements *)
 
+let rec raw_eq cmp t t' = match t, t' with
+  | Param (i,j), Param (i',j') -> Int.equal i i' && Int.equal j j'
+  | Node (x, a), Node (x', a') -> cmp x x' && Array.equal (raw_eq cmp) a a'
+  | Rec (i, a), Rec (i', a') -> Int.equal i i' && Array.equal (raw_eq cmp) a a'
+  | _ -> false
 
-(* Tests if a given tree is infinite, i.e. has an branch of infinte length. *)
-let is_infinite t = fold
-  (fun seen t is_inf ->
-    seen ||
-    (match t with
-        Node(_,v) -> array_exists is_inf v
-      | Param _ -> false
-      | _ -> assert false))
-  t
+let raw_eq2 cmp (t,u) (t',u') = raw_eq cmp t t' && raw_eq cmp u u'
 
-let fold2 f t x =
-  let rec fold histo t x =
-    let seen = List.mem (t,x) histo in
-    let nhisto = if not seen then (t,x)::histo else histo in
-    f seen (expand t) x (fold nhisto) in
-  fold [] t x
+(** Equivalence test on expanded trees. It is parametrized by two
+    equalities on elements:
+    - [cmp] is used when checking for already seen trees
+    - [cmp'] is used when comparing node labels. *)
 
-let compare_rtree f = fold2
-  (fun seen t1 t2 cmp ->
-    seen ||
-    let b = f t1 t2 in
-    if b < 0 then false
-    else if b > 0 then true
-    else match expand t1, expand t2 with
-        Node(_,v1), Node(_,v2) when Array.length v1 = Array.length v2 ->
-          array_for_all2 cmp v1 v2
-      | _ -> false)
+let equiv cmp cmp' =
+  let rec compare histo t t' =
+    List.mem_f (raw_eq2 cmp) (t,t') histo ||
+    match expand t, expand t' with
+    | Node(x,v), Node(x',v') ->
+        cmp' x x' &&
+        Int.equal (Array.length v) (Array.length v') &&
+        Array.for_all2 (compare ((t,t')::histo)) v v'
+    | _ -> false
+  in compare []
 
-let eq_rtree cmp t1 t2 =
-  t1 == t2 || t1=t2 ||
-  compare_rtree
-    (fun t1 t2 ->
-      if cmp (fst(dest_node t1)) (fst(dest_node t2)) then 0
-      else (-1)) t1 t2
+(** The main comparison on rtree tries first physical equality, then
+    the structural one, then the logical equivalence *)
+
+let equal cmp t t' =
+  t == t' || raw_eq cmp t t' || equiv cmp cmp t t'
+
+(** Deprecated alias *)
+let eq_rtree = equal
+
+(** Tests if a given tree is infinite, i.e. has an branch of infinite length.
+   This correspond to a cycle when visiting the expanded tree.
+   We use a specific comparison to detect already seen trees. *)
+
+let is_infinite cmp t =
+  let rec is_inf histo t =
+    List.mem_f (raw_eq cmp) t histo ||
+    match expand t with
+    | Node (_,v) -> Array.exists (is_inf (t::histo)) v
+    | _ -> false
+  in
+  is_inf [] t
 
 (* Pretty-print a tree (not so pretty) *)
 open Pp
@@ -173,11 +167,11 @@ let rec pp_tree prl t =
     | Node(lab,[||]) -> hov 2 (str"("++prl lab++str")")
     | Node(lab,v) ->
         hov 2 (str"("++prl lab++str","++brk(1,0)++
-               Util.prvect_with_sep Util.pr_comma (pp_tree prl) v++str")")
+               prvect_with_sep pr_comma (pp_tree prl) v++str")")
     | Rec(i,v) ->
-        if Array.length v = 0 then str"Rec{}"
-        else if Array.length v = 1 then
+        if Int.equal (Array.length v) 0 then str"Rec{}"
+        else if Int.equal (Array.length v) 1 then
           hov 2 (str"Rec{"++pp_tree prl v.(0)++str"}")
         else
           hov 2 (str"Rec{"++int i++str","++brk(1,0)++
-                 Util.prvect_with_sep Util.pr_comma (pp_tree prl) v++str"}")
+                 prvect_with_sep pr_comma (pp_tree prl) v++str"}")

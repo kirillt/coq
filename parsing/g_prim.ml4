@@ -6,20 +6,19 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pcoq
+open Compat
 open Names
 open Libnames
-open Topconstr
 open Tok
-open Compat
+
+open Pcoq
+open Pcoq.Prim
 
 let prim_kw = ["{"; "}"; "["; "]"; "("; ")"; "'"]
 let _ = List.iter Lexer.add_keyword prim_kw
 
-open Prim
-open Nametab
 
-let local_make_qualid l id = make_qualid (make_dirpath l) id
+let local_make_qualid l id = make_qualid (DirPath.make l) id
 
 let my_int_of_string loc s =
   try
@@ -29,7 +28,7 @@ let my_int_of_string loc s =
     if n > 1024 * 2048 then raise Exit;
     n
   with Failure _ | Exit ->
-    Util.user_err_loc (loc,"",Pp.str "Cannot support a so large number.")
+    Errors.user_err_loc (loc,"",Pp.str "Cannot support a so large number.")
 
 GEXTEND Gram
   GLOBAL:
@@ -40,22 +39,22 @@ GEXTEND Gram
     [ [ s = IDENT -> s ] ]
   ;
   ident:
-    [ [ s = IDENT -> id_of_string s ] ]
+    [ [ s = IDENT -> Id.of_string s ] ]
   ;
   pattern_ident:
     [ [ LEFTQMARK; id = ident -> id ] ]
   ;
   pattern_identref:
-    [ [ id = pattern_ident -> (loc, id) ] ]
+    [ [ id = pattern_ident -> (!@loc, id) ] ]
   ;
   var: (* as identref, but interpret as a term identifier in ltac *)
-    [ [ id = ident -> (loc,id) ] ]
+    [ [ id = ident -> (!@loc, id) ] ]
   ;
   identref:
-    [ [ id = ident -> (loc,id) ] ]
+    [ [ id = ident -> (!@loc, id) ] ]
   ;
   field:
-    [ [ s = FIELD -> id_of_string s ] ]
+    [ [ s = FIELD -> Id.of_string s ] ]
   ;
   fields:
     [ [ id = field; (l,id') = fields -> (l@[id],id')
@@ -63,8 +62,8 @@ GEXTEND Gram
       ] ]
   ;
   fullyqualid:
-    [ [ id = ident; (l,id')=fields -> loc,id::List.rev (id'::l)
-      | id = ident -> loc,[id]
+    [ [ id = ident; (l,id')=fields -> !@loc,id::List.rev (id'::l)
+      | id = ident -> !@loc,[id]
       ] ]
   ;
   basequalid:
@@ -73,46 +72,46 @@ GEXTEND Gram
       ] ]
   ;
   name:
-    [ [ IDENT "_" -> (loc, Anonymous)
-      | id = ident -> (loc, Name id) ] ]
+    [ [ IDENT "_" -> (!@loc, Anonymous)
+      | id = ident -> (!@loc, Name id) ] ]
   ;
   reference:
     [ [ id = ident; (l,id') = fields ->
-        Qualid (loc, local_make_qualid (l@[id]) id')
-      | id = ident -> Ident (loc,id)
+        Qualid (!@loc, local_make_qualid (l@[id]) id')
+      | id = ident -> Ident (!@loc,id)
       ] ]
   ;
   by_notation:
-    [ [ s = ne_string; sc = OPT ["%"; key = IDENT -> key ] -> (loc,s,sc) ] ]
+    [ [ s = ne_string; sc = OPT ["%"; key = IDENT -> key ] -> (!@loc, s, sc) ] ]
   ;
   smart_global:
-    [ [ c = reference -> Genarg.AN c
-      | ntn = by_notation -> Genarg.ByNotation ntn ] ]
+    [ [ c = reference -> Misctypes.AN c
+      | ntn = by_notation -> Misctypes.ByNotation ntn ] ]
   ;
   qualid:
-    [ [ qid = basequalid -> loc, qid ] ]
+    [ [ qid = basequalid -> !@loc, qid ] ]
   ;
   ne_string:
     [ [ s = STRING ->
-        if s="" then Util.user_err_loc(loc,"",Pp.str"Empty string."); s
+        if s="" then Errors.user_err_loc(!@loc, "", Pp.str"Empty string."); s
     ] ]
   ;
   ne_lstring:
-    [ [ s = ne_string -> (loc,s) ] ]
+    [ [ s = ne_string -> (!@loc, s) ] ]
   ;
   dirpath:
     [ [ id = ident; l = LIST0 field ->
-        make_dirpath (l@[id]) ] ]
+        DirPath.make (List.rev (id::l)) ] ]
   ;
   string:
     [ [ s = STRING -> s ] ]
   ;
   integer:
-    [ [ i = INT      -> my_int_of_string loc i
-      | "-"; i = INT -> - my_int_of_string loc i ] ]
+    [ [ i = INT      -> my_int_of_string (!@loc) i
+      | "-"; i = INT -> - my_int_of_string (!@loc) i ] ]
   ;
   natural:
-    [ [ i = INT -> my_int_of_string loc i ] ]
+    [ [ i = INT -> my_int_of_string (!@loc) i ] ]
   ;
   bigint: (* Negative numbers are dealt with specially *)
     [ [ i = INT -> (Bigint.of_string i) ] ]

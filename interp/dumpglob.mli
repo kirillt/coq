@@ -15,29 +15,28 @@ val end_dump_glob : unit -> unit
 val dump : unit -> bool
 
 val noglob : unit -> unit
-val dump_to_stdout : unit -> unit
-val dump_into_file : string -> unit
+val dump_into_file : string -> unit (** special handling of "stdout" *)
 val dump_to_dotglob : unit -> unit
 
 val pause : unit -> unit
 val continue : unit -> unit
 
-type coqdoc_state = Lexer.location_table
-val coqdoc_freeze : unit -> coqdoc_state
-val coqdoc_unfreeze : coqdoc_state -> unit
+val add_glob : Loc.t -> Globnames.global_reference -> unit
+val add_glob_kn : Loc.t -> Names.kernel_name -> unit
 
-val add_glob : Util.loc -> Libnames.global_reference -> unit
-val add_glob_kn : Util.loc -> Names.kernel_name -> unit
-
-val dump_definition : Util.loc * Names.identifier -> bool -> string -> unit
-val dump_moddef : Util.loc -> Names.module_path -> string -> unit
-val dump_modref  : Util.loc -> Names.module_path -> string -> unit
-val dump_reference  : Util.loc -> string -> string -> string -> unit
-val dump_libref : Util.loc -> Names.dir_path -> string -> unit
-val dump_notation_location : (int * int) list -> Topconstr.notation -> (Notation.notation_location * Topconstr.scope_name option) -> unit
-val dump_binding : Util.loc -> Names.Idset.elt -> unit
-val dump_notation : Util.loc * (Topconstr.notation * Notation.notation_location) -> Topconstr.scope_name option -> bool -> unit
-val dump_constraint :  Topconstr.typeclass_constraint -> bool -> string -> unit
+val dump_definition : Loc.t * Names.Id.t -> bool -> string -> unit
+val dump_moddef : Loc.t -> Names.module_path -> string -> unit
+val dump_modref  : Loc.t -> Names.module_path -> string -> unit
+val dump_reference  : Loc.t -> string -> string -> string -> unit
+val dump_libref : Loc.t -> Names.DirPath.t -> string -> unit
+val dump_notation_location : (int * int) list -> Constrexpr.notation ->
+  (Notation.notation_location * Notation_term.scope_name option) -> unit
+val dump_binding : Loc.t -> Names.Id.Set.elt -> unit
+val dump_notation :
+  Loc.t * (Constrexpr.notation * Notation.notation_location) ->
+  Notation_term.scope_name option -> bool -> unit
+val dump_constraint :
+  Constrexpr.typeclass_constraint -> bool -> string -> unit
 
 val dump_string : string -> unit
 

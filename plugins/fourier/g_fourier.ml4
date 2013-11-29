@@ -6,10 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
 open FourierR
 
 TACTIC EXTEND fourier
-  [ "fourierz" ] -> [ fourier ]
+  [ "fourierz" ] -> [ Proofview.V82.tactic fourier ]
 END

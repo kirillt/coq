@@ -6,24 +6,18 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pp
+open Errors
 open Util
 open Names
 open Term
 open Termops
-open Environ
-open Libnames
-open Reduction
 open Inductiveops
-open Proof_type
-open Clenv
 open Hipattern
 open Tacmach
 open Tacticals
 open Tactics
-open Hiddentac
-open Genarg
-open Tacexpr
+open Misctypes
+open Proofview.Notations
 
 let introElimAssumsThen tac ba =
   let nassums =
@@ -31,8 +25,8 @@ let introElimAssumsThen tac ba =
       (fun acc b -> if b then acc+2 else acc+1)
       0 ba.branchsign
   in
-  let introElimAssums = tclDO nassums intro in
-  (tclTHEN introElimAssums (elim_on_ba tac ba))
+  let introElimAssums = Tacticals.New.tclDO nassums intro in
+  (Tacticals.New.tclTHEN introElimAssums (Tacticals.New.elim_on_ba tac ba))
 
 let introCaseAssumsThen tac ba =
   let case_thin_sign =
@@ -43,13 +37,13 @@ let introCaseAssumsThen tac ba =
   let n1 = List.length case_thin_sign in
   let n2 = List.length ba.branchnames in
   let (l1,l2),l3 =
-    if n1 < n2 then list_chop n1 ba.branchnames, []
+    if n1 < n2 then List.chop n1 ba.branchnames, []
     else
       (ba.branchnames, []),
-       if n1 > n2 then snd (list_chop n2 case_thin_sign) else [] in
+       if n1 > n2 then snd (List.chop n2 case_thin_sign) else [] in
   let introCaseAssums =
-    tclTHEN (intros_pattern no_move l1) (intros_clearing l3) in
-  (tclTHEN introCaseAssums (case_on_ba (tac l2) ba))
+    Tacticals.New.tclTHEN (intros_pattern MoveLast l1) (intros_clearing l3) in
+  (Tacticals.New.tclTHEN introCaseAssums (Tacticals.New.case_on_ba (tac l2) ba))
 
 (* The following tactic Decompose repeatedly applies the
    elimination(s) rule(s) of the types satisfying the predicate
@@ -69,18 +63,18 @@ Another example :
    Qed.
 *)
 
-let elimHypThen tac id gl =
-  elimination_then tac ([],[]) (mkVar id) gl
+let elimHypThen tac id =
+  Tacticals.New.elimination_then tac ([],[]) (mkVar id)
 
 let rec general_decompose_on_hyp recognizer =
-  ifOnHyp recognizer (general_decompose_aux recognizer) (fun _ -> tclIDTAC)
+  Tacticals.New.ifOnHyp recognizer (general_decompose_aux recognizer) (fun _ -> Proofview.tclUNIT())
 
 and general_decompose_aux recognizer id =
   elimHypThen
     (introElimAssumsThen
        (fun bas ->
-	  tclTHEN (clear [id])
-	    (tclMAP (general_decompose_on_hyp recognizer)
+	  Tacticals.New.tclTHEN (Proofview.V82.tactic (clear [id]))
+	    (Tacticals.New.tclMAP (general_decompose_on_hyp recognizer)
                (ids_of_named_context bas.assums))))
     id
 
@@ -88,54 +82,60 @@ and general_decompose_aux recognizer id =
    pas si aucune élimination n'est possible *)
 
 (* Meilleures stratégies mais perte de compatibilité *)
-let tmphyp_name = id_of_string "_TmpHyp"
+let tmphyp_name = Id.of_string "_TmpHyp"
 let up_to_delta = ref false (* true *)
 
-let general_decompose recognizer c gl =
-  let typc = pf_type_of gl c in
-  tclTHENSV (cut typc)
-    [| tclTHEN (intro_using tmphyp_name)
-         (onLastHypId
-	    (ifOnHyp recognizer (general_decompose_aux recognizer)
-	      (fun id -> clear [id])));
-       exact_no_check c |] gl
+let general_decompose recognizer c =
+  Proofview.Goal.enter begin fun gl ->
+  let type_of = Tacmach.New.pf_type_of gl in
+  try (* type_of can raise exceptions *)
+  let typc = type_of c in
+  Tacticals.New.tclTHENS (Proofview.V82.tactic (cut typc))
+    [ Tacticals.New.tclTHEN (intro_using tmphyp_name)
+         (Tacticals.New.onLastHypId
+	    (Tacticals.New.ifOnHyp recognizer (general_decompose_aux recognizer)
+	      (fun id -> Proofview.V82.tactic (clear [id]))));
+       Proofview.V82.tactic (exact_no_check c) ]
+  with e when Proofview.V82.catchable_exception e -> Proofview.tclZERO e
+  end
 
-let head_in gls indl t =
+let head_in indl t gl =
+  let env = Proofview.Goal.env gl in
+  let sigma = Proofview.Goal.sigma gl in
   try
     let ity,_ =
       if !up_to_delta
-      then find_mrectype (pf_env gls) (project gls) t
+      then find_mrectype env sigma t
       else extract_mrectype t
     in List.mem ity indl
   with Not_found -> false
 
-let decompose_these c l gls =
+let decompose_these c l =
+  Proofview.Goal.enter begin fun gl ->
   let indl = (*List.map inductive_of*) l in
-  general_decompose (fun (_,t) -> head_in gls indl t) c gls
+  general_decompose (fun (_,t) -> head_in indl t gl) c
+  end
 
-let decompose_nonrec c gls =
+let decompose_nonrec c =
   general_decompose
     (fun (_,t) -> is_non_recursive_type t)
-    c gls
+    c
 
-let decompose_and c gls =
+let decompose_and c =
   general_decompose
     (fun (_,t) -> is_record t)
-    c gls
+    c
 
-let decompose_or c gls =
+let decompose_or c =
   general_decompose
     (fun (_,t) -> is_disjunction t)
-    c gls
+    c
 
-let h_decompose l c =
-  Refiner.abstract_tactic (TacDecompose (l,c)) (decompose_these c l)
+let h_decompose l c = decompose_these c l
 
-let h_decompose_or c =
-  Refiner.abstract_tactic (TacDecomposeOr c) (decompose_or c)
+let h_decompose_or = decompose_or
 
-let h_decompose_and c =
-  Refiner.abstract_tactic (TacDecomposeAnd c) (decompose_and c)
+let h_decompose_and = decompose_and
 
 (* The tactic Double performs a double induction *)
 
@@ -143,10 +143,11 @@ let simple_elimination c gls =
   simple_elimination_then (fun _ -> tclIDTAC) c gls
 
 let induction_trailer abs_i abs_j bargs =
-  tclTHEN
-    (tclDO (abs_j - abs_i) intro)
-    (onLastHypId
-       (fun id gls ->
+  Tacticals.New.tclTHEN
+    (Tacticals.New.tclDO (abs_j - abs_i) intro)
+    (Tacticals.New.onLastHypId
+       (fun id ->
+          Proofview.V82.tactic begin fun gls ->
 	  let idty = pf_type_of gls (mkVar id) in
 	  let fvty = global_vars (pf_env gls) idty in
 	  let possible_bring_hyps =
@@ -163,24 +164,27 @@ let induction_trailer abs_i abs_j bargs =
           let ids = List.rev (ids_of_named_context hyps) in
 	  (tclTHENSEQ
             [bring_hyps hyps; tclTRY (clear ids);
-	     simple_elimination (mkVar id)])
-          gls))
+	     simple_elimination (mkVar id)]) gls
+          end
+          ))
 
-let double_ind h1 h2 gls =
-  let abs_i = depth_of_quantified_hypothesis true h1 gls in
-  let abs_j = depth_of_quantified_hypothesis true h2 gls in
-  let (abs_i,abs_j) =
-    if abs_i < abs_j then (abs_i,abs_j) else
-    if abs_i > abs_j then (abs_j,abs_i) else
-      error "Both hypotheses are the same." in
-  (tclTHEN (tclDO abs_i intro)
-     (onLastHypId
+let double_ind h1 h2 =
+  Proofview.Goal.enter begin fun gl ->
+  let abs_i = Tacmach.New.of_old (depth_of_quantified_hypothesis true h1) gl in
+  let abs_j = Tacmach.New.of_old (depth_of_quantified_hypothesis true h2) gl in
+  let abs =
+    if abs_i < abs_j then Proofview.tclUNIT (abs_i,abs_j) else
+    if abs_i > abs_j then  Proofview.tclUNIT (abs_j,abs_i) else
+      Proofview.tclZERO (Errors.UserError ("", Pp.str"Both hypotheses are the same.")) in
+  abs >= fun (abs_i,abs_j) ->
+  (Tacticals.New.tclTHEN (Tacticals.New.tclDO abs_i intro)
+     (Tacticals.New.onLastHypId
        	(fun id ->
-           elimination_then
+           Tacticals.New.elimination_then
              (introElimAssumsThen (induction_trailer abs_i abs_j))
-             ([],[]) (mkVar id)))) gls
+             ([],[]) (mkVar id))))
+  end
 
-let h_double_induction h1 h2 =
-  Refiner.abstract_tactic (TacDoubleInduction (h1,h2)) (double_ind h1 h2)
+let h_double_induction = double_ind
 
 

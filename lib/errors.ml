@@ -8,8 +8,48 @@
 
 open Pp
 
-(* spiwack: it might be reasonable to decide and move the declarations
-   of Anomaly and so on to this module so as not to depend on Util. *)
+(** Aliases *)
+
+let push = Backtrace.add_backtrace
+
+(* Errors *)
+
+exception Anomaly of string option * std_ppcmds (* System errors *)
+
+let make_anomaly ?label pp =
+  Anomaly (label, pp)
+
+let anomaly_gen label pp =
+  raise (Anomaly (label, pp))
+
+let anomaly ?loc ?label pp =
+  match loc with
+  | None -> raise (Anomaly (label, pp))
+  | Some loc ->
+    Loc.raise loc (Anomaly (label, pp))
+
+let anomalylabstrm string pps =
+  anomaly_gen (Some string) pps
+
+let is_anomaly = function
+| Anomaly _ -> true
+| _ -> false
+
+exception UserError of string * std_ppcmds (* User errors *)
+let error string = raise (UserError("_", str string))
+let errorlabstrm l pps = raise (UserError(l,pps))
+
+exception AlreadyDeclared of std_ppcmds (* for already declared Schemes *)
+let alreadydeclared pps = raise (AlreadyDeclared(pps))
+
+let todo s = prerr_string ("TODO: "^s^"\n")
+
+let user_err_loc (loc,s,strm) = Loc.raise loc (UserError (s,strm))
+let invalid_arg_loc (loc,s) = Loc.raise loc (Invalid_argument s)
+
+exception Timeout
+exception Drop
+exception Quit
 
 let handle_stack = ref []
 
@@ -34,13 +74,23 @@ let rec print_gen bottom stk e =
     In usual situation, the [handle_stack] is treated as it if was always
     non-empty with [print_anomaly] as its bottom handler. *)
 
-let where s =
+let where = function
+| None -> mt ()
+| Some s ->
   if !Flags.debug then str ("in "^s^":") ++ spc () else mt ()
 
 let raw_anomaly e = match e with
-  | Util.Anomaly (s,pps) -> where s ++ pps ++ str "."
+  | Anomaly (s, pps) -> where s ++ pps ++ str "."
   | Assert_failure _ | Match_failure _ -> str (Printexc.to_string e ^ ".")
   | _ -> str ("Uncaught exception " ^ Printexc.to_string e ^ ".")
+
+let print_backtrace e = match Backtrace.get_backtrace e with
+| None -> mt ()
+| Some bt ->
+  let bt = Backtrace.repr bt in
+  let pr_frame f = str (Backtrace.print_frame f) in
+  let bt = prlist_with_sep fnl pr_frame bt in
+  fnl () ++ hov 0 bt
 
 let print_anomaly askreport e =
   if askreport then
@@ -49,20 +99,20 @@ let print_anomaly askreport e =
     hov 0 (raw_anomaly e)
 
 (** The standard exception printer *)
-let print e = print_gen (print_anomaly true) !handle_stack e
+let print e =
+  print_gen (print_anomaly true) !handle_stack e ++ print_backtrace e
 
 (** Same as [print], except that the "Please report" part of an anomaly
     isn't printed (used in Ltac debugging). *)
 let print_no_report e = print_gen (print_anomaly false) !handle_stack e
 
-(** Same as [print], except that anomalies are not printed but re-raised
-    (used for the Fail command) *)
-let print_no_anomaly e = print_gen (fun e -> raise e) !handle_stack e
+let print_anomaly e = print_anomaly true e
 
 (** Predefined handlers **)
 
 let _ = register_handler begin function
-  | Util.UserError(s,pps) -> hov 0 (str "Error: " ++ where s ++ pps)
+  | UserError(s, pps) ->
+    hov 0 (str "Error: " ++ where (Some s) ++ pps)
   | _ -> raise Unhandled
 end
 
@@ -70,10 +120,8 @@ end
     by inner functions during a [vernacinterp]. They should be handled
     only at the very end of interp, to be displayed to the user. *)
 
-(** NB: in the 8.4 branch, for maximal compatibility, anomalies
-    are considered non-critical *)
-
 let noncritical = function
-  | Sys.Break | Out_of_memory | Stack_overflow -> false
+  | Sys.Break | Out_of_memory | Stack_overflow
+  | Assert_failure _ | Match_failure _ | Anomaly _
+  | Timeout | Drop | Quit -> false
   | _ -> true
-

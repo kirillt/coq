@@ -24,14 +24,18 @@ val main : string list -> unit
 
 (** Function to save anything and kill all coqtops
     @return [false] if you're allowed to quit. *)
-val forbid_quit_to_save : unit -> bool
+val forbid_quit : unit -> bool
+
+(** Terminate coqide after closing all coqtops and waiting
+    for their death *)
+val close_and_quit : unit -> unit
 
 (** Function to load of a file. *)
 val do_load : string -> unit
 
-(** Set coqide to ignore Ctrl-C, while launching [crash_save] and
-    exiting for others received signals *)
-val ignore_break : unit -> unit
+(** Set coqide to perform a clean quit at Ctrl-C, while launching
+    [crash_save] and exiting for others received signals *)
+val set_signal_handlers : unit -> unit
 
 (** Emergency saving of opened files as "foo.v.crashcoqide",
     and exit (if the integer isn't 127). *)

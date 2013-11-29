@@ -6,9 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
 open Univ
+open Cic
 open Term
 open Reduction
 open Type_errors
@@ -19,7 +21,7 @@ open Environ
 let inductive_of_constructor = fst
 
 let conv_leq_vecti env v1 v2 =
-  array_fold_left2_i
+  Array.fold_left2_i
     (fun i _ t1 t2 ->
       (try conv_leq env t1 t2
       with NotConvertible -> raise (NotConvertibleVect i)); ())
@@ -63,32 +65,6 @@ let judge_of_relative env n =
   with Not_found ->
     error_unbound_rel env n
 
-(* Type of variables *)
-let judge_of_variable env id =
-  try named_type id env
-  with Not_found ->
-    error_unbound_var env id
-
-(* Management of context of variables. *)
-
-(* Checks if a context of variable can be instantiated by the
-   variables of the current env *)
-(* TODO: check order? *)
-let rec check_hyps_inclusion env sign =
-  fold_named_context
-    (fun (id,_,ty1) () ->
-      let ty2 = named_type id env in
-      if not (eq_constr ty2 ty1) then
-        error "types do not match")
-    sign
-    ~init:()
-
-
-let check_args env c hyps =
-  try check_hyps_inclusion env hyps
-  with UserError _ | Not_found ->
-    error_reference_variables env c
-
 (* Type of constants *)
 
 let type_of_constant_knowing_parameters env t paramtyps =
@@ -103,12 +79,11 @@ let type_of_constant_type env t =
   type_of_constant_knowing_parameters env t [||]
 
 let judge_of_constant_knowing_parameters env cst paramstyp =
-  let c = Const cst in
   let cb =
     try lookup_constant cst env
     with Not_found ->
-      failwith ("Cannot find constant: "^string_of_con cst) in
-  let _ = check_args env c cb.const_hyps in
+      failwith ("Cannot find constant: "^string_of_con cst)
+  in
   type_of_constant_knowing_parameters env cb.const_type paramstyp
 
 let judge_of_constant env cst =
@@ -166,7 +141,7 @@ let sort_of_product env domsort rangsort =
 let judge_of_cast env (c,cj) k tj =
   let conversion =
     match k with
-    | VMcast -> vm_conv CUMUL
+    | VMcast | NATIVEcast -> vm_conv CUMUL
     | DEFAULTcast -> conv_leq in
   try
     conversion env cj tj
@@ -188,12 +163,11 @@ let judge_of_cast env (c,cj) k tj =
    dynamic constraints of the form u<=v are enforced *)
 
 let judge_of_inductive_knowing_parameters env ind (paramstyp:constr array) =
-  let c = Ind ind in
   let (mib,mip) =
     try lookup_mind_specif env ind
     with Not_found ->
-      failwith ("Cannot find inductive: "^string_of_mind (fst ind)) in
-  check_args env c mib.mind_hyps;
+      failwith ("Cannot find inductive: "^string_of_mind (fst ind))
+  in
   type_of_inductive_knowing_parameters env mip paramstyp
 
 let judge_of_inductive env ind =
@@ -202,15 +176,12 @@ let judge_of_inductive env ind =
 (* Constructors. *)
 
 let judge_of_constructor env c =
-  let constr = Construct c in
-  let _ =
-    let ((kn,_),_) = c in
-    let mib =
-      try lookup_mind kn env
-      with Not_found ->
-        failwith ("Cannot find inductive: "^string_of_mind (fst (fst c))) in
-    check_args env constr mib.mind_hyps in
-  let specif = lookup_mind_specif env (inductive_of_constructor c) in
+  let ind = inductive_of_constructor c in
+  let specif =
+    try lookup_mind_specif env ind
+    with Not_found ->
+      failwith ("Cannot find inductive: "^string_of_mind (fst ind))
+  in
   type_of_constructor c specif
 
 (* Case. *)
@@ -243,7 +214,7 @@ let type_fixpoint env lna lar lbody vdefj =
   try
     conv_leq_vecti env vdefj (Array.map (fun ty -> lift lt ty) lar)
   with NotConvertibleVect i ->
-    let vdefj = array_map2 (fun b ty -> b,ty) lbody vdefj in
+    let vdefj = Array.map2 (fun b ty -> b,ty) lbody vdefj in
     error_ill_typed_rec_body env i lna vdefj lar
 
 (************************************************************************)
@@ -255,7 +226,7 @@ let refresh_arity env ar =
   match hd with
       Sort (Type u) when not (is_univ_variable u) ->
         let u' = fresh_local_univ() in
-        let env' = add_constraints (enforce_geq u' u empty_constraint) env in
+        let env' = add_constraints (enforce_leq u u' empty_constraint) env in
         env', mkArity (ctxt,Type u')
     | _ -> env, ar
 
@@ -270,7 +241,7 @@ let rec execute env cstr =
 
     | Rel n -> judge_of_relative env n
 
-    | Var id -> judge_of_variable env id
+    | Var _ -> anomaly (Pp.str "Section variable in Coqchk !")
 
     | Const c -> judge_of_constant env c
 
@@ -292,7 +263,7 @@ let rec execute env cstr =
 		(* No sort-polymorphism *)
 		execute env f
 	in
-        let jl = array_map2 (fun c ty -> c,ty) args jl in
+        let jl = Array.map2 (fun c ty -> c,ty) args jl in
 	judge_of_apply env (f,j) jl
 
     | Lambda (name,c1,c2) ->
@@ -350,10 +321,10 @@ let rec execute env cstr =
 
     (* Partial proofs: unsupported by the kernel *)
     | Meta _ ->
-	anomaly "the kernel does not support metavariables"
+	anomaly (Pp.str "the kernel does not support metavariables")
 
     | Evar _ ->
-	anomaly "the kernel does not support existential variables"
+	anomaly (Pp.str "the kernel does not support existential variables")
 
 and execute_type env constr =
   let j = execute env constr in
@@ -361,7 +332,7 @@ and execute_type env constr =
 
 and execute_recdef env (names,lar,vdef) i =
   let larj = execute_array env lar in
-  let larj = array_map2 (fun c ty -> c,ty) lar larj in
+  let larj = Array.map2 (fun c ty -> c,ty) lar larj in
   let lara = Array.map (assumption_of_judgment env) larj in
   let env1 = push_rec_types (names,lara,vdef) env in
   let vdefj = execute_array env1 vdef in
@@ -388,24 +359,6 @@ let check_ctxt env rels =
           conv_leq env j1 ty;
           push_rel d env)
     rels ~init:env
-
-let check_named_ctxt env ctxt =
-  fold_named_context (fun (id,_,_ as d) env ->
-    let _ =
-      try
-        let _ = lookup_named id env in
-        failwith ("variable "^string_of_id id^" defined twice")
-      with Not_found -> () in
-    match d with
-        (_,None,ty) ->
-          let _ = infer_type env ty in
-          push_named d env
-      | (_,Some bd,ty) ->
-          let j1 = infer env bd in
-          let _ = infer env ty in
-          conv_leq env j1 ty;
-          push_named d env)
-    ctxt ~init:env
 
 (* Polymorphic arities utils *)
 

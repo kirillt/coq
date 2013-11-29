@@ -7,25 +7,24 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
 open Nameops
 open Term
+open Vars
 open Termops
 open Namegen
-open Sign
 open Environ
 open Evd
 open Reduction
 open Reductionops
-open Glob_term
-open Pattern
 open Tacred
 open Pretype_errors
 open Evarutil
 open Unification
 open Mod_subst
-open Coercion.Default
+open Misctypes
 
 (* Abbreviations *)
 
@@ -84,6 +83,16 @@ let clenv_push_prod cl =
 (* Instantiate the first [bound] products of [t] with metas (all products if
    [bound] is [None]; unfold local defs *)
 
+(** [clenv_environments sigma n t] returns [sigma',lmeta,ccl] where
+   [lmetas] is a list of metas to be applied to a proof of [t] so that
+   it produces the unification pattern [ccl]; [sigma'] is [sigma]
+   extended with [lmetas]; if [n] is defined, it limits the size of
+   the list even if [ccl] is still a product; otherwise, it stops when
+   [ccl] is not a product; example: if [t] is [forall x y, x=y -> y=x]
+   and [n] is [None], then [lmetas] is [Meta n1;Meta n2;Meta n3] and
+   [ccl] is [Meta n1=Meta n2]; if [n] is [Some 1], [lmetas] is [Meta n1]
+   and [ccl] is [forall y, Meta n1=y -> y=Meta n1] *)
+
 let clenv_environments evd bound t =
   let rec clrec (e,metas) n t =
     match n, kind_of_term t with
@@ -100,34 +109,6 @@ let clenv_environments evd bound t =
       | (n, _) -> (e, List.rev metas, t)
   in
   clrec (evd,[]) bound t
-
-(* Instantiate the first [bound] products of [t] with evars (all products if
-   [bound] is [None]; unfold local defs *)
-
-let clenv_environments_evars env evd bound t =
-  let rec clrec (e,ts) n t =
-    match n, kind_of_term t with
-      | (Some 0, _) -> (e, List.rev ts, t)
-      | (n, Cast (t,_,_)) -> clrec (e,ts) n t
-      | (n, Prod (na,t1,t2)) ->
-          let e',constr = Evarutil.new_evar e env t1 in
-	  let dep = dependent (mkRel 1) t2 in
-	  clrec (e', constr::ts) (Option.map ((+) (-1)) n)
-	    (if dep then (subst1 constr t2) else t2)
-      | (n, LetIn (na,b,_,t)) -> clrec (e,ts) n (subst1 b t)
-      | (n, _) -> (e, List.rev ts, t)
-  in
-  clrec (evd,[]) bound t
-
-let clenv_conv_leq env sigma t c bound =
-  let ty = Retyping.get_type_of env sigma c in
-  let evd = Evd.create_goal_evar_defs sigma in
-  let evars,args,_ = clenv_environments_evars env evd (Some bound) ty in
-  let evars = Evarconv.the_conv_x_leq env t (applist (c,args)) evars in
-  let evars = Evarconv.consider_remaining_unif_problems env evars in
-  let args = List.map (whd_evar evars) args in
-  check_evars env sigma evars (applist (c,args));
-  args
 
 let mk_clenv_from_env environ sigma n (c,cty) =
   let evd = create_goal_evar_defs sigma in
@@ -152,13 +133,13 @@ let mk_clenv_type_of gls t = mk_clenv_from gls (t,pf_type_of gls t)
 
 let mentions clenv mv0 =
   let rec menrec mv1 =
-    mv0 = mv1 ||
+    Int.equal mv0 mv1 ||
     let mlist =
       try match meta_opt_fvalue clenv.evd mv1 with
       | Some (b,_) -> b.freemetas
       | None -> Metaset.empty
       with Not_found -> Metaset.empty in
-    meta_exists menrec mlist
+    Metaset.exists menrec mlist
   in menrec
 
 let error_incompatible_inst clenv mv  =
@@ -169,12 +150,12 @@ let error_incompatible_inst clenv mv  =
           (str "An incompatible instantiation has already been found for " ++
            pr_id id)
     | _ ->
-        anomaly "clenv_assign: non dependent metavar already assigned"
+        anomaly ~label:"clenv_assign" (Pp.str "non dependent metavar already assigned")
 
 (* TODO: replace by clenv_unify (mkMeta mv) rhs ? *)
 let clenv_assign mv rhs clenv =
   let rhs_fls = mk_freelisted rhs in
-  if meta_exists (mentions clenv mv) rhs_fls.freemetas then
+  if Metaset.exists (mentions clenv mv) rhs_fls.freemetas then
     error "clenv_assign: circularity in unification";
   try
     if meta_defined clenv.evd mv then
@@ -274,7 +255,7 @@ let clenv_unify_meta_types ?(flags=default_unify_flags) clenv =
 
 let clenv_unique_resolver ?(flags=default_unify_flags) clenv gl =
   let concl = Goal.V82.concl clenv.evd (sig_it gl) in
-  if isMeta (fst (whd_stack clenv.evd clenv.templtyp.rebus)) then
+  if isMeta (fst (decompose_appvect (whd_nored clenv.evd clenv.templtyp.rebus))) then
     clenv_unify CUMUL ~flags (clenv_type clenv) concl
       (clenv_unify_meta_types ~flags clenv)
   else
@@ -318,7 +299,7 @@ let clenv_pose_metas_as_evars clenv dep_mvs =
       if occur_meta ty then fold clenv (mvs@[mv])
       else
 	let (evd,evar) =
-	  new_evar clenv.evd (cl_env clenv) ~src:(dummy_loc,GoalEvar) ty in
+	  new_evar clenv.evd (cl_env clenv) ~src:(Loc.ghost,Evar_kinds.GoalEvar) ty in
 	let clenv = clenv_assign mv evar {clenv with evd=evd} in
 	fold clenv mvs in
   fold clenv dep_mvs
@@ -398,7 +379,7 @@ let clenv_independent clenv =
   List.filter (fun mv -> not (Metaset.mem mv deps)) mvs
 
 let check_bindings bl =
-  match list_duplicates (List.map pi2 bl) with
+  match List.duplicates Pervasives.(=) (List.map pi2 bl) with (* FIXME *)
     | NamedHyp s :: _ ->
 	errorlabstrm ""
 	  (str "The variable " ++ pr_id s ++
@@ -423,11 +404,11 @@ let error_already_defined b =
           (str "Binder name \"" ++ pr_id id ++
            str"\" already defined with incompatible value.")
     | AnonHyp n ->
-        anomalylabstrm ""
+        anomaly
           (str "Position " ++ int n ++ str" already defined.")
 
 let clenv_unify_binding_type clenv c t u =
-  if isMeta (fst (whd_stack clenv.evd u)) then
+  if isMeta (fst (decompose_appvect (whd_nored clenv.evd u))) then
     (* Not enough information to know if some subtyping is needed *)
     CoerceToType, clenv, c
   else
@@ -436,7 +417,8 @@ let clenv_unify_binding_type clenv c t u =
       let evd,c = w_coerce_to_type (cl_env clenv) clenv.evd c t u in
       TypeProcessed, { clenv with evd = evd }, c
     with 
-      | PretypeError (_,_,NotClean _) as e -> raise e
+      | PretypeError (_,_,ActualTypeNotCoercible (_,_,NotClean _)) as e ->
+	  raise e
       | e when precatchable_exception e ->
 	  TypeNotProcessed, clenv, c
 
@@ -447,7 +429,7 @@ let clenv_assign_binding clenv k c =
   { clenv' with evd = meta_assign k (c,(Conv,status)) clenv'.evd }
 
 let clenv_match_args bl clenv =
-  if bl = [] then
+  if List.is_empty bl then
     clenv
   else
     let mvs = clenv_independent clenv in
@@ -466,7 +448,7 @@ exception NoSuchBinding
 
 let clenv_constrain_last_binding c clenv =
   let all_mvs = collect_metas clenv.templval.rebus in
-  let k = try list_last all_mvs with Failure _ -> raise NoSuchBinding in
+  let k = try List.last all_mvs with Failure _ -> raise NoSuchBinding in
   clenv_assign_binding clenv k c
 
 let error_not_right_number_missing_arguments n =
@@ -475,17 +457,17 @@ let error_not_right_number_missing_arguments n =
       int n ++ str ").")
 
 let clenv_constrain_dep_args hyps_only bl clenv =
-  if bl = [] then
+  if List.is_empty bl then
     clenv
   else
     let occlist = clenv_dependent_gen hyps_only clenv in
-    if List.length occlist = List.length bl then
+    if Int.equal (List.length occlist) (List.length bl) then
       List.fold_left2 clenv_assign_binding clenv occlist bl
     else
       if hyps_only then
 	(* Tolerance for compatibility <= 8.3 *)
 	let occlist' = clenv_dependent_gen hyps_only ~iter:false clenv in
-	if List.length occlist' = List.length bl then
+	if Int.equal (List.length occlist') (List.length bl) then
 	  List.fold_left2 clenv_assign_binding clenv occlist' bl
 	else
 	  error_not_right_number_missing_arguments (List.length occlist)

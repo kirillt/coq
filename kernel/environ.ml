@@ -20,11 +20,13 @@
 (* This file defines the type of environments on which the
    type-checker works, together with simple related functions *)
 
+open Errors
 open Util
 open Names
-open Sign
-open Univ
 open Term
+open Context
+open Vars
+open Univ
 open Declarations
 open Pre_env
 
@@ -36,6 +38,8 @@ type env = Pre_env.env
 
 let pre_env env = env
 let env_of_pre_env env = env
+let oracle env = env.env_conv_oracle
+let set_oracle env o = { env with env_conv_oracle = o }
 
 let empty_named_context_val = empty_named_context_val
 
@@ -48,8 +52,9 @@ let named_context_val env = env.env_named_context,env.env_named_vals
 let rel_context env = env.env_rel_context
 
 let empty_context env =
-  env.env_rel_context = empty_rel_context
-  && env.env_named_context = empty_named_context
+  match env.env_rel_context, env.env_named_context with
+  | [], [] -> true
+  | _ -> false
 
 (* Rel context *)
 let lookup_rel n env =
@@ -64,10 +69,10 @@ let nb_rel env = env.env_nb_rel
 
 let push_rel = push_rel
 
-let push_rel_context ctxt x = Sign.fold_rel_context push_rel ctxt ~init:x
+let push_rel_context ctxt x = Context.fold_rel_context push_rel ctxt ~init:x
 
 let push_rec_types (lna,typarray,_) env =
-  let ctxt = array_map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
+  let ctxt = Array.map2_i (fun i na t -> (na, None, lift i t)) lna typarray in
   Array.fold_left (fun e assum -> push_rel assum e) env ctxt
 
 let fold_rel_context f env ~init =
@@ -99,14 +104,15 @@ let map_named_val f (ctxt,ctxtv) =
 let empty_named_context = empty_named_context
 
 let push_named = push_named
+let push_named_context = List.fold_right push_named
 let push_named_context_val = push_named_context_val
 
 let val_of_named_context ctxt =
   List.fold_right push_named_context_val ctxt empty_named_context_val
 
 
-let lookup_named id env = Sign.lookup_named id env.env_named_context
-let lookup_named_val id (ctxt,_) = Sign.lookup_named id ctxt
+let lookup_named id env = Context.lookup_named id env.env_named_context
+let lookup_named_val id (ctxt,_) = Context.lookup_named id ctxt
 
 let eq_named_context_val c1 c2 =
    c1 == c2 || named_context_equal (named_context_of_val c1) (named_context_of_val c2)
@@ -145,7 +151,7 @@ let fold_named_context f env ~init =
   in fold_right env
 
 let fold_named_context_reverse f ~init env =
-  Sign.fold_named_context_reverse f ~init:init (named_context env)
+  Context.fold_named_context_reverse f ~init:init (named_context env)
 
 (* Global constants *)
 
@@ -171,7 +177,7 @@ exception NotEvaluableConst of const_evaluation_result
 let constant_value env kn =
   let cb = lookup_constant kn env in
   match cb.const_body with
-    | Def l_body -> Declarations.force l_body
+    | Def l_body -> Lazyconstr.force l_body
     | OpaqueDef _ -> raise (NotEvaluableConst Opaque)
     | Undef _ -> raise (NotEvaluableConst NoBody)
 
@@ -211,11 +217,11 @@ let set_engagement c env = (* Unsafe *)
 (* Lookup of section variables *)
 let lookup_constant_variables c env =
   let cmap = lookup_constant c env in
-  Sign.vars_of_named_context cmap.const_hyps
+  Context.vars_of_named_context cmap.const_hyps
 
 let lookup_inductive_variables (kn,i) env =
   let mis = lookup_mind kn env in
-  Sign.vars_of_named_context mis.mind_hyps
+  Context.vars_of_named_context mis.mind_hyps
 
 let lookup_constructor_variables (ind,_) env =
   lookup_inductive_variables ind env
@@ -224,7 +230,7 @@ let lookup_constructor_variables (ind,_) env =
 
 let vars_of_global env constr =
   match kind_of_term constr with
-      Var id -> [id]
+      Var id -> Id.Set.singleton id
     | Const kn -> lookup_constant_variables kn env
     | Ind ind -> lookup_inductive_variables ind env
     | Construct cstr -> lookup_constructor_variables cstr env
@@ -235,12 +241,12 @@ let global_vars_set env constr =
     let acc =
       match kind_of_term c with
       | Var _ | Const _ | Ind _ | Construct _ ->
-	  List.fold_right Idset.add (vars_of_global env c) acc
+	  Id.Set.union (vars_of_global env c) acc
       | _ ->
 	  acc in
     fold_constr filtrec acc c
   in
-    filtrec Idset.empty constr
+    filtrec Id.Set.empty constr
 
 
 (* [keep_hyps env ids] keeps the part of the section context of [env] which
@@ -249,40 +255,38 @@ let global_vars_set env constr =
 
 let keep_hyps env needed =
   let really_needed =
-    Sign.fold_named_context_reverse
+    Context.fold_named_context_reverse
       (fun need (id,copt,t) ->
-        if Idset.mem id need then
+        if Id.Set.mem id need then
           let globc =
 	    match copt with
-	      | None -> Idset.empty
+	      | None -> Id.Set.empty
 	      | Some c -> global_vars_set env c in
-	  Idset.union
+	  Id.Set.union
             (global_vars_set env t)
-	    (Idset.union globc need)
+	    (Id.Set.union globc need)
         else need)
       ~init:needed
       (named_context env) in
-  Sign.fold_named_context
+  Context.fold_named_context
     (fun (id,_,_ as d) nsign ->
-      if Idset.mem id really_needed then add_named_decl d nsign
+      if Id.Set.mem id really_needed then add_named_decl d nsign
       else nsign)
     (named_context env)
     ~init:empty_named_context
 
 (* Modules *)
 
-let add_modtype ln mtb env =
-  let new_modtypes = MPmap.add ln mtb env.env_globals.env_modtypes in
-  let new_globals =
-    { env.env_globals with
-	env_modtypes = new_modtypes } in
+let add_modtype mtb env =
+  let mp = mtb.typ_mp in
+  let new_modtypes = MPmap.add mp mtb env.env_globals.env_modtypes in
+  let new_globals = { env.env_globals with env_modtypes = new_modtypes } in
   { env with env_globals = new_globals }
 
-let shallow_add_module mp mb env =
+let shallow_add_module mb env =
+  let mp = mb.mod_mp in
   let new_mods = MPmap.add mp mb env.env_globals.env_modules in
-  let new_globals =
-    { env.env_globals with
-	env_modules = new_mods } in
+  let new_globals = { env.env_globals with env_modules = new_mods } in
   { env with env_globals = new_globals }
 
 let lookup_module mp env =
@@ -315,11 +319,11 @@ let compile_constant_body = Cbytegen.compile_constant_body
 
 exception Hyp_not_found
 
-let rec apply_to_hyp (ctxt,vals) id f =
+let apply_to_hyp (ctxt,vals) id f =
   let rec aux rtail ctxt vals =
     match ctxt, vals with
     | (idc,c,ct as d)::ctxt, v::vals ->
-	if idc = id then
+	if Id.equal idc id then
 	  (f ctxt d rtail)::ctxt, v::vals
 	else
 	  let ctxt',vals' = aux (d::rtail) ctxt vals in
@@ -328,11 +332,11 @@ let rec apply_to_hyp (ctxt,vals) id f =
     | _, _ -> assert false
   in aux [] ctxt vals
 
-let rec apply_to_hyp_and_dependent_on (ctxt,vals) id f g =
+let apply_to_hyp_and_dependent_on (ctxt,vals) id f g =
   let rec aux ctxt vals =
     match ctxt,vals with
     | (idc,c,ct as d)::ctxt, v::vals ->
-	if idc = id then
+	if Id.equal idc id then
 	  let sign = ctxt,vals in
 	  push_named_context_val (f d sign) sign
 	else
@@ -346,7 +350,7 @@ let insert_after_hyp (ctxt,vals) id d check =
   let rec aux ctxt vals =
     match  ctxt, vals with
     | (idc,c,ct)::ctxt', v::vals' ->
-	if idc = id then begin
+	if Id.equal idc id then begin
 	  check ctxt;
 	  push_named_context_val d (ctxt,vals)
 	end else
@@ -360,7 +364,7 @@ let insert_after_hyp (ctxt,vals) id d check =
 (* To be used in Logic.clear_hyps *)
 let remove_hyps ids check_context check_value (ctxt, vals) =
   List.fold_right2 (fun (id,_,_ as d) (id',v) (ctxt,vals) ->
-      if List.mem id ids then
+      if Id.Set.mem id ids then
 	(ctxt,vals)
       else
 	let nd = check_context d in
@@ -421,7 +425,7 @@ let register =
     let nth_digit_plus_one i n = (* calculates the nth (starting with 0)
                                     digit of i and adds 1 to it
                                     (nth_digit_plus_one 1 3 = 2) *)
-      if (land) i ((lsl) 1 n) = 0 then
+      if Int.equal (i land (1 lsl n)) 0 then
         1
       else
         2
@@ -457,13 +461,13 @@ fun env field value ->
     match value with
       | Const kn ->  retroknowledge add_int31_op env value 2
 	                               op kn
-      | _ -> anomaly "Environ.register: should be a constant"
+      | _ -> anomaly ~label:"Environ.register" (Pp.str "should be a constant")
   in
   let add_int31_unop_from_const op =
     match value with
       | Const kn ->  retroknowledge add_int31_op env value 1
 	                               op kn
-      | _ -> anomaly "Environ.register: should be a constant"
+      | _ -> anomaly ~label:"Environ.register" (Pp.str "should be a constant")
   in
   (* subfunction which completes the function constr_of_int31 above
      by performing the actual retroknowledge operations *)
@@ -478,9 +482,9 @@ fun env field value ->
 		  | Ind i31t ->
 		      Retroknowledge.add_vm_decompile_constant_info rk
 		               value (constr_of_int31 i31t i31bit_type)
-		  | _ -> anomaly "Environ.register: should be an inductive type")
-	    | _ -> anomaly "Environ.register: Int31Bits should be an inductive type")
-      | _ -> anomaly "Environ.register: add_int31_decompilation_from_type called with an abnormal field"
+		  | _ -> anomaly ~label:"Environ.register" (Pp.str "should be an inductive type"))
+	    | _ -> anomaly ~label:"Environ.register" (Pp.str "Int31Bits should be an inductive type"))
+      | _ -> anomaly ~label:"Environ.register" (Pp.str "add_int31_decompilation_from_type called with an abnormal field")
   in
   {env with retroknowledge =
   let retroknowledge_with_reactive_info =
@@ -488,7 +492,7 @@ fun env field value ->
     | KInt31 (_, Int31Type) ->
         let i31c = match value with
                      | Ind i31t -> (Construct (i31t, 1))
-		     | _ -> anomaly "Environ.register: should be an inductive type"
+		     | _ -> anomaly ~label:"Environ.register" (Pp.str "should be an inductive type")
 	in
 	add_int31_decompilation_from_type
 	  (add_vm_before_match_info
@@ -508,17 +512,20 @@ fun env field value ->
 				 | Const kn ->
 				     retroknowledge add_int31_op env value 3
 	                               Cbytecodes.Kdiv21int31 kn
-				 | _ -> anomaly "Environ.register: should be a constant")
+				 | _ -> anomaly ~label:"Environ.register" (Pp.str "should be a constant"))
     | KInt31 (_, Int31Div) -> add_int31_binop_from_const Cbytecodes.Kdivint31
     | KInt31 (_, Int31AddMulDiv) -> (* this is a ternary operation *)
                                 (match value with
 				 | Const kn ->
 				     retroknowledge add_int31_op env value 3
 	                               Cbytecodes.Kaddmuldivint31 kn
-				 | _ -> anomaly "Environ.register: should be a constant")
+				 | _ -> anomaly ~label:"Environ.register" (Pp.str "should be a constant"))
     | KInt31 (_, Int31Compare) -> add_int31_binop_from_const Cbytecodes.Kcompareint31
     | KInt31 (_, Int31Head0) -> add_int31_unop_from_const Cbytecodes.Khead0int31
     | KInt31 (_, Int31Tail0) -> add_int31_unop_from_const Cbytecodes.Ktail0int31
+    | KInt31 (_, Int31Lor) -> add_int31_binop_from_const Cbytecodes.Klorint31
+    | KInt31 (_, Int31Land) -> add_int31_binop_from_const Cbytecodes.Klandint31
+    | KInt31 (_, Int31Lxor) -> add_int31_binop_from_const Cbytecodes.Klxorint31
     | _ -> env.retroknowledge
   in
   Retroknowledge.add_field retroknowledge_with_reactive_info field value

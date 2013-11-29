@@ -7,11 +7,8 @@
 (************************************************************************)
 
 open Pp
-open Util
-open System
-open Flags
 open Names
-open Term
+open Cic
 open Declarations
 open Environ
 
@@ -19,7 +16,7 @@ let memory_stat = ref false
 
 let print_memory_stat () =
   if !memory_stat then begin
-    Format.printf "total heap size = %d kbytes\n" (heap_size_kb ());
+    Format.printf "total heap size = %d kbytes\n" (CObj.heap_size_kb ());
     Format.print_newline();
     flush_all()
   end
@@ -54,12 +51,12 @@ let print_context env =
          env_modules=mods; env_modtypes=mtys};
        env_stratification=
         {env_universes=univ; env_engagement=engt}} = env in
-    msgnl(hov 0
+    ppnl(hov 0
       (fnl() ++ str"CONTEXT SUMMARY" ++ fnl() ++
       str"===============" ++ fnl() ++ fnl() ++
       str "* " ++ hov 0 (pr_engt engt ++ fnl()) ++ fnl() ++
       str "* " ++ hov 0 (pr_ax csts) ++
-      fnl()))
+      fnl())); pp_flush()
   end
 
 let stats () =

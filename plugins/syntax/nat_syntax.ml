@@ -9,19 +9,11 @@
 (* This file defines the printer for natural numbers in [nat] *)
 
 (*i*)
-open Pcoq
-open Pp
-open Util
-open Names
-open Coqlib
 open Glob_term
-open Libnames
 open Bigint
 open Coqlib
-open Notation
 open Pp
-open Util
-open Names
+open Errors
 (*i*)
 
 (**********************************************************************)
@@ -33,7 +25,7 @@ let threshold = of_int 5000
 let nat_of_int dloc n =
   if is_pos_or_zero n then begin
       if less_than threshold n then
-	Flags.if_warn msg_warning
+	msg_warning
 	  (strbrk "Stack overflow or segmentation fault happens when " ++
 	   strbrk "working with large numbers in nat (observed threshold " ++
 	   strbrk "may vary from 5000 to 70000 depending on your system " ++
@@ -73,6 +65,6 @@ let uninterp_nat p =
 
 let _ =
   Notation.declare_numeral_interpreter "nat_scope"
-    (nat_path,["Coq";"Init";"Datatypes"])
+    (nat_path,datatypes_module_name)
     nat_of_int
-    ([GRef (dummy_loc,glob_S); GRef (dummy_loc,glob_O)], uninterp_nat, true)
+    ([GRef (Loc.ghost,glob_S); GRef (Loc.ghost,glob_O)], uninterp_nat, true)

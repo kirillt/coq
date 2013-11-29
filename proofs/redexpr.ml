@@ -7,32 +7,36 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
 open Term
 open Declarations
-open Libnames
-open Glob_term
+open Globnames
+open Genredexpr
 open Pattern
 open Reductionops
 open Tacred
 open Closure
 open RedFlags
 open Libobject
-open Summary
+open Misctypes
 
 (* call by value normalisation function using the virtual machine *)
 let cbv_vm env _ c =
   let ctyp = (fst (Typeops.infer env c)).Environ.uj_type in
   Vnorm.cbv_vm env c ctyp
 
+let cbv_native env _ c =
+  let ctyp = (fst (Typeops.infer env c)).Environ.uj_type in
+  Nativenorm.native_norm env c ctyp
 
 let set_strategy_one ref l  =
   let k =
     match ref with
       | EvalConstRef sp -> ConstKey sp
       | EvalVarRef id -> VarKey id in
-  Conv_oracle.set_strategy k l;
+  Global.set_strategy k l;
   match k,l with
       ConstKey sp, Conv_oracle.Opaque ->
         Csymtable.set_opaque_const sp
@@ -42,7 +46,7 @@ let set_strategy_one ref l  =
 	  | OpaqueDef _ ->
             errorlabstrm "set_transparent_const"
               (str "Cannot make" ++ spc () ++
-		 Nametab.pr_global_env Idset.empty (ConstRef sp) ++
+		 Nametab.pr_global_env Id.Set.empty (ConstRef sp) ++
 		 spc () ++ str "transparent because it was declared opaque.");
 	  | _ -> Csymtable.set_transparent_const sp)
     | _ -> ()
@@ -54,9 +58,9 @@ let cache_strategy (_,str) =
 
 let subst_strategy (subs,(local,obj)) =
   local,
-  list_smartmap
+  List.smartmap
     (fun (k,ql as entry) ->
-      let ql' = list_smartmap (Mod_subst.subst_evaluable_reference subs) ql in
+      let ql' = List.smartmap (Mod_subst.subst_evaluable_reference subs) ql in
       if ql==ql' then entry else (k,ql'))
     obj
 
@@ -69,8 +73,8 @@ let map_strategy f l =
           match f q with
               Some q' -> q' :: ql
             | None -> ql) ql [] in
-      if ql'=[] then str else (lev,ql')::str) l [] in
-  if l'=[] then None else Some (false,l')
+      if List.is_empty ql' then str else (lev,ql')::str) l [] in
+  if List.is_empty l' then None else Some (false,l')
 
 let classify_strategy (local,_ as obj) =
   if local then Dispose else Substitute obj
@@ -101,12 +105,6 @@ let inStrategy : strategy_obj -> obj =
 let set_strategy local str =
   Lib.add_anonymous_leaf (inStrategy (local,str))
 
-let _ = declare_summary "Transparent constants and variables"
-    { freeze_function = Conv_oracle.freeze;
-      unfreeze_function = Conv_oracle.unfreeze;
-      init_function = Conv_oracle.init }
-
-
 (* Generic reduction: reduction functions used in reduction tactics *)
 
 type red_expr =
@@ -116,7 +114,7 @@ let make_flag_constant = function
   | EvalVarRef id -> fVAR id
   | EvalConstRef sp -> fCONST sp
 
-let make_flag f =
+let make_flag env f =
   let red = no_red in
   let red = if f.rBeta then red_add red fBETA else red in
   let red = if f.rIota then red_add red fIOTA else red in
@@ -124,7 +122,8 @@ let make_flag f =
   let red =
     if f.rDelta then (* All but rConst *)
         let red = red_add red fDELTA in
-        let red = red_add_transparent red (Conv_oracle.get_transp_state()) in
+        let red = red_add_transparent red 
+                    (Conv_oracle.get_transp_state (Environ.oracle env)) in
 	List.fold_right
 	  (fun v red -> red_sub red (make_flag_constant v))
 	  f.rConst red
@@ -139,39 +138,41 @@ let is_reference = function PRef _ | PVar _ -> true | _ -> false
 
 (* table of custom reductino fonctions, not synchronized,
    filled via ML calls to [declare_reduction] *)
-let reduction_tab = ref Stringmap.empty
+let reduction_tab = ref String.Map.empty
 
 (* table of custom reduction expressions, synchronized,
    filled by command Declare Reduction *)
-let red_expr_tab = ref Stringmap.empty
+let red_expr_tab = Summary.ref String.Map.empty ~name:"Declare Reduction"
 
 let declare_reduction s f =
-  if Stringmap.mem s !reduction_tab || Stringmap.mem s !red_expr_tab
+  if String.Map.mem s !reduction_tab || String.Map.mem s !red_expr_tab
   then error ("There is already a reduction expression of name "^s)
-  else reduction_tab := Stringmap.add s f !reduction_tab
+  else reduction_tab := String.Map.add s f !reduction_tab
 
 let check_custom = function
   | ExtraRedExpr s ->
-      if not (Stringmap.mem s !reduction_tab || Stringmap.mem s !red_expr_tab)
+      if not (String.Map.mem s !reduction_tab || String.Map.mem s !red_expr_tab)
       then error ("Reference to undefined reduction expression "^s)
   |_ -> ()
 
 let decl_red_expr s e =
-  if Stringmap.mem s !reduction_tab || Stringmap.mem s !red_expr_tab
+  if String.Map.mem s !reduction_tab || String.Map.mem s !red_expr_tab
   then error ("There is already a reduction expression of name "^s)
   else begin
     check_custom e;
-    red_expr_tab := Stringmap.add s e !red_expr_tab
+    red_expr_tab := String.Map.add s e !red_expr_tab
   end
 
 let out_arg = function
-  | ArgVar _ -> anomaly "Unevaluated or_var variable"
+  | ArgVar _ -> anomaly (Pp.str "Unevaluated or_var variable")
   | ArgArg x -> x
 
-let out_with_occurrences ((b,l),c) =
-  ((b,List.map out_arg l), c)
+let out_with_occurrences (occs,c) =
+  (Locusops.occurrences_map (List.map out_arg) occs, c)
 
-let rec reduction_of_red_expr = function
+let reduction_of_red_expr env =
+  let make_flag = make_flag env in
+  let rec reduction_of_red_expr = function
   | Red internal ->
       if internal then (try_red_product,DEFAULTcast)
       else (red_product,DEFAULTcast)
@@ -181,18 +182,41 @@ let rec reduction_of_red_expr = function
       (fun _ -> simpl),DEFAULTcast)
   | Simpl None -> (simpl,DEFAULTcast)
   | Cbv f -> (cbv_norm_flags (make_flag f),DEFAULTcast)
+  | Cbn f ->
+    (strong (fun env evd x -> zip ~refold:true
+      (fst (whd_state_gen true (make_flag f) env evd (x, [])))),DEFAULTcast)
   | Lazy f -> (clos_norm_flags (make_flag f),DEFAULTcast)
   | Unfold ubinds -> (unfoldn (List.map out_with_occurrences ubinds),DEFAULTcast)
   | Fold cl -> (fold_commands cl,DEFAULTcast)
   | Pattern lp -> (pattern_occs (List.map out_with_occurrences lp),DEFAULTcast)
   | ExtraRedExpr s ->
-      (try (Stringmap.find s !reduction_tab,DEFAULTcast)
+      (try (String.Map.find s !reduction_tab,DEFAULTcast)
       with Not_found ->
-	(try reduction_of_red_expr (Stringmap.find s !red_expr_tab)
+	(try reduction_of_red_expr (String.Map.find s !red_expr_tab)
 	 with Not_found ->
 	   error("unknown user-defined reduction \""^s^"\"")))
-  | CbvVm -> (cbv_vm ,VMcast)
-
+  | CbvVm (Some lp) ->
+    let b = is_reference (snd lp) in
+    let lp = out_with_occurrences lp in
+    let vmfun _ env map c =
+      let tpe = Retyping.get_type_of env map c in
+      Vnorm.cbv_vm env c tpe
+    in
+    let redfun = contextually b lp vmfun in
+    (redfun, VMcast)
+  | CbvVm None -> (cbv_vm, VMcast)
+  | CbvNative (Some lp) ->
+    let b = is_reference (snd lp) in
+    let lp = out_with_occurrences lp in
+    let nativefun _ env map c =
+      let tpe = Retyping.get_type_of env map c in
+      Nativenorm.native_norm env c tpe
+    in
+    let redfun = contextually b lp nativefun in
+    (redfun, NATIVEcast)
+  | CbvNative None -> (cbv_native, NATIVEcast)
+  in
+    reduction_of_red_expr
 
 let subst_flags subs flags =
   { flags with rConst = List.map subs flags.rConst }
@@ -212,7 +236,7 @@ let subst_red_expr subs e =
   subst_gen_red_expr
     (Mod_subst.subst_mps subs)
     (Mod_subst.subst_evaluable_reference subs)
-    (Pattern.subst_pattern subs)
+    (Patternops.subst_pattern subs)
     e
 
 let inReduction : bool * string * red_expr -> obj =
@@ -227,8 +251,3 @@ let inReduction : bool * string * red_expr -> obj =
 
 let declare_red_expr locality s expr =
     Lib.add_anonymous_leaf (inReduction (locality,s,expr))
-
-let _ = declare_summary "Declare Reduction"
-  { freeze_function = (fun () -> !red_expr_tab);
-    unfreeze_function = ((:=) red_expr_tab);
-    init_function = (fun () -> red_expr_tab := Stringmap.empty) }

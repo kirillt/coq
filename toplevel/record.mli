@@ -8,26 +8,26 @@
 
 open Names
 open Term
-open Sign
+open Context
 open Vernacexpr
-open Topconstr
+open Constrexpr
 open Impargs
-open Libnames
+open Globnames
 
 (** [declare_projections ref name coers params fields] declare projections of
    record [ref] (if allowed) using the given [name] as argument, and put them
    as coercions accordingly to [coers]; it returns the absolute names of projections *)
 
 val declare_projections :
-  inductive -> ?kind:Decl_kinds.definition_object_kind -> ?name:identifier ->
+  inductive -> ?kind:Decl_kinds.definition_object_kind -> ?name:Id.t ->
   coercion_flag list -> manual_explicitation list list -> rel_context ->
-  (name * bool) list * constant option list
+  (Name.t * bool) list * constant option list
 
 val declare_structure : Decl_kinds.recursivity_kind ->
-  bool (**infer?*) -> identifier -> identifier ->
+  bool (**infer?*) -> Id.t -> Id.t ->
   manual_explicitation list -> rel_context -> (** params *) constr -> (** arity *)
   Impargs.manual_explicitation list list -> rel_context -> (** fields *)
-  ?kind:Decl_kinds.definition_object_kind -> ?name:identifier ->
+  ?kind:Decl_kinds.definition_object_kind -> ?name:Id.t ->
   bool -> (** coercion? *)
   bool list -> (** field coercions *)
   Evd.evar_map ->
@@ -36,4 +36,4 @@ val declare_structure : Decl_kinds.recursivity_kind ->
 val definition_structure :
   inductive_kind * Decl_kinds.recursivity_kind * bool(**infer?*)* lident with_coercion * local_binder list *
   (local_decl_expr with_instance with_priority with_notation) list *
-  identifier * constr_expr option -> global_reference
+  Id.t * constr_expr option -> global_reference

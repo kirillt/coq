@@ -6,110 +6,52 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pp
 open Util
+open Pp
+open Loc
 open Names
-open Term
-open Mod_subst
-
-(** {6 Global reference is a kernel side type for all references together } *)
-type global_reference =
-  | VarRef of variable
-  | ConstRef of constant
-  | IndRef of inductive
-  | ConstructRef of constructor
-
-val isVarRef : global_reference -> bool
-val isConstRef : global_reference -> bool
-val isIndRef : global_reference -> bool
-val isConstructRef : global_reference -> bool
-
-val eq_gr : global_reference -> global_reference -> bool
-val canonical_gr : global_reference -> global_reference
-
-val destVarRef : global_reference -> variable
-val destConstRef : global_reference -> constant
-val destIndRef : global_reference -> inductive
-val destConstructRef : global_reference -> constructor
-
-
-val subst_constructor : substitution -> constructor -> constructor * constr
-val subst_global : substitution -> global_reference -> global_reference * constr
-
-(** Turn a global reference into a construction *)
-val constr_of_global : global_reference -> constr
-
-(** Turn a construction denoting a global reference into a global reference;
-   raise [Not_found] if not a global reference *)
-val global_of_constr : constr -> global_reference
-
-(** Obsolete synonyms for constr_of_global and global_of_constr *)
-val constr_of_reference : global_reference -> constr
-val reference_of_constr : constr -> global_reference
-
-module RefOrdered : sig
-  type t = global_reference
-  val compare : global_reference -> global_reference -> int
-end
-
-module RefOrdered_env : sig
-  type t = global_reference
-  val compare : global_reference -> global_reference -> int
-end
-
-module Refset : Set.S with type elt = global_reference
-module Refmap : Map.S with type key = global_reference
-
-(** {6 Extended global references } *)
-
-type syndef_name = kernel_name
-
-type extended_global_reference =
-  | TrueGlobal of global_reference
-  | SynDef of syndef_name
-
-module ExtRefOrdered : sig
-  type t = extended_global_reference
-  val compare : t -> t -> int
-end
 
 (** {6 Dirpaths } *)
-val pr_dirpath : dir_path -> Pp.std_ppcmds
+(** FIXME: ought to be in Names.dir_path *)
 
-val dirpath_of_string : string -> dir_path
-val string_of_dirpath : dir_path -> string
+val pr_dirpath : DirPath.t -> Pp.std_ppcmds
 
-(** Pop the suffix of a [dir_path] *)
-val pop_dirpath : dir_path -> dir_path
+val dirpath_of_string : string -> DirPath.t
+val string_of_dirpath : DirPath.t -> string
+
+(** Pop the suffix of a [DirPath.t]. Raises a [Failure] for an empty path *)
+val pop_dirpath : DirPath.t -> DirPath.t
 
 (** Pop the suffix n times *)
-val pop_dirpath_n : int -> dir_path -> dir_path
+val pop_dirpath_n : int -> DirPath.t -> DirPath.t
 
-(** Give the immediate prefix and basename of a [dir_path] *)
-val split_dirpath : dir_path -> dir_path * identifier
+(** Immediate prefix and basename of a [DirPath.t]. May raise [Failure] *)
+val split_dirpath : DirPath.t -> DirPath.t * Id.t
 
-val add_dirpath_suffix : dir_path -> module_ident -> dir_path
-val add_dirpath_prefix : module_ident -> dir_path -> dir_path
+val add_dirpath_suffix : DirPath.t -> module_ident -> DirPath.t
+val add_dirpath_prefix : module_ident -> DirPath.t -> DirPath.t
 
-val chop_dirpath : int -> dir_path -> dir_path * dir_path
-val append_dirpath : dir_path -> dir_path -> dir_path
+val chop_dirpath : int -> DirPath.t -> DirPath.t * DirPath.t
+val append_dirpath : DirPath.t -> DirPath.t -> DirPath.t
 
-val drop_dirpath_prefix : dir_path -> dir_path -> dir_path
-val is_dirpath_prefix_of : dir_path -> dir_path -> bool
+val drop_dirpath_prefix : DirPath.t -> DirPath.t -> DirPath.t
+val is_dirpath_prefix_of : DirPath.t -> DirPath.t -> bool
 
-module Dirset : Set.S with type elt = dir_path
-module Dirmap : Map.S with type key = dir_path
+module Dirset : Set.S with type elt = DirPath.t
+module Dirmap : Map.ExtS with type key = DirPath.t and module Set := Dirset
 
 (** {6 Full paths are {e absolute} paths of declarations } *)
 type full_path
 
+val eq_full_path : full_path -> full_path -> bool
+
 (** Constructors of [full_path] *)
-val make_path : dir_path -> identifier -> full_path
+val make_path : DirPath.t -> Id.t -> full_path
 
 (** Destructors of [full_path] *)
-val repr_path : full_path -> dir_path * identifier
-val dirpath : full_path -> dir_path
-val basename : full_path -> identifier
+val repr_path : full_path -> DirPath.t * Id.t
+val dirpath : full_path -> DirPath.t
+val basename : full_path -> Id.t
 
 (** Parsing and printing of section path as ["coq_root.module.id"] *)
 val path_of_string : string -> full_path
@@ -120,14 +62,6 @@ module Spmap  : Map.S with type key = full_path
 
 val restrict_path : int -> full_path -> full_path
 
-(** {6 Temporary function to brutally form kernel names from section paths } *)
-
-val encode_mind : dir_path -> identifier -> mutual_inductive
-val decode_mind : mutual_inductive -> dir_path * identifier
-val encode_con : dir_path -> identifier -> constant
-val decode_con : constant -> dir_path * identifier
-
-
 (** {6 ... } *)
 (** A [qualid] is a partially qualified ident; it includes fully
     qualified names (= absolute names) and all intermediate partial
@@ -136,19 +70,21 @@ val decode_con : constant -> dir_path * identifier
 
 type qualid
 
-val make_qualid : dir_path -> identifier -> qualid
-val repr_qualid : qualid -> dir_path * identifier
+val make_qualid : DirPath.t -> Id.t -> qualid
+val repr_qualid : qualid -> DirPath.t * Id.t
+
+val qualid_eq : qualid -> qualid -> bool
 
 val pr_qualid : qualid -> std_ppcmds
 val string_of_qualid : qualid -> string
 val qualid_of_string : string -> qualid
 
-(** Turns an absolute name, a dirpath, or an identifier into a
+(** Turns an absolute name, a dirpath, or an Id.t into a
    qualified name denoting the same name *)
 
 val qualid_of_path : full_path -> qualid
-val qualid_of_dirpath : dir_path -> qualid
-val qualid_of_ident : identifier -> qualid
+val qualid_of_dirpath : DirPath.t -> qualid
+val qualid_of_ident : Id.t -> qualid
 
 (** Both names are passed to objects: a "semantic" [kernel_name], which
    can be substituted and a "syntactic" [full_path] which can be printed
@@ -156,18 +92,23 @@ val qualid_of_ident : identifier -> qualid
 
 type object_name = full_path * kernel_name
 
-type object_prefix = dir_path * (module_path * dir_path)
+type object_prefix = DirPath.t * (module_path * DirPath.t)
 
-val make_oname : object_prefix -> identifier -> object_name
+val eq_op : object_prefix -> object_prefix -> bool
 
-(** to this type are mapped [dir_path]'s in the nametab *)
+val make_oname : object_prefix -> Id.t -> object_name
+
+(** to this type are mapped [DirPath.t]'s in the nametab *)
 type global_dir_reference =
   | DirOpenModule of object_prefix
   | DirOpenModtype of object_prefix
   | DirOpenSection of object_prefix
   | DirModule of object_prefix
-  | DirClosedSection of dir_path
+  | DirClosedSection of DirPath.t
       (** this won't last long I hope! *)
+
+val eq_global_dir_reference : 
+  global_dir_reference -> global_dir_reference -> bool
 
 (** {6 ... } *)
 (** A [reference] is the user-level notion of name. It denotes either a
@@ -176,20 +117,15 @@ type global_dir_reference =
 
 type reference =
   | Qualid of qualid located
-  | Ident of identifier located
+  | Ident of Id.t located
 
+val eq_reference : reference -> reference -> bool
 val qualid_of_reference : reference -> qualid located
 val string_of_reference : reference -> string
 val pr_reference : reference -> std_ppcmds
-val loc_of_reference : reference -> loc
-
-(** {6 Popping one level of section in global names } *)
-
-val pop_con : constant -> constant
-val pop_kn : mutual_inductive-> mutual_inductive
-val pop_global_reference : global_reference -> global_reference
+val loc_of_reference : reference -> Loc.t
 
 (** Deprecated synonyms *)
 
-val make_short_qualid : identifier -> qualid (** = qualid_of_ident *)
+val make_short_qualid : Id.t -> qualid (** = qualid_of_ident *)
 val qualid_of_sp : full_path -> qualid (** = qualid_of_path *)

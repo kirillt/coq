@@ -6,25 +6,15 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pp
 open Util
 open Names
-open Nameops
 open Term
 open Termops
-open Sign
-open Environ
 open Evd
-open Evarutil
-open Proof_type
 open Refiner
 open Logic
 open Reduction
-open Reductionops
 open Tacmach
-open Glob_term
-open Pattern
-open Tacexpr
 open Clenv
 
 
@@ -62,7 +52,7 @@ let clenv_value_cast_meta clenv =
 
 let clenv_pose_dependent_evars with_evars clenv =
   let dep_mvs = clenv_dependent clenv in
-  if dep_mvs <> [] & not with_evars then
+  if not (List.is_empty dep_mvs) && not with_evars then
     raise
       (RefinerError (UnresolvedBindings (List.map (meta_name clenv.evd) dep_mvs)));
   clenv_pose_metas_as_evars clenv dep_mvs
@@ -71,8 +61,9 @@ let clenv_refine with_evars ?(with_classes=true) clenv gls =
   let clenv = clenv_pose_dependent_evars with_evars clenv in
   let evd' =
     if with_classes then
-      Typeclasses.resolve_typeclasses ~filter:Typeclasses.all_evars
+      let evd' = Typeclasses.resolve_typeclasses ~filter:Typeclasses.all_evars
         ~fail:(not with_evars) clenv.env clenv.evd
+      in Typeclasses.mark_unresolvables ~filter:Typeclasses.all_goals evd'
     else clenv.evd
   in
   let clenv = { clenv with evd = evd' } in
@@ -92,6 +83,15 @@ let elim_res_pf_THEN_i clenv tac gls =
   let clenv' = (clenv_unique_resolver ~flags:elim_flags clenv gls) in
   tclTHENLASTn (clenv_refine false clenv') (tac clenv') gls
 
+open Proofview.Notations
+let new_elim_res_pf_THEN_i clenv tac =
+  Proofview.Goal.enter begin fun gl ->
+    let clenv' = Tacmach.New.of_old (clenv_unique_resolver ~flags:elim_flags clenv) gl in
+    Proofview.tclTHEN
+      (Proofview.V82.tactic (clenv_refine false clenv'))
+      (Proofview.tclEXTEND [] (Proofview.tclUNIT()) (Array.to_list (tac clenv')))
+  end
+
 let e_res_pf clenv = res_pf clenv ~with_evars:true ~flags:dft
 
 
@@ -110,7 +110,7 @@ let fail_quick_unif_flags = {
   resolve_evars = false;
   use_pattern_unification = false;
   use_meta_bound_pattern_unification = true; (* ? *)
-  frozen_evars = ExistentialSet.empty;
+  frozen_evars = Evar.Set.empty;
   restrict_conv_on_strict_subterms = false; (* ? *)
   modulo_betaiota = false;
   modulo_eta = true;
@@ -122,7 +122,7 @@ let unifyTerms ?(flags=fail_quick_unif_flags) m n gls =
   let env = pf_env gls in
   let evd = create_goal_evar_defs (project gls) in
   let evd' = w_unify env evd CONV ~flags m n in
-  tclIDTAC {it = gls.it; sigma =  evd'}
+  tclIDTAC {it = gls.it; sigma =  evd'; }
 
 let unify ?(flags=fail_quick_unif_flags) m gls =
   let n = pf_concl gls in unifyTerms ~flags m n gls

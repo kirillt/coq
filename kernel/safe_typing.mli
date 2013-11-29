@@ -7,144 +7,154 @@
 (************************************************************************)
 
 open Names
-open Term
-open Declarations
-open Entries
-open Mod_subst
 
 (** {6 Safe environments } *)
 
-(** Since we are now able to type terms, we can
-  define an abstract type of safe environments, where objects are
-  typed before being added.
+(** Since we are now able to type terms, we can define an abstract type
+    of safe environments, where objects are typed before being added.
 
-  We also add [open_structure] and [close_section], [close_module] to
-  provide functionnality for sections and interactive modules
+    We also provide functionality for modules : [start_module], [end_module],
+    etc.
 *)
 
 type safe_environment
 
+val empty_environment : safe_environment
+
+val is_initial : safe_environment -> bool
+
 val env_of_safe_env : safe_environment -> Environ.env
 
-val empty_environment : safe_environment
-val is_empty : safe_environment -> bool
+(** The safe_environment state monad *)
 
-(** Adding and removing local declarations (Local or Variables) *)
+type safe_transformer0 = safe_environment -> safe_environment
+type 'a safe_transformer = safe_environment -> 'a * safe_environment
+
+
+(** {6 Stm machinery } *)
+
+val sideff_of_con : safe_environment -> constant -> Declarations.side_effect
+val sideff_of_scheme :
+  string -> safe_environment -> (inductive * constant) list ->
+    Declarations.side_effect
+
+val is_curmod_library : safe_environment -> bool
+
+(* safe_environment has functional data affected by lazy computations,
+ * thus this function returns a new safe_environment *)
+val join_safe_environment : safe_environment -> safe_environment
+
+(** {6 Enriching a safe environment } *)
+
+(** Insertion of local declarations (Local or Variables) *)
+
 val push_named_assum :
-  identifier * types -> safe_environment ->
-    Univ.constraints * safe_environment
+  Id.t * Term.types -> Univ.constraints safe_transformer
 val push_named_def :
-  identifier * constr * types option -> safe_environment ->
-    Univ.constraints * safe_environment
+  Id.t * Entries.definition_entry -> Univ.constraints safe_transformer
 
-(** Adding global axioms or definitions *)
+(** Insertion of global axioms or definitions *)
+
 type global_declaration =
-  | ConstantEntry of constant_entry
+  | ConstantEntry of Entries.constant_entry
   | GlobalRecipe of Cooking.recipe
 
 val add_constant :
-  dir_path -> label -> global_declaration -> safe_environment ->
-      constant * safe_environment
+  DirPath.t -> Label.t -> global_declaration -> constant safe_transformer
 
 (** Adding an inductive type *)
+
 val add_mind :
-  dir_path -> label -> mutual_inductive_entry -> safe_environment ->
-    mutual_inductive * safe_environment
+  DirPath.t -> Label.t -> Entries.mutual_inductive_entry ->
+    mutual_inductive safe_transformer
 
-(** Adding a module *)
+(** Adding a module or a module type *)
+
 val add_module :
-  label -> module_entry -> inline -> safe_environment
-    -> module_path * delta_resolver * safe_environment
-
-(** Adding a module type *)
+  Label.t -> Entries.module_entry -> Declarations.inline ->
+    (module_path * Mod_subst.delta_resolver) safe_transformer
 val add_modtype :
-  label -> module_struct_entry -> inline -> safe_environment
-    -> module_path * safe_environment
+  Label.t -> Entries.module_type_entry -> Declarations.inline ->
+    module_path safe_transformer
 
 (** Adding universe constraints *)
-val add_constraints :
-  Univ.constraints -> safe_environment -> safe_environment
 
-(** Settin the strongly constructive or classical logical engagement *)
-val set_engagement : engagement -> safe_environment -> safe_environment
+val add_constraints : Univ.constraints -> safe_transformer0
 
+(** Setting the Set-impredicative engagement *)
+
+val set_engagement : Declarations.engagement -> safe_transformer0
 
 (** {6 Interactive module functions } *)
 
-val start_module :
-  label -> safe_environment -> module_path * safe_environment
+val start_module : Label.t -> module_path safe_transformer
 
-val end_module :
-  label -> (module_struct_entry * inline) option
-      -> safe_environment -> module_path * delta_resolver * safe_environment 
+val start_modtype : Label.t -> module_path safe_transformer
 
 val add_module_parameter :
-  mod_bound_id -> module_struct_entry -> inline -> safe_environment -> delta_resolver * safe_environment
+  MBId.t -> Entries.module_struct_entry -> Declarations.inline ->
+    Mod_subst.delta_resolver safe_transformer
 
-val start_modtype :
-  label -> safe_environment -> module_path * safe_environment
+(** The optional result type is given without its functorial part *)
 
-val end_modtype :
-  label -> safe_environment -> module_path * safe_environment
+val end_module :
+  Label.t -> (Entries.module_struct_entry * Declarations.inline) option ->
+    (module_path * MBId.t list * Mod_subst.delta_resolver) safe_transformer
+
+val end_modtype : Label.t -> (module_path * MBId.t list) safe_transformer
 
 val add_include :
-  module_struct_entry -> bool -> inline -> safe_environment ->
-   delta_resolver * safe_environment
+  Entries.module_struct_entry -> bool -> Declarations.inline ->
+   Mod_subst.delta_resolver safe_transformer
 
-val pack_module : safe_environment -> module_body
-val current_modpath : safe_environment -> module_path
-val delta_of_senv : safe_environment -> delta_resolver*delta_resolver
-  
+(** {6 Libraries : loading and saving compilation units } *)
 
-(** Loading and saving compilation units *)
-
-(** exporting and importing modules *)
 type compiled_library
 
-val start_library : dir_path -> safe_environment
-      -> module_path * safe_environment
+type native_library = Nativecode.global list
 
-val export : safe_environment -> dir_path
-      -> module_path * compiled_library
+val start_library : DirPath.t -> module_path safe_transformer
 
-val import : compiled_library -> Digest.t -> safe_environment
-      -> module_path * safe_environment
+val export : safe_environment -> DirPath.t ->
+  module_path * compiled_library * native_library
 
-(** Remove the body of opaque constants *)
+val import : compiled_library -> Digest.t ->
+  (module_path * Nativecode.symbol array) safe_transformer
 
-module LightenLibrary :
-sig
-  type table
-  type lightened_compiled_library
-  val save : compiled_library -> lightened_compiled_library * table
-  val load : load_proof:Flags.load_proofs -> table Lazy.t ->
-    lightened_compiled_library -> compiled_library
-end
+val join_compiled_library : compiled_library -> unit
 
-(** {6 Typing judgments } *)
+(** {6 Safe typing judgments } *)
 
 type judgment
 
-val j_val : judgment -> constr
-val j_type : judgment -> constr
+val j_val : judgment -> Term.constr
+val j_type : judgment -> Term.constr
 
-(** Safe typing of a term returning a typing judgment and universe
-   constraints to be added to the environment for the judgment to
-   hold. It is guaranteed that the constraints are satisfiable
+(** The safe typing of a term returns a typing judgment and some universe
+   constraints (to be added to the environment for the judgment to
+   hold). It is guaranteed that the constraints are satisfiable.
  *)
-val safe_infer : safe_environment -> constr -> judgment * Univ.constraints
+val safe_infer : safe_environment -> Term.constr -> judgment * Univ.constraints
 
-val typing : safe_environment -> constr -> judgment
+val typing : safe_environment -> Term.constr -> judgment
 
-(** {7 Query } *)
+(** {6 Queries } *)
 
-val exists_objlabel : label -> safe_environment -> bool
+val exists_objlabel : Label.t -> safe_environment -> bool
 
-(*spiwack: safe retroknowledge functionalities *)
+val delta_of_senv :
+  safe_environment -> Mod_subst.delta_resolver * Mod_subst.delta_resolver
+
+(** {6 Retroknowledge / Native compiler } *)
 
 open Retroknowledge
 
 val retroknowledge : (retroknowledge-> 'a) -> safe_environment -> 'a
 
-val register : safe_environment -> field -> Retroknowledge.entry -> constr
-                                         -> safe_environment
+val register :
+  field -> Retroknowledge.entry -> Term.constr -> safe_transformer0
+
+val register_inline : constant -> safe_transformer0
+
+val set_strategy :
+  safe_environment -> 'a Names.tableKey -> Conv_oracle.level -> safe_environment

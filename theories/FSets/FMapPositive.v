@@ -12,9 +12,7 @@ Require Import Bool ZArith OrderedType OrderedTypeEx FMapInterface.
 
 Set Implicit Arguments.
 Local Open Scope positive_scope.
-
 Local Unset Elimination Schemes.
-Local Unset Case Analysis Schemes.
 
 (** This file is an adaptation to the [FMap] framework of a work by
   Xavier Leroy and Sandrine Blazy (used for building certified compilers).
@@ -494,9 +492,9 @@ Module PositiveMap <: S with Module E:=PositiveOrderedTypeBits.
 
   Definition lt_key (p p':positive*A) := E.lt (fst p) (fst p').
 
-  Global Program Instance eqk_equiv : Equivalence eq_key.
-  Global Program Instance eqke_equiv : Equivalence eq_key_elt.
-  Global Program Instance ltk_strorder : StrictOrder lt_key.
+  Global Instance eqk_equiv : Equivalence eq_key := _.
+  Global Instance eqke_equiv : Equivalence eq_key_elt := _.
+  Global Instance ltk_strorder : StrictOrder lt_key := _.
 
   Lemma mem_find :
     forall m x, mem x m = match find x m with None => false | _ => true end.
@@ -902,7 +900,7 @@ Module PositiveMap <: S with Module E:=PositiveOrderedTypeBits.
 
     Fixpoint xfoldi (m : t A) (v : B) (i : positive) :=
       match m with
-        | Leaf => v
+        | Leaf _ => v
         | Node l (Some x) r =>
           xfoldi r (f i x (xfoldi l v (append i 2))) (append i 3)
         | Node l None r =>
@@ -940,8 +938,8 @@ Module PositiveMap <: S with Module E:=PositiveOrderedTypeBits.
 
   Fixpoint equal (A:Type)(cmp : A -> A -> bool)(m1 m2 : t A) : bool :=
     match m1, m2 with
-      | Leaf, _ => is_empty m2
-      | _, Leaf => is_empty m1
+      | Leaf _, _ => is_empty m2
+      | _, Leaf _ => is_empty m1
       | Node l1 o1 r1, Node l2 o2 r2 =>
            (match o1, o2 with
              | None, None => true

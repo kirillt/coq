@@ -6,16 +6,20 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Compat
 open Pp
+open Errors
 open Util
 open System
 open Flags
 open Names
-open Term
 open Check
 
-let coq_root = id_of_string "Coq"
+let () = at_exit flush_all
+
+let fatal_error info =
+  flush_all (); pperrnl info; flush_all (); exit 1
+
+let coq_root = Id.of_string "Coq"
 let parse_dir s =
   let len = String.length s in
   let rec decoupe_dirs dirs n =
@@ -32,27 +36,27 @@ let parse_dir s =
 let dirpath_of_string s =
   match parse_dir s with
       [] -> Check.default_root_prefix
-    | dir -> make_dirpath (List.map id_of_string dir)
+    | dir -> DirPath.make (List.map Id.of_string dir)
 let path_of_string s =
   match parse_dir s with
       [] -> invalid_arg "path_of_string"
     | l::dir -> {dirpath=dir; basename=l}
 
-let (/) = Filename.concat
+let ( / ) = Filename.concat
 
 let get_version_date () =
   try
-    let coqlib = Envars.coqlib () in
-    let ch = open_in (Filename.concat coqlib "revision") in
+    let ch = open_in (Envars.coqlib () / "revision") in
     let ver = input_line ch in
     let rev = input_line ch in
-      (ver,rev)
+    let () = close_in ch in
+    (ver,rev)
   with _ -> (Coq_config.version,Coq_config.date)
 
 let print_header () =
   let (ver,rev) = (get_version_date ()) in
-    Printf.printf "Welcome to Chicken %s (%s)\n" ver rev;
-    flush stdout
+  Printf.printf "Welcome to Chicken %s (%s)\n" ver rev;
+  flush stdout
 
 (* Adding files to Coq loadpath *)
 
@@ -65,20 +69,23 @@ let add_path ~unix_path:dir ~coq_root:coq_dirpath =
     msg_warning (str ("Cannot open " ^ dir))
 
 let convert_string d =
-  try id_of_string d
-  with _ ->
-    if_verbose warning
-      ("Directory "^d^" cannot be used as a Coq identifier (skipped)");
-    flush_all ();
-    failwith "caught"
+  try Id.of_string d
+  with Errors.UserError _ ->
+    if_verbose msg_warning
+      (str ("Directory "^d^" cannot be used as a Coq identifier (skipped)"));
+    raise Exit
 
 let add_rec_path ~unix_path ~coq_root =
   if exists_dir unix_path then
     let dirs = all_subdirs ~unix_path in
-    let prefix = repr_dirpath coq_root in
-    let convert_dirs (lp,cp) =
-      (lp,make_dirpath (List.map convert_string (List.rev cp)@prefix)) in
-    let dirs = map_succeed convert_dirs dirs in
+    let prefix = DirPath.repr coq_root in
+    let convert_dirs (lp, cp) =
+      try
+        let path = List.rev_map convert_string cp @ prefix in
+        Some (lp, Names.DirPath.make path)
+      with Exit -> None
+    in
+    let dirs = List.map_filter convert_dirs dirs in
     List.iter Check.add_load_path dirs;
     Check.add_load_path (unix_path, coq_root)
   else
@@ -107,14 +114,15 @@ let init_load_path () =
   let plugins = coqlib/"plugins" in
   (* NOTE: These directories are searched from last to first *)
   (* first standard library *)
-  add_rec_path ~unix_path:(coqlib/"theories") ~coq_root:(Names.make_dirpath[coq_root]);
+  add_rec_path ~unix_path:(coqlib/"theories") ~coq_root:(Names.DirPath.make[coq_root]);
   (* then plugins *)
-  add_rec_path ~unix_path:plugins ~coq_root:(Names.make_dirpath [coq_root]);
+  add_rec_path ~unix_path:plugins ~coq_root:(Names.DirPath.make [coq_root]);
   (* then user-contrib *)
   if Sys.file_exists user_contrib then
     add_rec_path ~unix_path:user_contrib ~coq_root:Check.default_root_prefix;
   (* then directories in XDG_DATA_DIRS and XDG_DATA_HOME *)
-  List.iter (fun s -> add_rec_path ~unix_path:s ~coq_root:Check.default_root_prefix) xdg_dirs;
+  List.iter (fun s -> add_rec_path ~unix_path:s ~coq_root:Check.default_root_prefix)
+    (xdg_dirs ~warn:(fun x -> msg_warning (str x)));
   (* then directories in COQPATH *)
   List.iter (fun s -> add_rec_path ~unix_path:s ~coq_root:Check.default_root_prefix) coqpath;
   (* then current directory *)
@@ -208,10 +216,10 @@ let anomaly_string () = str "Anomaly: "
 let report () = (str "." ++ spc () ++ str "Please report.")
 
 let print_loc loc =
-  if loc = dummy_loc then
+  if loc = Loc.ghost then
     (str"<unknown>")
   else
-    let loc = unloc loc in
+    let loc = Loc.unloc loc in
     (int (fst loc) ++ str"-" ++ int (snd loc))
 let guill s = "\""^s^"\""
 
@@ -223,8 +231,6 @@ let rec explain_exn = function
       hov 0 (anomaly_string () ++ str "uncaught Stream.Failure.")
   | Stream.Error txt ->
       hov 0 (str "Syntax error: " ++ str txt)
-  | Token.Error txt ->
-      hov 0 (str "Syntax error: " ++ str txt)
   | Sys_error msg ->
       hov 0 (anomaly_string () ++ str "uncaught exception Sys_error " ++ str (guill msg) ++ report() )
   | UserError(s,pps) ->
@@ -233,8 +239,6 @@ let rec explain_exn = function
       hov 0 (str "Out of memory")
   | Stack_overflow ->
       hov 0 (str "Stack overflow")
-  | Anomaly (s,pps) ->
-      hov 1 (anomaly_string () ++ where s ++ pps ++ report ())
   | Match_failure(filename,pos1,pos2) ->
       hov 1 (anomaly_string () ++ str "Match failure in file " ++
 	     str (guill filename) ++ str " at line " ++ int pos1 ++
@@ -247,12 +251,12 @@ let rec explain_exn = function
       hov 0 (anomaly_string () ++ str "uncaught exception Invalid_argument " ++ str (guill s) ++ report ())
   | Sys.Break ->
       hov 0 (fnl () ++ str "User interrupt.")
-  | Univ.UniverseInconsistency (o,u,v) ->
+  | Univ.UniverseInconsistency (o,u,v,_) ->
       let msg =
 	if !Flags.debug (*!Constrextern.print_universes*) then
-	  spc() ++ str "(cannot enforce" ++ spc() ++ (*Univ.pr_uni u ++*) spc() ++
+	  spc() ++ str "(cannot enforce" ++ spc() ++ Univ.pr_uni u ++ spc() ++
           str (match o with Univ.Lt -> "<" | Univ.Le -> "<=" | Univ.Eq -> "=")
-	  ++ spc() ++ (*Univ.pr_uni v ++*) str")"
+	  ++ spc() ++ Univ.pr_uni v ++ str")"
 	else
 	  mt() in
       hov 0 (str "Error: Universe inconsistency" ++ msg ++ str ".")
@@ -266,10 +270,6 @@ let rec explain_exn = function
 (*      let ctx = Check.get_env() in
       hov 0
         (str "Error:" ++ spc () ++ Himsg.explain_inductive_error ctx e)*)
-  | Loc.Exc_located (loc,exc) ->
-      hov 0 ((if loc = dummy_loc then (mt ())
-               else (str"At location " ++ print_loc loc ++ str":" ++ fnl ()))
-               ++ explain_exn exc)
   | Assert_failure (s,b,e) ->
       hov 0 (anomaly_string () ++ str "assert failure" ++ spc () ++
 	       (if s = "" then mt ()
@@ -278,19 +278,17 @@ let rec explain_exn = function
 		   str ", characters " ++ int e ++ str "-" ++
 		   int (e+6) ++ str ")")) ++
 	       report ())
-  | reraise ->
-      hov 0 (anomaly_string () ++ str "Uncaught exception " ++
-	       str (Printexc.to_string reraise)++report())
+  | e -> Errors.print e (* for anomalies and other uncaught exceptions *)
 
 let parse_args argv =
   let rec parse = function
     | [] -> ()
     | "-impredicative-set" :: rem ->
-      set_engagement Declarations.ImpredicativeSet; parse rem
+      set_engagement Cic.ImpredicativeSet; parse rem
 
     | "-coqlib" :: s :: rem ->
       if not (exists_dir s) then 
-	(msgnl (str ("Directory '"^s^"' does not exist")); exit 1);
+	fatal_error (str ("Directory '"^s^"' does not exist"));
       Flags.coqlib := s;
       Flags.coqlib_spec := true;
       parse rem
@@ -308,7 +306,9 @@ let parse_args argv =
     | "-debug" :: rem -> set_debug (); parse rem
 
     | "-where" :: _ ->
-        print_endline (Envars.coqlib ()); exit 0
+        Envars.set_coqlib ~fail:Errors.error;
+        print_endline (Envars.coqlib ());
+        exit 0
 
     | ("-?"|"-h"|"-H"|"-help"|"--help") :: _ -> usage ()
 
@@ -317,8 +317,6 @@ let parse_args argv =
     | ("-m" | "--memory") :: rem -> Check_stat.memory_stat := true; parse rem
     | ("-o" | "--output-context") :: rem ->
         Check_stat.output_context := true; parse rem
-
-    | "-no-hash-consing" :: rem -> Flags.hash_cons_proofs := false; parse rem
 
     | "-admit" :: s :: rem -> add_admit s; parse rem
     | "-admit" :: [] -> usage ()
@@ -330,19 +328,10 @@ let parse_args argv =
         Flags.make_silent true; parse rem
 
     | s :: _ when s<>"" && s.[0]='-' ->
-        msgnl (str "Unknown option " ++ str s); exit 1
+        fatal_error (str "Unknown option " ++ str s)
     | s :: rem ->  add_compile s; parse rem
   in
-  try
-    parse (List.tl (Array.to_list argv))
-  with
-    | UserError(_,s) as e -> begin
-	try
-	  Stream.empty s; exit 1
-	with Stream.Failure ->
-	  msgnl (explain_exn e); exit 1
-      end
-    | e -> begin msgnl (explain_exn e); exit 1 end
+  parse (List.tl (Array.to_list argv))
 
 
 (* To prevent from doing the initialization twice *)
@@ -354,14 +343,12 @@ let init_with_argv argv =
     Sys.catch_break false; (* Ctrl-C is fatal during the initialisation *)
     try
       parse_args argv;
+      Envars.set_coqlib ~fail:Errors.error;
       if_verbose print_header ();
       init_load_path ();
       engage ();
     with e ->
-      flush_all();
-      message "Error during initialization :";
-      msgnl (explain_exn e);
-      exit 1
+      fatal_error (str "Error during initialization :" ++ (explain_exn e))
   end
 
 let init() = init_with_argv Sys.argv
@@ -371,9 +358,6 @@ let run () =
     compile_files ();
     flush_all()
   with e ->
-    (flush_all();
-    Pp.ppnl(explain_exn e);
-    flush_all();
-    exit 1)
+    fatal_error (explain_exn e)
 
 let start () = init(); run(); Check_stat.stats(); exit 0

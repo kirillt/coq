@@ -6,7 +6,7 @@
 
  *************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
 open Refl_omega
 open Refiner
@@ -18,17 +18,17 @@ let romega_tactic l =
        | "positive" -> Tacinterp.interp <:tactic<zify_positive>>
        | "N" -> Tacinterp.interp <:tactic<zify_N>>
        | "Z" -> Tacinterp.interp <:tactic<zify_op>>
-       | s -> Util.error ("No ROmega knowledge base for type "^s))
-    (Util.list_uniquize (List.sort compare l))
+       | s -> Errors.error ("No ROmega knowledge base for type "^s))
+    (Util.List.sort_uniquize String.compare l)
   in
-  tclTHEN
-    (tclREPEAT (tclPROGRESS (tclTHENLIST tacs)))
-    (tclTHEN
+  Tacticals.New.tclTHEN
+    (Tacticals.New.tclREPEAT (Proofview.tclPROGRESS (Tacticals.New.tclTHENLIST tacs)))
+    (Tacticals.New.tclTHEN
        (* because of the contradiction process in (r)omega,
           we'd better leave as little as possible in the conclusion,
           for an easier decidability argument. *)
-       Tactics.intros
-       total_reflexive_omega_tactic)
+       (Tactics.intros)
+       (Proofview.V82.tactic total_reflexive_omega_tactic))
 
 
 TACTIC EXTEND romega
@@ -37,6 +37,6 @@ END
 
 TACTIC EXTEND romega'
 | [ "romega" "with" ne_ident_list(l) ] ->
-    [ romega_tactic (List.map Names.string_of_id l) ]
+    [ romega_tactic (List.map Names.Id.to_string l) ]
 | [ "romega" "with" "*" ] -> [ romega_tactic ["nat";"positive";"N";"Z"] ]
 END

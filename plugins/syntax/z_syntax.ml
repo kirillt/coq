@@ -6,12 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pcoq
 open Pp
+open Errors
 open Util
 open Names
-open Topconstr
-open Libnames
 open Bigint
 
 exception Non_closed_number
@@ -20,20 +18,20 @@ exception Non_closed_number
 (* Parsing positive via scopes                                        *)
 (**********************************************************************)
 
-open Libnames
+open Globnames
 open Glob_term
 
 let binnums = ["Coq";"Numbers";"BinNums"]
 
-let make_dir l = make_dirpath (List.map id_of_string (List.rev l))
-let make_path dir id = Libnames.make_path (make_dir dir) (id_of_string id)
+let make_dir l = DirPath.make (List.rev_map Id.of_string l)
+let make_path dir id = Libnames.make_path (make_dir dir) (Id.of_string id)
 
 let positive_path = make_path binnums "positive"
 
 (* TODO: temporary hack *)
-let make_kn dir id = Libnames.encode_mind dir id
+let make_kn dir id = Globnames.encode_mind dir id
 
-let positive_kn = make_kn (make_dir binnums) (id_of_string "positive")
+let positive_kn = make_kn (make_dir binnums) (Id.of_string "positive")
 let glob_positive = IndRef (positive_kn,0)
 let path_of_xI = ((positive_kn,0),1)
 let path_of_xO = ((positive_kn,0),2)
@@ -49,7 +47,7 @@ let pos_of_bignat dloc x =
   let rec pos_of x =
     match div2_with_rest x with
       | (q,false) -> GApp (dloc, ref_xO,[pos_of q])
-      | (q,true) when q <> zero -> GApp (dloc,ref_xI,[pos_of q])
+      | (q,true) when not (Bigint.equal q zero) -> GApp (dloc,ref_xI,[pos_of q])
       | (q,true) -> ref_xH
   in
   pos_of x
@@ -67,9 +65,9 @@ let interp_positive dloc n =
 (**********************************************************************)
 
 let rec bignat_of_pos = function
-  | GApp (_, GRef (_,b),[a]) when b = glob_xO -> mult_2(bignat_of_pos a)
-  | GApp (_, GRef (_,b),[a]) when b = glob_xI -> add_1(mult_2(bignat_of_pos a))
-  | GRef (_, a) when a = glob_xH -> Bigint.one
+  | GApp (_, GRef (_,b),[a]) when Globnames.eq_gr b glob_xO -> mult_2(bignat_of_pos a)
+  | GApp (_, GRef (_,b),[a]) when Globnames.eq_gr b glob_xI -> add_1(mult_2(bignat_of_pos a))
+  | GRef (_, a) when Globnames.eq_gr a glob_xH -> Bigint.one
   | _ -> raise Non_closed_number
 
 let uninterp_positive p =
@@ -85,9 +83,9 @@ let uninterp_positive p =
 let _ = Notation.declare_numeral_interpreter "positive_scope"
   (positive_path,binnums)
   interp_positive
-  ([GRef (dummy_loc, glob_xI);
-    GRef (dummy_loc, glob_xO);
-    GRef (dummy_loc, glob_xH)],
+  ([GRef (Loc.ghost, glob_xI);
+    GRef (Loc.ghost, glob_xO);
+    GRef (Loc.ghost, glob_xH)],
    uninterp_positive,
    true)
 
@@ -95,7 +93,7 @@ let _ = Notation.declare_numeral_interpreter "positive_scope"
 (* Parsing N via scopes                                               *)
 (**********************************************************************)
 
-let n_kn = make_kn (make_dir binnums) (id_of_string "N")
+let n_kn = make_kn (make_dir binnums) (Id.of_string "N")
 let glob_n = IndRef (n_kn,0)
 let path_of_N0 = ((n_kn,0),1)
 let path_of_Npos = ((n_kn,0),2)
@@ -105,7 +103,7 @@ let glob_Npos = ConstructRef path_of_Npos
 let n_path = make_path binnums "N"
 
 let n_of_binnat dloc pos_or_neg n =
-  if n <> zero then
+  if not (Bigint.equal n zero) then
     GApp(dloc, GRef (dloc,glob_Npos), [pos_of_bignat dloc n])
   else
     GRef (dloc, glob_N0)
@@ -122,8 +120,8 @@ let n_of_int dloc n =
 (**********************************************************************)
 
 let bignat_of_n = function
-  | GApp (_, GRef (_,b),[a]) when b = glob_Npos -> bignat_of_pos a
-  | GRef (_, a) when a = glob_N0 -> Bigint.zero
+  | GApp (_, GRef (_,b),[a]) when Globnames.eq_gr b glob_Npos -> bignat_of_pos a
+  | GRef (_, a) when Globnames.eq_gr a glob_N0 -> Bigint.zero
   | _ -> raise Non_closed_number
 
 let uninterp_n p =
@@ -136,8 +134,8 @@ let uninterp_n p =
 let _ = Notation.declare_numeral_interpreter "N_scope"
   (n_path,binnums)
   n_of_int
-  ([GRef (dummy_loc, glob_N0);
-    GRef (dummy_loc, glob_Npos)],
+  ([GRef (Loc.ghost, glob_N0);
+    GRef (Loc.ghost, glob_Npos)],
   uninterp_n,
   true)
 
@@ -146,7 +144,7 @@ let _ = Notation.declare_numeral_interpreter "N_scope"
 (**********************************************************************)
 
 let z_path = make_path binnums "Z"
-let z_kn = make_kn (make_dir binnums) (id_of_string "Z")
+let z_kn = make_kn (make_dir binnums) (Id.of_string "Z")
 let glob_z = IndRef (z_kn,0)
 let path_of_ZERO = ((z_kn,0),1)
 let path_of_POS = ((z_kn,0),2)
@@ -156,7 +154,7 @@ let glob_POS = ConstructRef path_of_POS
 let glob_NEG = ConstructRef path_of_NEG
 
 let z_of_int dloc n =
-  if n <> zero then
+  if not (Bigint.equal n zero) then
     let sgn, n =
       if is_pos_or_zero n then glob_POS, n else glob_NEG, Bigint.neg n in
     GApp(dloc, GRef (dloc,sgn), [pos_of_bignat dloc n])
@@ -168,9 +166,9 @@ let z_of_int dloc n =
 (**********************************************************************)
 
 let bigint_of_z = function
-  | GApp (_, GRef (_,b),[a]) when b = glob_POS -> bignat_of_pos a
-  | GApp (_, GRef (_,b),[a]) when b = glob_NEG -> Bigint.neg (bignat_of_pos a)
-  | GRef (_, a) when a = glob_ZERO -> Bigint.zero
+  | GApp (_, GRef (_,b),[a]) when Globnames.eq_gr b glob_POS -> bignat_of_pos a
+  | GApp (_, GRef (_,b),[a]) when Globnames.eq_gr b glob_NEG -> Bigint.neg (bignat_of_pos a)
+  | GRef (_, a) when Globnames.eq_gr a glob_ZERO -> Bigint.zero
   | _ -> raise Non_closed_number
 
 let uninterp_z p =
@@ -184,8 +182,8 @@ let uninterp_z p =
 let _ = Notation.declare_numeral_interpreter "Z_scope"
   (z_path,binnums)
   z_of_int
-  ([GRef (dummy_loc, glob_ZERO);
-    GRef (dummy_loc, glob_POS);
-    GRef (dummy_loc, glob_NEG)],
+  ([GRef (Loc.ghost, glob_ZERO);
+    GRef (Loc.ghost, glob_POS);
+    GRef (Loc.ghost, glob_NEG)],
   uninterp_z,
   true)

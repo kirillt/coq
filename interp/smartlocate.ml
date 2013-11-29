@@ -13,18 +13,19 @@
 
 (* *)
 open Pp
-open Util
-open Names
+open Errors
 open Libnames
-open Genarg
+open Globnames
+open Misctypes
 open Syntax_def
-open Topconstr
+open Notation_term
 
 let global_of_extended_global = function
   | TrueGlobal ref -> ref
   | SynDef kn ->
   match search_syntactic_definition kn with
-  | [],ARef ref -> ref
+  | [],NRef ref -> ref
+  | [],NApp (NRef ref,[]) -> ref
   | _ -> raise Not_found
 
 let locate_global_with_alias (loc,qid) =

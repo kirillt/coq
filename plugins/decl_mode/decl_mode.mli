@@ -27,11 +27,11 @@ val get_current_mode : unit -> command_mode
 val check_not_proof_mode : string -> unit
 
 type split_tree=
-    Skip_patt of Idset.t * split_tree
-  | Split_patt of Idset.t * inductive *
-		(bool array * (Idset.t * split_tree) option) array
+    Skip_patt of Id.Set.t * split_tree
+  | Split_patt of Id.Set.t * inductive *
+		(bool array * (Id.Set.t * split_tree) option) array
   | Close_patt of split_tree
-  | End_patt of (identifier * (int * int))
+  | End_patt of (Id.t * (int * int))
 
 type elim_kind =
     EK_dep of split_tree
@@ -51,7 +51,7 @@ type per_info =
      per_wf:recpath}
 
 type stack_info =
-    Per of Decl_expr.elim_type * per_info * elim_kind * Names.identifier list
+    Per of Decl_expr.elim_type * per_info * elim_kind * Names.Id.t list
   | Suppose_case
   | Claim
   | Focus_claim
@@ -59,7 +59,7 @@ type stack_info =
 type pm_info =
     {pm_stack : stack_info list }
 
-val info : pm_info Store.Field.t
+val info : pm_info Store.field
 
 val get_info : Evd.evar_map -> Proof_type.goal -> pm_info
 
@@ -69,10 +69,12 @@ val get_stack : Proof.proof -> stack_info list
 
 val get_top_stack : Proof.proof -> stack_info list
 
-val get_last:  Environ.env -> identifier
+val get_last:  Environ.env -> Id.t
+(** [get_last] raises a [UserError] when it cannot find a previous
+    statement in the environment. *)
 
 val focus : Proof.proof -> unit
 
-val unfocus : Proof.proof -> unit
+val unfocus : unit -> unit
 
-val maximal_unfocus : Proof.proof -> unit
+val maximal_unfocus : unit -> unit

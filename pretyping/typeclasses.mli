@@ -7,16 +7,15 @@
 (************************************************************************)
 
 open Names
-open Libnames
+open Globnames
 open Decl_kinds
 open Term
-open Sign
+open Context
 open Evd
 open Environ
 open Nametab
 open Mod_subst
 open Topconstr
-open Util
 
 type direction = Forward | Backward
 
@@ -38,7 +37,7 @@ type typeclass = {
       Some may be undefinable due to sorting restrictions or simply undefined if 
       no name is provided. The [int option option] indicates subclasses whose hint has
       the given priority. *)
-  cl_projs : (name * (direction * int option) option * constant option) list;
+  cl_projs : (Name.t * (direction * int option) option * constant option) list;
 }
 
 type instance
@@ -68,41 +67,51 @@ val class_of_constr : constr -> (rel_context * (typeclass * constr list)) option
   
 val instance_impl : instance -> global_reference
 
+val instance_priority : instance -> int option
+
 val is_class : global_reference -> bool
 val is_instance : global_reference -> bool
+
+val is_implicit_arg : Evar_kinds.t -> bool
 
 (** Returns the term and type for the given instance of the parameters and fields
    of the type class. *)
 
 val instance_constructor : typeclass -> constr list -> constr option * types
 
+(** Filter which evars to consider for resolution. *)
+type evar_filter = existential_key -> Evar_kinds.t -> bool
+val all_evars : evar_filter
+val all_goals : evar_filter
+val no_goals : evar_filter
+val no_goals_or_obligations : evar_filter
+
 (** Resolvability.
-    Only undefined evars could be marked or checked for resolvability. *)
+    Only undefined evars can be marked or checked for resolvability. *)
 
 val is_resolvable : evar_info -> bool
 val mark_unresolvable : evar_info -> evar_info
+val mark_unresolvables : ?filter:evar_filter -> evar_map -> evar_map
 val mark_resolvable : evar_info -> evar_info
-val mark_unresolvables : evar_map -> evar_map
+val mark_resolvables : evar_map -> evar_map
 val is_class_evar : evar_map -> evar_info -> bool
-
-(** Filter which evars to consider for resolution. *)
-type evar_filter = hole_kind -> bool
-val no_goals : evar_filter
-val all_evars : evar_filter
 
 val resolve_typeclasses : ?filter:evar_filter -> ?split:bool -> ?fail:bool ->
   env -> evar_map -> evar_map
 val resolve_one_typeclass : env -> evar_map -> types -> open_constr
 
-val register_set_typeclass_transparency : (evaluable_global_reference -> bool (*local?*) -> bool -> unit) -> unit
+val set_typeclass_transparency_hook : (evaluable_global_reference -> bool (*local?*) -> bool -> unit) Hook.t
 val set_typeclass_transparency : evaluable_global_reference -> bool -> bool -> unit
 
-val register_classes_transparent_state : (unit -> transparent_state) -> unit
+val classes_transparent_state_hook : (unit -> transparent_state) Hook.t
 val classes_transparent_state : unit -> transparent_state
 
-val register_add_instance_hint : (constr -> bool (* local? *) -> int option -> unit) -> unit
-val register_remove_instance_hint : (global_reference -> unit) -> unit
-val add_instance_hint : constr -> bool -> int option -> unit
+val add_instance_hint_hook : 
+  (global_reference_or_constr -> global_reference list ->
+   bool (* local? *) -> int option -> unit) Hook.t
+val remove_instance_hint_hook : (global_reference -> unit) Hook.t
+val add_instance_hint : global_reference_or_constr -> global_reference list -> 
+  bool -> int option -> unit
 val remove_instance_hint : global_reference -> unit
 
 val solve_instanciations_problem : (env -> evar_map -> evar_filter -> bool -> bool -> evar_map) ref
@@ -116,4 +125,4 @@ val declare_instance : int option -> bool -> global_reference -> unit
     subinstances and add only the missing ones. *)
 
 val build_subclasses : check:bool -> env -> evar_map -> global_reference -> int option (* priority *) ->
-  (int option * constr) list
+  (global_reference list * int option * constr) list

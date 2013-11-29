@@ -14,20 +14,19 @@
 (* Initial author: Arnaud Spiwack
    Module-traversing code: Pierre Letouzey *)
 
+open Pp
+open Errors
 open Util
 open Names
-open Sign
-open Univ
 open Term
 open Declarations
 open Mod_subst
 
-let cst_ord k1 k2 = kn_ord (canonical_con k1) (canonical_con k2)
-
 type context_object =
-  | Variable of identifier (* A section variable or a Let definition *)
+  | Variable of Id.t (* A section variable or a Let definition *)
   | Axiom of constant      (* An axiom or a constant. *)
   | Opaque of constant     (* An opaque constant. *)
+  | Transparent of constant
 
 (* Defines a set of [assumption] *)
 module OrderedContextObject =
@@ -35,13 +34,17 @@ struct
   type t = context_object
   let compare x y =
       match x , y with
-      | Variable i1 , Variable i2 -> id_ord i1 i2
-      | Axiom k1 , Axiom k2 -> cst_ord k1 k2
-      | Opaque k1 , Opaque k2 -> cst_ord k1 k2
-      | Variable _ , Axiom _ -> -1
+      | Variable i1 , Variable i2 -> Id.compare i1 i2
+      | Axiom k1 , Axiom k2 -> con_ord k1 k2
+      | Opaque k1 , Opaque k2 -> con_ord k1 k2
+      | Transparent k1 , Transparent k2 -> con_ord k1 k2
       | Axiom _ , Variable _ -> 1
-      | Opaque _ , _ -> -1
-      | _, Opaque _ -> 1
+      | Opaque _ , Variable _
+      | Opaque _ , Axiom _ -> 1
+      | Transparent _ , Variable _
+      | Transparent _ , Axiom _
+      | Transparent _ , Opaque _ -> 1
+      | _ , _ -> -1
 end
 
 module ContextObjectSet = Set.Make (OrderedContextObject)
@@ -56,13 +59,30 @@ let modcache = ref (MPmap.empty : structure_body MPmap.t)
 
 let rec search_mod_label lab = function
   | [] -> raise Not_found
-  | (l,SFBmodule mb) :: _ when l = lab -> mb
+  | (l, SFBmodule mb) :: _ when Label.equal l lab -> mb
   | _ :: fields -> search_mod_label lab fields
 
 let rec search_cst_label lab = function
   | [] -> raise Not_found
-  | (l,SFBconst cb) :: _ when l = lab -> cb
+  | (l, SFBconst cb) :: _ when Label.equal l lab -> cb
   | _ :: fields -> search_cst_label lab fields
+
+(* TODO: using [empty_delta_resolver] below is probably slightly incorrect. But:
+    a) I don't see currently what should be used instead
+    b) this shouldn't be critical for Print Assumption. At worse some
+       constants will have a canonical name which is non-canonical,
+       leading to failures in [Global.lookup_constant], but our own
+       [lookup_constant] should work.
+*)
+
+let rec fields_of_functor f subs mp0 args = function
+  |NoFunctor a -> f subs mp0 args a
+  |MoreFunctor (mbid,_,e) ->
+    match args with
+    | [] -> assert false (* we should only encounter applied functors *)
+    | mpa :: args ->
+      let subs = add_mbid mbid mpa empty_delta_resolver (*TODO*) subs in
+      fields_of_functor f subs mp0 args e
 
 let rec lookup_module_in_impl mp =
   try Global.lookup_module mp
@@ -87,46 +107,32 @@ and fields_of_mp mp =
   let mb = lookup_module_in_impl mp in
   let fields,inner_mp,subs = fields_of_mb empty_subst mb [] in
   let subs =
-    if inner_mp = mp then subs
+    if mp_eq inner_mp mp then subs
     else add_mp inner_mp mp mb.mod_delta subs
   in
-  Modops.subst_signature subs fields
+  Modops.subst_structure subs fields
 
-and fields_of_mb subs mb args =
-  let seb = match mb.mod_expr with
-    | None -> mb.mod_type (* cf. Declare Module *)
-    | Some seb -> seb
-  in
-  fields_of_seb subs mb.mod_mp seb args
+and fields_of_mb subs mb args = match mb.mod_expr with
+  |Algebraic expr -> fields_of_expression subs mb.mod_mp args expr
+  |Struct sign -> fields_of_signature subs mb.mod_mp args sign
+  |Abstract|FullStruct -> fields_of_signature subs mb.mod_mp args mb.mod_type
 
-(* TODO: using [empty_delta_resolver] below in [fields_of_seb]
-   is probably slightly incorrect. But:
-    a) I don't see currently what should be used instead
-    b) this shouldn't be critical for Print Assumption. At worse some
-       constants will have a canonical name which is non-canonical,
-       leading to failures in [Global.lookup_constant], but our own
-       [lookup_constant] should work.
-*)
+(** The Abstract case above corresponds to [Declare Module] *)
 
-and fields_of_seb subs mp0 seb args = match seb with
-  | SEBstruct l ->
-    assert (args = []);
-    l, mp0, subs
-  | SEBident mp ->
+and fields_of_signature x =
+  fields_of_functor
+    (fun subs mp0 args struc ->
+      assert (List.is_empty args);
+      (struc, mp0, subs)) x
+
+and fields_of_expr subs mp0 args = function
+  |MEident mp ->
     let mb = lookup_module_in_impl (subst_mp subs mp) in
     fields_of_mb subs mb args
-  | SEBapply (seb1,seb2,_) ->
-    (match seb2 with
-      | SEBident mp2 -> fields_of_seb subs mp0 seb1 (mp2::args)
-      | _ -> assert false) (* only legal application is to module names *)
-  | SEBfunctor (mbid,mtb,seb) ->
-    (match args with
-      | [] -> assert false (* we should only encounter applied functors *)
-      | mpa :: args ->
-	let subs = add_mbid mbid mpa empty_delta_resolver subs in
-	fields_of_seb subs mp0 seb args)
-  | SEBwith _ -> assert false (* should not appear in a mod_expr
-				   or mod_type field *)
+  |MEapply (me1,mp2) -> fields_of_expr subs mp0 (mp2::args) me1
+  |MEwith _ -> assert false (* no 'with' in [mod_expr] *)
+
+and fields_of_expression x = fields_of_functor fields_of_expr x
 
 let lookup_constant_in_impl cst fallback =
   try
@@ -143,16 +149,16 @@ let lookup_constant_in_impl cst fallback =
        - The label has not been found in the structure. This is an error *)
     match fallback with
       | Some cb -> cb
-      | None -> anomaly ("Print Assumption: unknown constant "^string_of_con cst)
+      | None -> anomaly (str "Print Assumption: unknown constant " ++ pr_con cst)
 
 let lookup_constant cst =
   try
     let cb = Global.lookup_constant cst in
-    if constant_has_body cb then cb
+    if Declareops.constant_has_body cb then cb
     else lookup_constant_in_impl cst (Some cb)
   with Not_found -> lookup_constant_in_impl cst None
 
-let assumptions ?(add_opaque=false) st (* t *) =
+let assumptions ?(add_opaque=false) ?(add_transparent=false) st (* t *) =
   modcache := MPmap.empty;
   let (idts,knst) = st in
   (* Infix definition for chaining function that accumulate
@@ -224,15 +230,19 @@ let assumptions ?(add_opaque=false) st (* t *) =
 	(s,ContextObjectMap.add cst ctype acc)
     in
     let (s,acc) =
-      if add_opaque && Declarations.constant_has_body cb
-	&& (Declarations.is_opaque cb || not (Cpred.mem kn knst))
-      then
-	do_type (Opaque kn)
-      else (s,acc)
+      if Declareops.constant_has_body cb then
+        if Declareops.is_opaque cb || not (Cpred.mem kn knst) then
+          (** it is opaque *)
+          if add_opaque then do_type (Opaque kn)
+          else (s, acc)
+        else
+          if add_transparent then do_type (Transparent kn)
+          else (s, acc)
+      else (s, acc)
     in
-      match Declarations.body_of_constant cb with
+      match Declareops.body_of_constant cb with
       | None -> do_type (Axiom kn)
-      | Some body -> do_constr (Declarations.force body) s acc
+      | Some body -> do_constr body s acc
 
   and do_memoize_kn kn =
     try_and_go (Axiom kn) (add_kn kn)

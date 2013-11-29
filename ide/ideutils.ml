@@ -11,13 +11,27 @@ open Preferences
 
 exception Forbidden
 
+let warn_image =
+  let img = GMisc.image () in
+  img#set_stock `DIALOG_WARNING;
+  img#set_icon_size `DIALOG;
+  img
+
+let warning msg =
+  GToolbox.message_box ~title:"Warning" ~icon:warn_image#coerce msg
+
+let cb = GData.clipboard Gdk.Atom.primary
+
 (* status bar and locations *)
 
 let status = GMisc.statusbar ()
 
-let push_info,pop_info =
+let push_info,pop_info,clear_info =
   let status_context = status#new_context ~name:"Messages" in
-    (fun s -> ignore (status_context#push s)),status_context#pop
+  let size = ref 0 in
+  (fun s -> incr size; ignore (status_context#push s)),
+  (fun () -> decr size; status_context#pop ()),
+  (fun () -> for i = 1 to !size do status_context#pop () done; size := 0)
 
 let flash_info =
   let flash_context = status#new_context ~name:"Flash" in
@@ -27,61 +41,47 @@ let flash_info =
 
 let set_location = ref  (function s -> failwith "not ready")
 
-let pbar = GRange.progress_bar ~pulse_step:0.2 ()
+(** A utf8 char is either a single byte (ascii char, 0xxxxxxx)
+    or multi-byte (with a leading byte 11xxxxxx and extra bytes 10xxxxxx) *)
 
-let debug = ref (false)
+let is_extra_byte c = ((Char.code c) lsr 6 = 2)
 
-let prerr_endline s =
-  if !debug then try prerr_endline s;flush stderr with _ -> ()
-
-let get_insert input_buffer = input_buffer#get_iter_at_mark `INSERT
-
-let is_char_start c = let code = Char.code c in code < 0x80 || code >= 0xc0
+(** For a string buffer that may contain utf8 chars,
+    we convert a byte offset into a char offset
+    by only counting char-starting bytes.
+    Normally the string buffer starts with a char-starting byte
+    (buffer produced by a [#get_text]) *)
 
 let byte_offset_to_char_offset s byte_offset =
-  if (byte_offset < String.length s) then begin
-    let count_delta = ref 0 in
-    for i = 0 to byte_offset do
-      let code = Char.code s.[i] in
-      if code >= 0x80 && code < 0xc0 then incr count_delta
-    done;
-    byte_offset - !count_delta
-  end
-  else begin
-    let count_delta = ref 0 in
-    for i = 0 to String.length s - 1 do
-      let code = Char.code s.[i] in
-      if code >= 0x80 && code < 0xc0 then incr count_delta
-    done;
-    byte_offset - !count_delta
-  end
+  let extra_bytes = ref 0 in
+  for i = 0 to min byte_offset (String.length s - 1) do
+    if is_extra_byte s.[i] then incr extra_bytes
+  done;
+  byte_offset - !extra_bytes
+
+let glib_utf8_pos_to_offset s ~off = byte_offset_to_char_offset s off
 
 let print_id id =
-  prerr_endline ("GOT sig id :"^(string_of_int (Obj.magic id)))
-
+  Minilib.log ("GOT sig id :"^(string_of_int (Obj.magic id)))
 
 let do_convert s =
-  Utf8_convert.f
-    (if Glib.Utf8.validate s then begin
-      prerr_endline "Input is UTF-8";s
-    end else
-	let from_loc () =
-	  let _,char_set = Glib.Convert.get_charset () in
-	  flash_info
-	    ("Converting from locale ("^char_set^")");
-	  Glib.Convert.convert_with_fallback ~to_codeset:"UTF-8" ~from_codeset:char_set s
-	in
-	let from_manual enc =
-	  flash_info
-	    ("Converting from "^ enc);
-	  Glib.Convert.convert s ~to_codeset:"UTF-8" ~from_codeset:enc
-	in
-	match !current.encoding with
-	  |Preferences.Eutf8 | Preferences.Elocale -> from_loc ()
-	  |Emanual enc ->
-	    try
-	      from_manual enc
-	    with _ -> from_loc ())
+  let from_loc () =
+    let _,char_set = Glib.Convert.get_charset () in
+    flash_info ("Converting from locale ("^char_set^")");
+    Glib.Convert.convert_with_fallback
+      ~to_codeset:"UTF-8" ~from_codeset:char_set s
+  in
+  let from_manual enc =
+    flash_info ("Converting from "^ enc);
+    Glib.Convert.convert s ~to_codeset:"UTF-8" ~from_codeset:enc
+  in
+  let s =
+    if Glib.Utf8.validate s then (Minilib.log "Input is UTF-8"; s)
+    else match current.encoding with
+      |Preferences.Eutf8 | Preferences.Elocale -> from_loc ()
+      |Emanual enc -> try from_manual enc with _ -> from_loc ()
+  in
+  Utf8_convert.f s
 
 let try_convert s =
   try
@@ -92,54 +92,45 @@ Please choose a correct encoding in the preference panel.*)";;
 
 
 let try_export file_name s =
-  try let s =
-    try match !current.encoding with
-      |Eutf8 -> begin
-	(prerr_endline "UTF-8 is enforced" ;s)
-      end
-      |Elocale -> begin
+  let s =
+    try match current.encoding with
+      |Eutf8 -> Minilib.log "UTF-8 is enforced" ; s
+      |Elocale ->
 	let is_unicode,char_set = Glib.Convert.get_charset () in
 	if is_unicode then
-	  (prerr_endline "Locale is UTF-8" ;s)
+	  (Minilib.log "Locale is UTF-8" ; s)
 	else
-	  (prerr_endline ("Locale is "^char_set);
-	   Glib.Convert.convert_with_fallback ~from_codeset:"UTF-8" ~to_codeset:char_set s)
-      end
+	  (Minilib.log ("Locale is "^char_set);
+	   Glib.Convert.convert_with_fallback
+             ~from_codeset:"UTF-8" ~to_codeset:char_set s)
       |Emanual enc ->
-	(prerr_endline ("Manual charset is "^ enc);
-       Glib.Convert.convert_with_fallback ~from_codeset:"UTF-8" ~to_codeset:enc s)
-    with e -> (prerr_endline ("Error ("^(Printexc.to_string e)^") in transcoding: falling back to UTF-8") ;s)
+	(Minilib.log ("Manual charset is "^ enc);
+         Glib.Convert.convert_with_fallback
+           ~from_codeset:"UTF-8" ~to_codeset:enc s)
+    with e ->
+      let str = Printexc.to_string e in
+      Minilib.log ("Error ("^str^") in transcoding: falling back to UTF-8");
+      s
   in
-  let oc = open_out file_name in
-  output_string oc s;
-  close_out oc;
-  true
-  with e -> prerr_endline (Printexc.to_string e);false
+  try
+    let oc = open_out file_name in
+    output_string oc s;
+    close_out oc;
+    true
+  with e -> Minilib.log (Printexc.to_string e);false
 
-let my_stat f = try Some (Unix.stat f) with _ -> None
+type timer = { run : ms:int -> callback:(unit->bool) -> unit;
+               kill : unit -> unit }
 
-let revert_timer = ref None
-let disconnect_revert_timer () = match !revert_timer with
-  | None -> ()
-  | Some id -> GMain.Timeout.remove id; revert_timer := None
-
-let auto_save_timer = ref None
-let disconnect_auto_save_timer () = match !auto_save_timer with
-  | None -> ()
-  | Some id -> GMain.Timeout.remove id; auto_save_timer := None
-
-let highlight_timer = ref None
-let set_highlight_timer f =
-  match !highlight_timer with
-    | None ->
-	revert_timer :=
-      Some (GMain.Timeout.add ~ms:2000
-	      ~callback:(fun () -> f (); highlight_timer := None; true))
-    | Some id ->
-	GMain.Timeout.remove id;
-	revert_timer :=
-	Some (GMain.Timeout.add ~ms:2000
-		~callback:(fun () -> f (); highlight_timer := None; true))
+let mktimer () =
+  let timer = ref None in
+  { run =
+      (fun ~ms ~callback ->
+          timer := Some (GMain.Timeout.add ~ms ~callback));
+    kill =
+      (fun () -> match !timer with
+        | None -> ()
+        | Some id -> GMain.Timeout.remove id; timer := None) }
 
 let last_dir = ref ""
 
@@ -151,55 +142,62 @@ let filter_coq_files () =  GFile.filter
   ~name:"Coq source code"
   ~patterns:[ "*.v"] ()
 
-let select_file_for_open ~title ?(dir = last_dir) ?(filename="") () =
+let select_file_for_open ~title () =
   let file = ref None in
-  let file_chooser = GWindow.file_chooser_dialog ~action:`OPEN ~modal:true ~title () in
-    file_chooser#add_button_stock `CANCEL `CANCEL ;
-    file_chooser#add_select_button_stock `OPEN `OPEN ;
-    file_chooser#add_filter (filter_coq_files ());
-    file_chooser#add_filter (filter_all_files ());
-    file_chooser#set_default_response `OPEN;
-    ignore (file_chooser#set_current_folder !dir);
-    begin match file_chooser#run () with
-      | `OPEN ->
-	  begin
-	    file := file_chooser#filename;
-	    match !file with
-		None -> ()
-	      | Some s -> dir := Filename.dirname s;
-	  end
-      | `DELETE_EVENT | `CANCEL -> ()
-    end ;
-    file_chooser#destroy ();
-    !file
+  let file_chooser =
+    GWindow.file_chooser_dialog ~action:`OPEN ~modal:true ~title ()
+  in
+  file_chooser#add_button_stock `CANCEL `CANCEL ;
+  file_chooser#add_select_button_stock `OPEN `OPEN ;
+  file_chooser#add_filter (filter_coq_files ());
+  file_chooser#add_filter (filter_all_files ());
+  file_chooser#set_default_response `OPEN;
+  ignore (file_chooser#set_current_folder !last_dir);
+  begin match file_chooser#run () with
+    | `OPEN ->
+      begin
+	file := file_chooser#filename;
+	match !file with
+	  | None -> ()
+	  | Some s -> last_dir := Filename.dirname s;
+      end
+    | `DELETE_EVENT | `CANCEL -> ()
+  end ;
+  file_chooser#destroy ();
+  !file
 
-
-let select_file_for_save ~title ?(dir = last_dir) ?(filename="") () =
+let select_file_for_save ~title ?filename () =
   let file = ref None in
-  let file_chooser = GWindow.file_chooser_dialog ~action:`SAVE ~modal:true ~title () in
-    file_chooser#add_button_stock `CANCEL `CANCEL ;
-    file_chooser#add_select_button_stock `SAVE `SAVE ;
-    file_chooser#add_filter (filter_coq_files ());
-    file_chooser#add_filter (filter_all_files ());
-  (* this line will be used when a lablgtk >= 2.10.0 is the default on most distributions
-       file_chooser#set_do_overwrite_confirmation true;
-     *)
-    file_chooser#set_default_response `SAVE;
-    ignore (file_chooser#set_current_folder !dir);
-    ignore (file_chooser#set_current_name filename);
-
-    begin match file_chooser#run () with
-      | `SAVE ->
-	  begin
-	    file := file_chooser#filename;
-	    match !file with
-		None -> ()
-	      | Some s -> dir := Filename.dirname s;
-	  end
-      | `DELETE_EVENT | `CANCEL -> ()
-    end ;
-    file_chooser#destroy ();
-    !file
+  let file_chooser =
+    GWindow.file_chooser_dialog ~action:`SAVE ~modal:true ~title ()
+  in
+  file_chooser#add_button_stock `CANCEL `CANCEL ;
+  file_chooser#add_select_button_stock `SAVE `SAVE ;
+  file_chooser#add_filter (filter_coq_files ());
+  file_chooser#add_filter (filter_all_files ());
+  (* this line will be used when a lablgtk >= 2.10.0 is the default
+     on most distributions:
+     file_chooser#set_do_overwrite_confirmation true;
+  *)
+  file_chooser#set_default_response `SAVE;
+  let dir,filename = match filename with
+    |None -> !last_dir, ""
+    |Some f -> Filename.dirname f, Filename.basename f
+  in
+  ignore (file_chooser#set_current_folder dir);
+  ignore (file_chooser#set_current_name filename);
+  begin match file_chooser#run () with
+    | `SAVE ->
+      begin
+        file := file_chooser#filename;
+        match !file with
+            None -> ()
+          | Some s -> last_dir := Filename.dirname s;
+      end
+    | `DELETE_EVENT | `CANCEL -> ()
+  end ;
+  file_chooser#destroy ();
+  !file
 
 let find_tag_start (tag :GText.tag) (it:GText.iter) =
   let it = it#copy in
@@ -218,38 +216,19 @@ let find_tag_stop (tag :GText.tag) (it:GText.iter) =
 let find_tag_limits (tag :GText.tag) (it:GText.iter) =
  (find_tag_start tag it , find_tag_stop tag it)
 
-(* explanations: Win32 threads won't work if events are produced
-   in a thread different from the thread of the Gtk loop. In this
-   case we must use GtkThread.async to push a callback in the
-   main thread. Beware that the synchronus version may produce
-   deadlocks. *)
-let async =
-  if Sys.os_type = "Win32" then GtkThread.async else (fun x -> x)
-let sync =
-  if Sys.os_type = "Win32" then GtkThread.sync else (fun x -> x)
-
-let mutex text f =
-  let m = Mutex.create() in
-  fun x ->
-    if Mutex.try_lock m
-    then
-      (try
-        prerr_endline ("Got lock on "^text);
-        f x;
-        Mutex.unlock m;
-        prerr_endline ("Released lock on "^text)
-      with e ->
-        Mutex.unlock m;
-        prerr_endline ("Released lock on "^text^" (on error)");
-        raise e)
-    else
-      prerr_endline
-        ("Discarded call for "^text^": computations ongoing")
-
-
-let stock_to_widget ?(size=`DIALOG) s =
-  let img = GMisc.image ()
-  in img#set_stock s;
+let stock_to_widget ?(size=`BUTTON) s =
+  let img = GMisc.image () in
+  (match size with
+    | `CUSTOM(width,height) ->
+         let opb = img#misc#render_icon ~size:`BUTTON s in
+         let pb = GdkPixbuf.create ~width ~height
+           ~bits:(GdkPixbuf.get_bits_per_sample opb)
+           ~has_alpha:(GdkPixbuf.get_has_alpha opb) () in
+         GdkPixbuf.scale ~width ~height ~dest:pb opb;
+         img#set_pixbuf pb
+    | #Gtk.Tags.icon_size as icon_size ->
+         img#set_stock s;
+         img#set_icon_size icon_size);
   img#coerce
 
 let custom_coqtop = ref None
@@ -258,13 +237,14 @@ let coqtop_path () =
   let file = match !custom_coqtop with
     | Some s -> s
     | None ->
-      match !current.cmd_coqtop with
+      match current.cmd_coqtop with
 	| Some s -> s
 	| None ->
 	  let prog = String.copy Sys.executable_name in
 	  try
 	    let pos = String.length prog - 6 in
-	    let i = Str.search_backward (Str.regexp_string "coqide") prog pos in
+	    let i = Str.search_backward (Str.regexp_string "coqide") prog pos
+            in
 	    String.blit "coqtop" 0 prog i 6;
 	    prog
 	  with Not_found -> "coqtop"
@@ -282,76 +262,157 @@ let rec print_list print fmt = function
 
 let requote cmd = if Sys.os_type = "Win32" then "\""^cmd^"\"" else cmd
 
-(* TODO: allow to report output as soon as it comes (user-fiendlier
-   for long commands like make...) *)
-let run_command f c =
-  let c = requote c in
-  let result = Buffer.create 127 in
-  let cin,cout,cerr = Unix.open_process_full c (Unix.environment ()) in
-  let buff = String.make 127 ' ' in
-  let buffe = String.make 127 ' ' in
-  let n = ref 0 in
-  let ne = ref 0 in
-  while n:= input cin buff 0 127 ; ne := input cerr buffe 0 127 ; !n+ !ne <> 0
-  do
-    let r = try_convert (String.sub buff 0 !n) in
-    f r;
-    Buffer.add_string result r;
-    let r = try_convert (String.sub buffe 0 !ne) in
-    f r;
-    Buffer.add_string result r
-  done;
-  (Unix.close_process_full (cin,cout,cerr),  Buffer.contents result)
+let textview_width (view : #GText.view_skel) =
+  let rect = view#visible_rect in
+  let pixel_width = Gdk.Rectangle.width rect in
+  let metrics = view#misc#pango_context#get_metrics ()  in
+  let char_width = GPango.to_pixels metrics#approx_char_width in
+  pixel_width / char_width
 
-let browse f url =
-  let com = Minilib.subst_command_placeholder !current.cmd_browse url in
-  let _ = Unix.open_process_out com in ()
-(* This beautiful message will wait for twt ...
-  if s = 127 then
-    f ("Could not execute\n\""^com^
-       "\"\ncheck your preferences for setting a valid browser command\n")
-*)
+type logger = Interface.message_level -> string -> unit
+
+let default_logger level message =
+  let level = match level with
+  | Interface.Debug _ -> `DEBUG
+  | Interface.Info -> `INFO
+  | Interface.Notice -> `NOTICE
+  | Interface.Warning -> `WARNING
+  | Interface.Error -> `ERROR
+  in
+  Minilib.log ~level message
+
+
+(** {6 File operations} *)
+
+(** A customized [stat] function. Exceptions are catched. *)
+
+type stats = MTime of float | NoSuchFile | OtherError
+
+let stat f =
+  try MTime (Unix.stat f).Unix.st_mtime
+  with
+    | Unix.Unix_error (Unix.ENOENT,_,_) -> NoSuchFile
+    | _ -> OtherError
+
+(** I/O utilities
+
+    Note: In a mono-thread coqide, we use the same buffer for
+    different read operations *)
+
+let maxread = 4096
+
+let read_string = String.create maxread
+let read_buffer = Buffer.create maxread
+
+(** Read the content of file [f] and add it to buffer [b].
+    I/O Exceptions are propagated. *)
+
+let read_file name buf =
+  let ic = open_in name in
+  let len = ref 0 in
+  try
+    while len := input ic read_string 0 maxread; !len > 0 do
+      Buffer.add_substring buf read_string 0 !len
+    done;
+    close_in ic
+  with e -> close_in ic; raise e
+
+(** Read what is available on a gtk channel. This channel should have been
+    set as non-blocking. When there's nothing more to read, the inner loop
+    will be exited via a GError exception concerning a EAGAIN unix error.
+    Anyway, any other exception also stops the read. *)
+
+let io_read_all chan =
+  Buffer.clear read_buffer;
+  let read_once () =
+    let len = Glib.Io.read_chars ~buf:read_string ~pos:0 ~len:maxread chan in
+    Buffer.add_substring read_buffer read_string 0 len
+  in
+  begin try while true do read_once () done with _ -> () end;
+  Buffer.contents read_buffer
+
+(** Run an external command asynchronously *)
+
+let run_command display finally cmd =
+  let cin = Unix.open_process_in cmd in
+  let fd = Unix.descr_of_in_channel cin in
+  let () = Unix.set_nonblock fd in
+  let io_chan = Glib.Io.channel_of_descr fd in
+  let all_conds = [`ERR; `HUP; `IN; `NVAL; `PRI] in (* all except `OUT *)
+  let rec has_errors = function
+    | [] -> false
+    | (`IN | `PRI) :: conds -> has_errors conds
+    | e :: _ -> true
+  in
+  let handle_end () = finally (Unix.close_process_in cin); false
+  in
+  let handle_input conds =
+    if has_errors conds then handle_end ()
+    else
+      let s = io_read_all io_chan in
+      if s = "" then handle_end ()
+      else (display (try_convert s); true)
+  in
+  ignore (Glib.Io.add_watch ~cond:all_conds ~callback:handle_input io_chan)
+
+(** Web browsing *)
+
+let browse prerr url =
+  let com = Util.subst_command_placeholder current.cmd_browse url in
+  let finally = function
+    | Unix.WEXITED 127 ->
+      prerr
+        ("Could not execute:\n"^com^"\n"^
+         "check your preferences for setting a valid browser command\n")
+    | _ -> ()
+  in
+  run_command (fun _ -> ()) finally com
+
 let doc_url () =
-  if !current.doc_url = use_default_doc_url || !current.doc_url = "" then
-    let addr = List.fold_left Filename.concat (Coq_config.docdir) ["html";"refman";"index.html"] in
+  if current.doc_url = use_default_doc_url || current.doc_url = ""
+  then
+    let addr = List.fold_left Filename.concat (Coq_config.docdir)
+      ["html";"refman";"index.html"]
+    in
     if Sys.file_exists addr then "file://"^addr else Coq_config.wwwrefman
-  else !current.doc_url
+  else current.doc_url
 
 let url_for_keyword =
   let ht = Hashtbl.create 97 in
     lazy (
       begin try
-	let cin =
-	  try let index_urls = Filename.concat (List.find
+        let cin =
+          try let index_urls = Filename.concat (List.find
             (fun x -> Sys.file_exists (Filename.concat x "index_urls.txt"))
-	    Minilib.xdg_config_dirs) "index_urls.txt" in
-	    open_in index_urls
-	  with Not_found ->
-	    let doc_url = doc_url () in
-	    let n = String.length doc_url in
-	      if n > 8 && String.sub doc_url 0 7 = "file://" then
-		open_in (String.sub doc_url 7 (n-7) ^ "index_urls.txt")
-	      else
-		raise Exit
-	in
-	  try while true do
-	    let s = input_line cin in
-	      try
-		let i = String.index s ',' in
-		let k = String.sub s 0 i in
-		let u = String.sub s (i + 1) (String.length s - i - 1) in
-		  Hashtbl.add ht k u
-	      with _ ->
-		Minilib.safe_prerr_endline "Warning: Cannot parse documentation index file."
-	  done with End_of_file ->
-	    close_in cin
+            (Minilib.coqide_config_dirs ())) "index_urls.txt" in
+            open_in index_urls
+          with Not_found ->
+            let doc_url = doc_url () in
+            let n = String.length doc_url in
+              if n > 8 && String.sub doc_url 0 7 = "file://" then
+                open_in (String.sub doc_url 7 (n-7) ^ "index_urls.txt")
+              else
+                raise Exit
+        in
+          try while true do
+            let s = input_line cin in
+              try
+                let i = String.index s ',' in
+                let k = String.sub s 0 i in
+                let u = String.sub s (i + 1) (String.length s - i - 1) in
+                  Hashtbl.add ht k u
+              with _ ->
+                Minilib.log "Warning: Cannot parse documentation index file."
+          done with End_of_file ->
+            close_in cin
       with _ ->
-	Minilib.safe_prerr_endline "Warning: Cannot find documentation index file."
+        Minilib.log "Warning: Cannot find documentation index file."
       end;
       Hashtbl.find ht : string -> string)
 
-let browse_keyword f text =
-  try let u = Lazy.force url_for_keyword text in browse f (doc_url() ^ u)
-  with Not_found -> f ("No documentation found for \""^text^"\".\n")
+let browse_keyword prerr text =
+  try
+    let u = Lazy.force url_for_keyword text in
+    browse prerr (doc_url() ^ u)
+  with Not_found -> prerr ("No documentation found for \""^text^"\".\n")
 
-let absolute_filename f = Minilib.correct_path f (Sys.getcwd ())

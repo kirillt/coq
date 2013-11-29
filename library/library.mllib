@@ -1,14 +1,16 @@
 Nameops
 Libnames
+Globnames
 Libobject
 Summary
 Nametab
 Global
 Lib
 Declaremods
+Loadpath
 Library
 States
-Decl_kinds
+Kindops
 Dischargedhypsmap
 Goptions
 Decls

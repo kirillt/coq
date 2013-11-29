@@ -25,13 +25,17 @@ val special_meta : metavariable
 (** [bound_ident_map] represents the result of matching binding
    identifiers of the pattern with the binding identifiers of the term
    matched *)
-type bound_ident_map = (identifier * identifier) list
+type bound_ident_map = Id.t Id.Map.t
 
 (** [matches pat c] matches [c] against [pat] and returns the resulting
    assignment of metavariables; it raises [PatternMatchingFailure] if
    not matchable; bindings are given in increasing order based on the
    numbers given in the pattern *)
 val matches : constr_pattern -> constr -> patvar_map
+
+(** [matches_head pat c] does the same as [matches pat c] but accepts
+    [pat] to match an applicative prefix of [c] *)
+val matches_head : constr_pattern -> constr -> patvar_map
 
 (** [extended_matches pat c] also returns the names of bound variables
    in [c] that matches the bound variables in [pat]; if several bound
@@ -43,6 +47,10 @@ val extended_matches :
 (** [is_matching pat c] just tells if [c] matches against [pat] *)
 val is_matching : constr_pattern -> constr -> bool
 
+(** [is_matching_head pat c] just tells if [c] or an applicative
+    prefix of it matches against [pat] *)
+val is_matching_head : constr_pattern -> constr -> bool
+
 (** [matches_conv env sigma] matches up to conversion in environment
    [(env,sigma)] when constants in pattern are concerned; it raises
    [PatternMatchingFailure] if not matchable; bindings are given in
@@ -50,27 +58,23 @@ val is_matching : constr_pattern -> constr -> bool
 val matches_conv :env -> Evd.evar_map -> constr_pattern -> constr -> patvar_map
 
 (** The type of subterm matching results: a substitution + a context
-   (whose hole is denoted with [special_meta]) + a continuation that
-   either returns the next matching subterm or raise PatternMatchingFailure *)
-type subterm_matching_result =
-    (bound_ident_map * patvar_map) * constr * (unit -> subterm_matching_result)
+   (whose hole is denoted here with [special_meta]) *)
+type matching_result =
+    { m_sub : bound_ident_map * patvar_map;
+      m_ctx : constr }
 
 (** [match_subterm n pat c] returns the substitution and the context
-   corresponding to the first **closed** subterm of [c] matching [pat], and
-   a continuation that looks for the next matching subterm.
-   It raises PatternMatchingFailure if no subterm matches the pattern *)
-val match_subterm : constr_pattern -> constr -> subterm_matching_result
+   corresponding to each **closed** subterm of [c] matching [pat]. *)
+val match_subterm : constr_pattern -> constr -> matching_result IStream.t
 
 (** [match_appsubterm pat c] returns the substitution and the context
-   corresponding to the first **closed** subterm of [c] matching [pat],
-   considering application contexts as well. It also returns a
-   continuation that looks for the next matching subterm.
-   It raises PatternMatchingFailure if no subterm matches the pattern *)
-val match_appsubterm : constr_pattern -> constr -> subterm_matching_result
+   corresponding to each **closed** subterm of [c] matching [pat],
+   considering application contexts as well. *)
+val match_appsubterm : constr_pattern -> constr -> matching_result IStream.t
 
 (** [match_subterm_gen] calls either [match_subterm] or [match_appsubterm] *)
 val match_subterm_gen : bool (** true = with app context *) ->
-   constr_pattern -> constr -> subterm_matching_result
+   constr_pattern -> constr -> matching_result IStream.t
 
 (** [is_matching_appsubterm pat c] tells if a subterm of [c] matches
    against [pat] taking partial subterms into consideration *)

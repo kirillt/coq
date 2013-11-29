@@ -14,7 +14,8 @@ open Tok
 (* Dictionaries: trees annotated with string options, each node being a map
    from chars to dictionaries (the subtrees). A trie, in other words. *)
 
-module CharMap = Map.Make (struct type t = char let compare = compare end)
+module CharOrd = struct type t = char let compare : char -> char -> int = compare end
+module CharMap = Map.Make (CharOrd)
 
 type ttree = {
   node : string option;
@@ -86,27 +87,28 @@ module Error = struct
   let to_string x =
     "Syntax Error: Lexer: " ^
       (match x with
-	 | Illegal_character -> "Illegal character"
-	 | Unterminated_comment -> "Unterminated comment"
-	 | Unterminated_string -> "Unterminated string"
-	 | Undefined_token -> "Undefined token"
-	 | Bad_token tok -> Format.sprintf "Bad token %S" tok
-	 | UnsupportedUnicode x ->
-	     Printf.sprintf "Unsupported Unicode character (0x%x)" x)
+         | Illegal_character -> "Illegal character"
+         | Unterminated_comment -> "Unterminated comment"
+         | Unterminated_string -> "Unterminated string"
+         | Undefined_token -> "Undefined token"
+         | Bad_token tok -> Format.sprintf "Bad token %S" tok
+         | UnsupportedUnicode x ->
+             Printf.sprintf "Unsupported Unicode character (0x%x)" x)
 
-  let print ppf x = Format.fprintf ppf "%s@." (to_string x)
+  (* Require to fix the Camlp4 signature *)
+  let print ppf x = Pp.pp_with ppf (Pp.str (to_string x))
 
 end
 open Error
 
-let err loc str = Loc.raise (make_loc loc) (Error.E str)
+let err loc str = Loc.raise (Loc.make_loc loc) (Error.E str)
 
 let bad_token str = raise (Error.E (Bad_token str))
 
 (* Lexer conventions on tokens *)
 
 type token_kind =
-  | Utf8Token of (utf8_status * int)
+  | Utf8Token of (Unicode.status * int)
   | AsciiChar
   | EmptyStream
 
@@ -130,38 +132,38 @@ let utf8_char_size cs = function
 let njunk n = Util.repeat n Stream.junk
 
 let check_utf8_trailing_byte cs c =
-  if Char.code c land 0xC0 <> 0x80 then error_utf8 cs
+  if not (Int.equal (Char.code c land 0xC0) 0x80) then error_utf8 cs
 
 (* Recognize utf8 blocks (of length less than 4 bytes) *)
 (* but don't certify full utf8 compliance (e.g. no emptyness check) *)
 let lookup_utf8_tail c cs =
   let c1 = Char.code c in
-  if c1 land 0x40 = 0 or c1 land 0x38 = 0x38 then error_utf8 cs
+  if Int.equal (c1 land 0x40) 0 || Int.equal (c1 land 0x38) 0x38 then error_utf8 cs
   else
     let n, unicode =
-      if c1 land 0x20 = 0 then
+      if Int.equal (c1 land 0x20) 0 then
       match Stream.npeek 2 cs with
       | [_;c2] ->
-	  check_utf8_trailing_byte cs c2;
-	  2, (c1 land 0x1F) lsl 6 + (Char.code c2 land 0x3F)
+          check_utf8_trailing_byte cs c2;
+          2, (c1 land 0x1F) lsl 6 + (Char.code c2 land 0x3F)
       | _ -> error_utf8 cs
-      else if c1 land 0x10 = 0 then
+      else if Int.equal (c1 land 0x10) 0 then
       match Stream.npeek 3 cs with
       | [_;c2;c3] ->
-	  check_utf8_trailing_byte cs c2; check_utf8_trailing_byte cs c3;
-	  3, (c1 land 0x0F) lsl 12 + (Char.code c2 land 0x3F) lsl 6 +
-	  (Char.code c3 land 0x3F)
+          check_utf8_trailing_byte cs c2; check_utf8_trailing_byte cs c3;
+          3, (c1 land 0x0F) lsl 12 + (Char.code c2 land 0x3F) lsl 6 +
+          (Char.code c3 land 0x3F)
       | _ -> error_utf8 cs
       else match Stream.npeek 4 cs with
       | [_;c2;c3;c4] ->
-	  check_utf8_trailing_byte cs c2; check_utf8_trailing_byte cs c3;
-	  check_utf8_trailing_byte cs c4;
-	  4, (c1 land 0x07) lsl 18 + (Char.code c2 land 0x3F) lsl 12 +
-	  (Char.code c3 land 0x3F) lsl 6 + (Char.code c4 land 0x3F)
+          check_utf8_trailing_byte cs c2; check_utf8_trailing_byte cs c3;
+          check_utf8_trailing_byte cs c4;
+          4, (c1 land 0x07) lsl 18 + (Char.code c2 land 0x3F) lsl 12 +
+          (Char.code c3 land 0x3F) lsl 6 + (Char.code c4 land 0x3F)
       | _ -> error_utf8 cs
     in
-    try classify_unicode unicode, n
-    with UnsupportedUtf8 ->
+    try Unicode.classify unicode, n
+    with Unicode.Unsupported ->
       njunk n cs; error_unsupported_unicode_character n unicode cs
 
 let lookup_utf8 cs =
@@ -170,17 +172,18 @@ let lookup_utf8 cs =
     | Some ('\x80'..'\xFF' as c) -> Utf8Token (lookup_utf8_tail c cs)
     | None -> EmptyStream
 
-let unlocated f x =
-  try f x with Loc.Exc_located (_,exc) -> raise exc
+let unlocated f x = f x
+  (** FIXME: should we still unloc the exception? *)
+(*   try f x with Loc.Exc_located (_, exc) -> raise exc *)
 
 let check_keyword str =
   let rec loop_symb = parser
     | [< ' (' ' | '\n' | '\r' | '\t' | '"') >] -> bad_token str
     | [< s >] ->
-	match unlocated lookup_utf8 s with
-	| Utf8Token (_,n) -> njunk n s; loop_symb s
-	| AsciiChar -> Stream.junk s; loop_symb s
-	| EmptyStream -> ()
+        match unlocated lookup_utf8 s with
+        | Utf8Token (_,n) -> njunk n s; loop_symb s
+        | AsciiChar -> Stream.junk s; loop_symb s
+        | EmptyStream -> ()
   in
   loop_symb (Stream.of_string str)
 
@@ -188,7 +191,8 @@ let check_keyword_to_add s =
   try check_keyword s
   with Error.E (UnsupportedUnicode unicode) ->
     Flags.if_verbose msg_warning
-      (strbrk (Printf.sprintf "Token '%s' contains unicode character 0x%x which will not be parsable." s unicode))
+      (strbrk (Printf.sprintf "Token '%s' contains unicode character 0x%x \
+                               which will not be parsable." s unicode))
 
 let check_ident str =
   let rec loop_id intail = parser
@@ -197,11 +201,13 @@ let check_ident str =
     | [< ' ('0'..'9' | ''') when intail; s >] ->
         loop_id true s
     | [< s >] ->
-	match unlocated lookup_utf8 s with
-	| Utf8Token (UnicodeLetter, n) -> njunk n s; loop_id true s
-	| Utf8Token (UnicodeIdentPart, n) when intail -> njunk n s; loop_id true s
-	| EmptyStream -> ()
-	| Utf8Token _ | AsciiChar -> bad_token str
+        match unlocated lookup_utf8 s with
+        | Utf8Token (Unicode.Letter, n) -> njunk n s; loop_id true s
+        | Utf8Token (Unicode.IdentPart, n) when intail ->
+          njunk n s;
+          loop_id true s
+        | EmptyStream -> ()
+        | Utf8Token _ | AsciiChar -> bad_token str
   in
   loop_id false (Stream.of_string str)
 
@@ -229,14 +235,7 @@ let remove_keyword str =
 type frozen_t = ttree
 
 let freeze () = !token_tree
-
-let unfreeze tt =
-  token_tree := tt
-
-let init () =
-  unfreeze empty_ttree
-
-let _ = init()
+let unfreeze tt = (token_tree := tt)
 
 (* The string buffering machinery *)
 
@@ -260,8 +259,8 @@ let rec ident_tail len = parser
       ident_tail (store len c) s
   | [< s >] ->
       match lookup_utf8 s with
-      | Utf8Token ((UnicodeIdentPart | UnicodeLetter), n) ->
-	  ident_tail (nstore n len s) s
+      | Utf8Token ((Unicode.IdentPart | Unicode.Letter), n) ->
+          ident_tail (nstore n len s) s
       | _ -> len
 
 let rec number len = parser
@@ -274,28 +273,39 @@ let rec string in_comments bp len = parser
   | [< ''('; s >] ->
       (parser
         | [< ''*'; s >] ->
-            string (Option.map succ in_comments) bp (store (store len '(') '*') s
+            string
+              (Option.map succ in_comments)
+              bp (store (store len '(') '*')
+              s
         | [< >] ->
-	    string in_comments bp (store len '(') s) s
+            string in_comments bp (store len '(') s) s
   | [< ''*'; s >] ->
       (parser
         | [< '')'; s >] ->
-            if in_comments = Some 0 then
-	      msg_warning (str "Not interpreting \"*)\" as the end of current non-terminated comment because it occurs in a non-terminated string of the comment.");
+            let () = match in_comments with
+            | Some 0 ->
+                msg_warning
+                  (strbrk
+                     "Not interpreting \"*)\" as the end of current \
+                      non-terminated comment because it occurs in a \
+                      non-terminated string of the comment.")
+            | _ -> ()
+            in
             let in_comments = Option.map pred in_comments in
- 	    string in_comments bp (store (store len '*') ')') s
+            string in_comments bp (store (store len '*') ')') s
         | [< >] ->
-	    string in_comments bp (store len '*') s) s
+            string in_comments bp (store len '*') s) s
   | [< 'c; s >] -> string in_comments bp (store len c) s
   | [< _ = Stream.empty >] ep -> err (bp, ep) Unterminated_string
 
 (* Hook for exporting comment into xml theory files *)
-let xml_output_comment = ref (fun _ -> ())
-let set_xml_output_comment f = xml_output_comment := f
+let (f_xml_output_comment, xml_output_comment) = Hook.make ~default:ignore ()
 
 (* Utilities for comments in beautify *)
 let comment_begin = ref None
-let comm_loc bp = if !comment_begin=None then comment_begin := Some bp
+let comm_loc bp = match !comment_begin with
+| None -> comment_begin := Some bp
+| _ -> ()
 
 let current = Buffer.create 8192
 let between_com = ref true
@@ -318,9 +328,9 @@ let push_char c =
   if
     !between_com || List.mem c ['\n';'\r'] ||
     (List.mem c [' ';'\t']&&
-     (Buffer.length current = 0 ||
+     (Int.equal (Buffer.length current) 0 ||
       not (let s = Buffer.contents current in
-	   List.mem s.[String.length s - 1] [' ';'\t';'\n';'\r'])))
+           List.mem s.[String.length s - 1] [' ';'\t';'\n';'\r'])))
   then
     real_push_char c
 
@@ -335,13 +345,15 @@ let comment_stop ep =
   let current_s = Buffer.contents current in
   if !Flags.xml_export && Buffer.length current > 0 &&
     (!between_com || not(null_comment current_s)) then
-      !xml_output_comment current_s;
+      Hook.get f_xml_output_comment current_s;
   (if Flags.do_beautify() && Buffer.length current > 0 &&
     (!between_com || not(null_comment current_s)) then
     let bp = match !comment_begin with
         Some bp -> bp
       | None ->
-          msgerrnl(str"No begin location for comment '"++str current_s ++str"' ending at  "++int ep);
+          msgerrnl(str "No begin location for comment '"
+                   ++ str current_s ++str"' ending at  "
+                   ++ int ep);
           ep-1 in
     Pp.comments := ((bp,ep),current_s) :: !Pp.comments);
   Buffer.clear current;
@@ -353,8 +365,11 @@ let rec comm_string bp = parser
   | [< ''"' >] -> push_string "\""
   | [< ''\\'; _ =
            (parser [< ' ('"' | '\\' as c) >] ->
-             if c='"' then real_push_char c;
-             real_push_char c
+              let () = match c with
+              | '"' -> real_push_char c
+              | _ -> ()
+              in
+              real_push_char c
                  | [< >] -> real_push_char '\\'); s >]
      -> comm_string bp s
   | [< _ = Stream.empty >] ep -> err (bp, ep) Unterminated_string
@@ -388,26 +403,26 @@ let rec progress_further last nj tt cs =
 and update_longest_valid_token last nj tt cs =
   match tt.node with
   | Some _ as last' ->
-      for i=1 to nj do Stream.junk cs done;
-      progress_further last' 0 tt cs
+    stream_njunk nj cs;
+    progress_further last' 0 tt cs
   | None ->
-      progress_further last nj tt cs
+    progress_further last nj tt cs
 
 (* nj is the number of char peeked since last valid token *)
 (* n the number of char in utf8 block *)
 and progress_utf8 last nj n c tt cs =
   try
     let tt = CharMap.find c tt.branch in
-    if n=1 then
+    if Int.equal n 1 then
       update_longest_valid_token last (nj+n) tt cs
     else
-      match Util.list_skipn (nj+1) (Stream.npeek (nj+n) cs) with
-      | l when List.length l = n-1 ->
-	 List.iter (check_utf8_trailing_byte cs) l;
-	 let tt = List.fold_left (fun tt c -> CharMap.find c tt.branch) tt l in
-	 update_longest_valid_token last (nj+n) tt cs
+      match Util.List.skipn (nj+1) (Stream.npeek (nj+n) cs) with
+      | l when Int.equal (List.length l) (n - 1) ->
+         List.iter (check_utf8_trailing_byte cs) l;
+         let tt = List.fold_left (fun tt c -> CharMap.find c tt.branch) tt l in
+         update_longest_valid_token last (nj+n) tt cs
       | _ ->
-	  error_utf8 cs
+          error_utf8 cs
   with Not_found ->
     last
 
@@ -427,9 +442,9 @@ let process_chars bp c cs =
   match t with
     | Some t -> (KEYWORD t, (bp, ep))
     | None ->
-	let ep' = bp + utf8_char_size cs c in
-	njunk (ep' - ep) cs;
-	err (bp, ep') Undefined_token
+        let ep' = bp + utf8_char_size cs c in
+        njunk (ep' - ep) cs;
+        err (bp, ep') Undefined_token
 
 let token_of_special c s = match c with
   | '$' -> METAIDENT s
@@ -444,8 +459,8 @@ let parse_after_special c bp =
       token_of_special c (get_buff len)
   | [< s >] ->
       match lookup_utf8 s with
-      | Utf8Token (UnicodeLetter, n) ->
-	  token_of_special c (get_buff (ident_tail (nstore n 0 s) s))
+      | Utf8Token (Unicode.Letter, n) ->
+          token_of_special c (get_buff (ident_tail (nstore n 0 s) s))
       | AsciiChar | Utf8Token _ | EmptyStream -> fst (process_chars bp c s)
 
 (* Parse what follows a question mark *)
@@ -455,9 +470,10 @@ let parse_after_qmark bp s =
     | Some ('a'..'z' | 'A'..'Z' | '_') -> LEFTQMARK
     | None -> KEYWORD "?"
     | _ ->
-	match lookup_utf8 s with
-	  | Utf8Token (UnicodeLetter, _) -> LEFTQMARK
-	  | AsciiChar | Utf8Token _ | EmptyStream -> fst (process_chars bp '?' s)
+        match lookup_utf8 s with
+          | Utf8Token (Unicode.Letter, _) -> LEFTQMARK
+          | AsciiChar | Utf8Token _ | EmptyStream ->
+            fst (process_chars bp '?' s)
 
 let blank_or_eof cs =
   match Stream.peek cs with
@@ -476,10 +492,12 @@ let rec next_token = parser bp
       comment_stop bp;
       (* We enforce that "." should either be part of a larger keyword,
          for instance ".(", or followed by a blank or eof. *)
-      if t = KEYWORD "." then begin
-	if not (blank_or_eof s) then err (bp,ep+1) Undefined_token;
-	if Flags.do_beautify() then between_com := true;
-      end;
+      let () = match t with
+      | KEYWORD "." ->
+        if not (blank_or_eof s) then err (bp,ep+1) Undefined_token;
+        if Flags.do_beautify() then between_com := true;
+      | _ -> ()
+      in
       (t, (bp,ep))
   | [< ''?'; s >] ep ->
       let t = parse_after_qmark bp s in comment_stop bp; (t, (ep, bp))
@@ -499,23 +517,23 @@ let rec next_token = parser bp
         | [< ''*'; s >] ->
             comm_loc bp;
             push_string "(*";
-	    comment bp s;
-	    next_token s
+            comment bp s;
+            next_token s
         | [< t = process_chars bp c >] -> comment_stop bp; t >] ->
       t
   | [< s >] ->
       match lookup_utf8 s with
-	| Utf8Token (UnicodeLetter, n) ->
-	    let len = ident_tail (nstore n 0 s) s in
-	    let id = get_buff len in
-	    let ep = Stream.count s in
-	    comment_stop bp;
-	    (try find_keyword id s with Not_found -> IDENT id), (bp, ep)
-	| AsciiChar | Utf8Token ((UnicodeSymbol | UnicodeIdentPart), _) ->
-	    let t = process_chars bp (Stream.next s) s in
-	    comment_stop bp; t
-	| EmptyStream ->
-	    comment_stop bp; (EOI, (bp, bp + 1))
+        | Utf8Token (Unicode.Letter, n) ->
+            let len = ident_tail (nstore n 0 s) s in
+            let id = get_buff len in
+            let ep = Stream.count s in
+            comment_stop bp;
+            (try find_keyword id s with Not_found -> IDENT id), (bp, ep)
+        | AsciiChar | Utf8Token ((Unicode.Symbol | Unicode.IdentPart), _) ->
+            let t = process_chars bp (Stream.next s) s in
+            comment_stop bp; t
+        | EmptyStream ->
+            comment_stop bp; (EOI, (bp, bp + 1))
 
 (* (* Debug: uncomment this for tracing tokens seen by coq...*)
 let next_token s =
@@ -537,10 +555,9 @@ let loct_add loct i loc = Hashtbl.add loct i loc
 
 let current_location_table = ref (loct_create ())
 
-type location_table = (int, loc) Hashtbl.t
+type location_table = (int, CompatLoc.t) Hashtbl.t
 let location_table () = !current_location_table
 let restore_location_table t = current_location_table := t
-let location_function n = loct_func !current_location_table n
 
 (** {6 The lexer of Coq} *)
 
@@ -575,7 +592,7 @@ let func cs =
     Stream.from
       (fun i ->
          let (tok, loc) = next_token cs in
-	 loct_add loct i (make_loc loc); Some tok)
+         loct_add loct i (make_loc loc); Some tok)
   in
   current_location_table := loct;
   (ts, loct_func loct)
@@ -595,10 +612,10 @@ ELSE (* official camlp4 for ocaml >= 3.10 *)
 
 module M_ = Camlp4.ErrorHandler.Register (Error)
 
-module Loc = Loc
+module Loc = CompatLoc
 module Token = struct
   include Tok (* Cf. tok.ml *)
-  module Loc = Loc
+  module Loc = CompatLoc
   module Error = Camlp4.Struct.EmptyError
   module Filter = struct
     type token_filter = (Tok.t * Loc.t) Stream.t -> (Tok.t * Loc.t) Stream.t
@@ -631,14 +648,14 @@ let is_ident_not_keyword s =
 
 let is_number s =
   let rec aux i =
-    String.length s = i or
+    Int.equal (String.length s) i ||
     match s.[i] with '0'..'9' -> aux (i+1) | _ -> false
   in aux 0
 
 let strip s =
   let len =
     let rec loop i len =
-      if i = String.length s then len
+      if Int.equal i (String.length s) then len
       else if s.[i] == ' ' then loop (i + 1) len
       else loop (i + 1) (len + 1)
     in
@@ -656,7 +673,7 @@ let strip s =
 
 let terminal s =
   let s = strip s in
-  if s = "" then failwith "empty token";
+  let () = match s with "" -> Errors.error "empty token." | _ -> () in
   if is_ident_not_keyword s then IDENT s
   else if is_number s then INT s
   else KEYWORD s

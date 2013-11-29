@@ -14,8 +14,10 @@
 (*                                                                     *)
 (***********************************************************************)
 
+open Util
 open Pp
 open Names
+open Util
 
 (*** Proof Modes ***)
 
@@ -32,15 +34,17 @@ let proof_modes = Hashtbl.create 6
 let find_proof_mode n =
   try Hashtbl.find proof_modes n
   with Not_found ->
-    Util.error (Format.sprintf "No proof mode named \"%s\"." n)
+    Errors.error (Format.sprintf "No proof mode named \"%s\"." n)
 
-let register_proof_mode ({ name = n } as m) = Hashtbl.add proof_modes n m
+let register_proof_mode ({name = n} as m) =
+  Hashtbl.add proof_modes n (Ephemeron.create m)
+
 (* initial mode: standard mode *)
 let standard = { name = "No" ; set = (fun ()->()) ; reset = (fun () -> ()) }
 let _ = register_proof_mode standard
 
 (* Default proof mode, to be set at the beginning of proofs. *)
-let default_proof_mode = ref standard
+let default_proof_mode = ref (find_proof_mode "No")
 
 let _ =
   Goptions.declare_string_option {Goptions.
@@ -48,48 +52,47 @@ let _ =
     optdepr = false;
     optname = "default proof mode" ;
     optkey = ["Default";"Proof";"Mode"] ;
-    optread = begin fun () -> 
-                               let { name = name } = !default_proof_mode in name 
-                     end;
-    optwrite = begin fun n -> 
-                                default_proof_mode := find_proof_mode n
-                      end
+    optread = begin fun () ->
+      (Ephemeron.default !default_proof_mode standard).name
+    end;
+    optwrite = begin fun n ->
+      default_proof_mode := find_proof_mode n
+    end
   }
 
 (*** Proof Global Environment ***)
 
-(* local shorthand *)
-type nproof = identifier*Proof.proof
-
 (* Extra info on proofs. *)
 type lemma_possible_guards = int list list
-type proof_info = { 
-  strength : Decl_kinds.goal_kind ;
-  compute_guard :  lemma_possible_guards; 
-  hook :Tacexpr.declaration_hook ;
-  mode : proof_mode
+
+type pstate = {
+  pid : Id.t;
+  endline_tactic : Tacexpr.raw_tactic_expr option;
+  section_vars : Context.section_context option;
+  proof : Proof.proof;
+  strength : Decl_kinds.goal_kind;
+  compute_guard : lemma_possible_guards;
+  hook : unit Tacexpr.declaration_hook Ephemeron.key;
+  mode : proof_mode Ephemeron.key;
 }
 
-(* Invariant: the domain of proof_info is current_proof.*)
-(* The head of [!current_proof] is the actual current proof, the other ones are
+(* The head of [!pstates] is the actual current proof, the other ones are
    to be resumed when the current proof is closed or aborted. *)
-let current_proof = ref ([]:nproof list)
-let proof_info = ref (Idmap.empty : proof_info Idmap.t)
+let pstates = ref ([] : pstate list)
 
 (* Current proof_mode, for bookkeeping *)
 let current_proof_mode = ref !default_proof_mode
 
 (* combinators for proof modes *)
-let update_proof_mode () = 
-  match !current_proof with
-  | (id,_)::_ ->  
-      let { mode = m } = Idmap.find id !proof_info in
-      !current_proof_mode.reset ();
+let update_proof_mode () =
+  match !pstates with
+  | { mode = m } :: _ ->
+      Ephemeron.iter_opt !current_proof_mode (fun x -> x.reset ());
       current_proof_mode := m;
-      !current_proof_mode.set ()
-  | _ -> 
-      !current_proof_mode.reset (); 
-      current_proof_mode := standard
+      Ephemeron.iter_opt !current_proof_mode (fun x -> x.set ())
+  | _ ->
+      Ephemeron.iter_opt !current_proof_mode (fun x -> x.reset ());
+      current_proof_mode := find_proof_mode "No"
 
 (* combinators for the current_proof lists *)
 let push a l = l := a::!l;
@@ -97,12 +100,12 @@ let push a l = l := a::!l;
 
 exception NoSuchProof
 let _ = Errors.register_handler begin function
-  | NoSuchProof -> Util.error "No such proof."
+  | NoSuchProof -> Errors.error "No such proof."
   | _ -> raise Errors.Unhandled
 end
-let rec extract id l = 
+let extract id l =
   let rec aux = function
-    | ((id',_) as np)::l when id_ord id id' = 0 -> (np,l)
+    | ({pid = id' } as np)::l when Id.equal id id' -> (np,l)
     | np::l -> let (np', l) = aux l in (np' , np::l)
     | [] -> raise NoSuchProof
   in
@@ -113,113 +116,117 @@ let rec extract id l =
 
 exception NoCurrentProof
 let _ = Errors.register_handler begin function
-  | NoCurrentProof -> Util.error "No focused proof (No proof-editing in progress)."
+  | NoCurrentProof -> Errors.error "No focused proof (No proof-editing in progress)."
   | _ -> raise Errors.Unhandled
 end
 let extract_top l =
   match !l with
   | np::l' -> l := l' ; update_proof_mode (); np
-  | [] -> raise NoCurrentProof	
-let find_top l =
-  match !l with
-  | np::_ -> np
   | [] -> raise NoCurrentProof
-
-let rotate_top l1 l2 =
-  let np = extract_top l1 in
-  push np l2
-
-let rotate_find id l1 l2 =
-  let np = extract id l1 in
-  push np l2
-  
 
 (* combinators for the proof_info map *)
 let add id info m =
-  m := Idmap.add id info !m
+  m := Id.Map.add id info !m
 let remove id m =
-  m := Idmap.remove id !m
+  m := Id.Map.remove id !m
 
 (*** Proof Global manipulation ***)
 
 let get_all_proof_names () =
-    List.map fst !current_proof
+  List.map (function { pid = id } -> id) !pstates
 
-let give_me_the_proof () = 
-  snd (find_top current_proof)
+let cur_pstate () =
+  match !pstates with
+  | np::_ -> np
+  | [] -> raise NoCurrentProof
 
-let get_current_proof_name () =
-  fst (find_top current_proof)
+let give_me_the_proof () = (cur_pstate ()).proof
+let get_current_proof_name () = (cur_pstate ()).pid
+
+let interp_tac = ref (fun _ -> assert false)
+let set_interp_tac f = interp_tac := f
+
+let with_current_proof f =
+  match !pstates with
+  | [] -> raise NoCurrentProof
+  | p :: rest ->
+      let et =
+        match p.endline_tactic with
+        | None -> Proofview.tclUNIT ()
+        | Some tac -> !interp_tac tac in
+      let (newpr,status) = f et p.proof in
+      let p = { p with proof = newpr } in
+      pstates := p :: rest;
+      status
+let simple_with_current_proof f =
+  ignore (with_current_proof (fun t p -> f t p , true))
+
+(* Sets the tactic to be used when a tactic line is closed with [...] *)
+let set_endline_tactic tac =
+  match !pstates with
+  | [] -> raise NoCurrentProof
+  | p :: rest -> pstates := { p with endline_tactic = Some tac } :: rest
 
 (* spiwack: it might be considered to move error messages away.
     Or else to remove special exceptions from Proof_global.
     Arguments for the former: there is no reason Proof_global is only
-    accessed directly through vernacular commands. Error message should be 
+    accessed directly through vernacular commands. Error message should be
    pushed to external layers, and so we should be able to have a finer
    control on error message on complex actions. *)
 let msg_proofs () =
   match get_all_proof_names () with
     | [] -> (spc () ++ str"(No proof-editing in progress).")
     | l ->  (str"." ++ fnl () ++ str"Proofs currently edited:" ++ spc () ++
-               (Util.prlist_with_sep Util.pr_spc Nameops.pr_id l)++ str ".")
+               (pr_sequence Nameops.pr_id l) ++ str".")
 
-let there_is_a_proof () = !current_proof <> []
+let there_is_a_proof () = not (List.is_empty !pstates)
 let there_are_pending_proofs () = there_is_a_proof ()
 let check_no_pending_proof () =
   if not (there_are_pending_proofs ()) then
     ()
   else begin
-    Util.error (Pp.string_of_ppcmds
+    Errors.error (Pp.string_of_ppcmds
       (str"Proof editing in progress" ++ msg_proofs () ++ fnl() ++
        str"Use \"Abort All\" first or complete proof(s)."))
   end
 
 let discard_gen id =
-  ignore (extract id current_proof);
-  remove id proof_info
+  pstates := List.filter (fun { pid = id' } -> not (Id.equal id id')) !pstates
 
-let discard (loc,id) = 
-  try
-    discard_gen id
-  with NoSuchProof ->
-    Util.user_err_loc
+let discard (loc,id) =
+  let n = List.length !pstates in
+  discard_gen id;
+  if Int.equal (List.length !pstates) n then
+    Errors.user_err_loc
       (loc,"Pfedit.delete_proof",str"No such proof" ++ msg_proofs ())
 
 let discard_current () =
-  let (id,_) = extract_top current_proof in
-  remove id proof_info
- 
-let discard_all () =
-  current_proof := [];
-  proof_info := Idmap.empty
+  if List.is_empty !pstates then raise NoCurrentProof else pstates := List.tl !pstates
+
+let discard_all () = pstates := []
 
 (* [set_proof_mode] sets the proof mode to be used after it's called. It is
     typically called by the Proof Mode command. *)
-(* Core component.
-    No undo handling.
-    Applies to proof [id], and proof mode [m]. *)
-let set_proof_mode m id = 
-  let info = Idmap.find id !proof_info in
-  let info = { info with mode = m } in
-  proof_info := Idmap.add id info !proof_info;
+let set_proof_mode m id =
+  pstates :=
+    List.map (function { pid = id' } as p ->
+      if Id.equal id' id then { p with mode = m } else p) !pstates;
   update_proof_mode ()
-(* Complete function.
-    Handles undo.
-    Applies to current proof, and proof mode name [mn]. *)
+
 let set_proof_mode mn =
-  let m = find_proof_mode mn in
-  let id = get_current_proof_name () in
-  let pr = give_me_the_proof () in
-  Proof.add_undo begin let curr = !current_proof_mode in fun () ->
-    set_proof_mode curr id ; update_proof_mode ()
-  end pr ;
-  set_proof_mode m id
+  set_proof_mode (find_proof_mode mn) (get_current_proof_name ())
+
+let activate_proof_mode mode =
+  Ephemeron.iter_opt (find_proof_mode mode) (fun x -> x.set ())
+let disactivate_proof_mode mode =
+  Ephemeron.iter_opt (find_proof_mode mode) (fun x -> x.reset ())
 
 exception AlreadyExists
 let _ = Errors.register_handler begin function
-  | AlreadyExists -> Util.error "Already editing something of that name."
+  | AlreadyExists -> Errors.error "Already editing something of that name."
   | _ -> raise Errors.Unhandled
 end
+
 (* [start_proof s str env t hook tac] starts a proof of name [s] and
     conclusion [t]; [hook] is optionally a function to be applied at
     proof end (e.g. to declare the built constructions as a coercion
@@ -228,83 +235,85 @@ end
     proof of mutually dependent theorems).
     It raises exception [ProofInProgress] if there is a proof being
     currently edited. *)
-let start_proof  id str goals ?(compute_guard=[]) hook =
-  begin
-    List.iter begin fun (id_ex,_) ->
-      if Names.id_ord id id_ex = 0 then raise AlreadyExists
-    end !current_proof
-  end;
-  let p = Proof.start goals in
-  add id { strength=str ; 
-	        compute_guard=compute_guard ; 
-		hook=hook ;
-	        mode = ! default_proof_mode } proof_info ;
-  push (id,p) current_proof
 
-(* arnaud: à enlever *)
-let run_tactic tac = 
-  let p = give_me_the_proof () in
-  let env = Global.env () in
-  Proof.run_tactic env tac p
+let start_proof id str goals ?(compute_guard=[]) hook =
+  let initial_state = {
+    pid = id;
+    proof = Proof.start Evd.empty goals;
+    endline_tactic = None;
+    section_vars = None;
+    strength = str;
+    compute_guard = compute_guard;
+    hook = Ephemeron.create hook;
+    mode = find_proof_mode "No" } in
+  push initial_state pstates
 
-(* Sets the tactic to be used when a tactic line is closed with [...] *)
-let set_endline_tactic tac =
-  let p = give_me_the_proof () in
-  Proof.set_endline_tactic tac p
+let get_used_variables () = (cur_pstate ()).section_vars
 
 let set_used_variables l =
-  let p = give_me_the_proof () in
   let env = Global.env () in
-  let ids = List.fold_right Idset.add l Idset.empty in
+  let ids = List.fold_right Id.Set.add l Id.Set.empty in
   let ctx = Environ.keep_hyps env ids in
-  Proof.set_used_variables ctx p
+  match !pstates with
+  | [] -> raise NoCurrentProof
+  | p :: rest ->
+      if not (Option.is_empty p.section_vars) then
+        Errors.error "Used section variables can be declared only once";
+      pstates := { p with section_vars = Some ctx} :: rest
 
-let get_used_variables () =
-  Proof.get_used_variables (give_me_the_proof ())
+let get_open_goals () =
+  let gl, gll, shelf , _ , _ = Proof.proof (cur_pstate ()).proof in
+  List.length gl +
+  List.fold_left (+) 0
+    (List.map (fun (l1,l2) -> List.length l1 + List.length l2) gll) +
+  List.length shelf
 
-let with_end_tac tac =
-  let p = give_me_the_proof () in
-  Proof.with_end_tac p tac
+type closed_proof =
+  Names.Id.t *
+  (Entries.definition_entry list * lemma_possible_guards *
+    Decl_kinds.goal_kind * unit Tacexpr.declaration_hook Ephemeron.key)
 
-let close_proof () =
-  (* spiwack: for now close_proof doesn't actually discard the proof, it is done
-      by [Command.save]. *)
-  try 
-    let id = get_current_proof_name () in
-    let p = give_me_the_proof () in
-    let proofs_and_types = Proof.return p in
-    let section_vars = Proof.get_used_variables p in
-    let entries = List.map
-      (fun (c,t) -> { Entries.const_entry_body = c;
-                      const_entry_secctx = section_vars;
-                      const_entry_type = Some t;
-		      const_entry_opaque = true })
-      proofs_and_types
-    in
-    let { compute_guard=cg ; strength=str ; hook=hook } =
-      Idmap.find id !proof_info
-    in
-    (id, (entries,cg,str,hook))
-  with 
-    |  Proof.UnfinishedProof ->
-	 Util.error "Attempt to save an incomplete proof"
-    | Proof.HasUnresolvedEvar ->
-	Util.error "Attempt to save a proof with existential variables still non-instantiated"
+let close_proof ~now fpl =
+  let { pid;section_vars;compute_guard;strength;hook;proof } = cur_pstate () in
+  let initial_goals = Proof.initial_goals proof in
+  let entries = Future.map2 (fun p (c, t) -> { Entries.
+    const_entry_body = p;
+    const_entry_secctx = section_vars;
+    const_entry_type  = Some t;
+    const_entry_inline_code = false;
+    const_entry_opaque = true }) fpl initial_goals in
+  if now then
+    List.iter (fun x -> ignore(Future.join x.Entries.const_entry_body)) entries;
+  (pid, (entries, compute_guard, strength, hook))
 
+let return_proof () =
+  let { proof } = cur_pstate () in
+  let initial_goals = Proof.initial_goals proof in
+  let evd =
+   try Proof.return proof with
+   | Proof.UnfinishedProof ->
+       raise (Errors.UserError("last tactic before Qed",
+         str"Attempt to save an incomplete proof"))
+   | Proof.HasShelvedGoals ->
+       raise (Errors.UserError("last tactic before Qed",
+         str"Attempt to save a proof with shelved goals"))
+   | Proof.HasGivenUpGoals ->
+       raise (Errors.UserError("last tactic before Qed",
+         str"Attempt to save a proof with given up goals"))
+   | Proof.HasUnresolvedEvar ->
+       raise (Errors.UserError("last tactic before Qed",
+         str"Attempt to save a proof with existential " ++
+         str"variables still non-instantiated"))
+  in
+  let eff = Evd.eval_side_effects evd in
+  (** ppedrot: FIXME, this is surely wrong. There is no reason to duplicate
+      side-effects... This may explain why one need to uniquize side-effects
+      thereafter... *)
+  List.map (fun (c, _) -> (Evarutil.nf_evar evd c, eff)) initial_goals
 
-(**********************************************************)
-(*                                                                                                  *)
-(*                              Utility functions                                          *)
-(*                                                                                                  *)
-(**********************************************************)
-
-let maximal_unfocus k p =
-  begin try while Proof.no_focused_goal p do
-    Proof.unfocus k p
-  done
-  with Proof.FullyUnfocused | Proof.CannotUnfocusThisWay -> ()
-  end
-
+let close_future_proof proof = close_proof ~now:false proof
+let close_proof fix_exn =
+  close_proof ~now:true (Future.from_val ~fix_exn (return_proof ()))
 
 (**********************************************************)
 (*                                                        *)
@@ -314,14 +323,17 @@ let maximal_unfocus k p =
 
 module Bullet = struct
 
-  open Store.Field
-
-
   type t = Vernacexpr.bullet
+
+  let bullet_eq b1 b2 = match b1, b2 with
+  | Vernacexpr.Dash, Vernacexpr.Dash -> true
+  | Vernacexpr.Star, Vernacexpr.Star -> true
+  | Vernacexpr.Plus, Vernacexpr.Plus -> true
+  | _ -> false
 
   type behavior = {
     name : string;
-    put : Proof.proof -> t -> unit
+    put : Proof.proof -> t -> Proof.proof
   }
 
   let behaviors = Hashtbl.create 4
@@ -330,7 +342,7 @@ module Bullet = struct
   (*** initial modes ***)
   let none = {
     name = "None";
-    put = fun _ _ -> ()
+    put = fun x _ -> x
   }
   let _ = register_behavior none
 
@@ -350,7 +362,7 @@ module Bullet = struct
 
     let has_bullet bul pr =
       let rec has_bullet = function
-	| b'::_ when bul=b' -> true
+	| b'::_ when bullet_eq bul b' -> true
 	| _::l -> has_bullet l
 	| [] -> false
       in
@@ -360,8 +372,8 @@ module Bullet = struct
     let pop pr =
       match get_bullets pr with
       | b::_ ->
-	Proof.unfocus bullet_kind pr;
-	(*returns*) b
+         let pr = Proof.unfocus bullet_kind pr () in
+         pr, b
       | _ -> assert false
 
     let push b pr =
@@ -369,11 +381,11 @@ module Bullet = struct
 
     let put p bul =
       if has_bullet bul p then
-	Proof.transaction p begin fun () ->
-	  while bul <> pop p do () done;
-	  push bul p
-	end
-      else 
+        let rec aux p =
+          let p, b = pop p in
+          if not (bullet_eq bul b) then aux p else p in
+        push bul (aux p)
+      else
 	push bul p
 
     let strict = {
@@ -385,7 +397,7 @@ module Bullet = struct
 
   (* Current bullet behavior, controled by the option *)
   let current_behavior = ref Strict.strict
-    
+
   let _ =
     Goptions.declare_string_option {Goptions.
       optsync = true;
@@ -405,13 +417,59 @@ module Bullet = struct
 end
 
 
+(**********************************************************)
+(*                                                        *)
+(*                     Default goal selector              *)
+(*                                                        *)
+(**********************************************************)
+
+
+(* Default goal selector: selector chosen when a tactic is applied
+   without an explicit selector. *)
+let default_goal_selector = ref (Vernacexpr.SelectNth 1)
+let get_default_goal_selector () = !default_goal_selector
+
+let print_goal_selector = function
+  | Vernacexpr.SelectAll -> "all"
+  | Vernacexpr.SelectNth i -> string_of_int i
+
+let parse_goal_selector = function
+  | "all" -> Vernacexpr.SelectAll
+  | i ->
+      let err_msg = "A selector must be \"all\" or a natural number." in
+      begin try
+              let i = int_of_string i in
+              if i < 0 then Errors.error err_msg;
+              Vernacexpr.SelectNth i
+        with Failure _ -> Errors.error err_msg
+      end
+
+let _ =
+  Goptions.declare_string_option {Goptions.
+                                  optsync = true ;
+                                  optdepr = false;
+                                  optname = "default goal selector" ;
+                                  optkey = ["Default";"Goal";"Selector"] ;
+                                  optread = begin fun () -> print_goal_selector !default_goal_selector end;
+                                  optwrite = begin fun n ->
+                                    default_goal_selector := parse_goal_selector n
+                                  end
+                                 }
+
+
 module V82 = struct
   let get_current_initial_conclusions () =
-    let p = give_me_the_proof () in
-    let id = get_current_proof_name () in
-    let { strength=str ; hook=hook } = 
-      Idmap.find id !proof_info
-    in
-    (id,(Proof.V82.get_initial_conclusions p, str, hook))
+    let { pid; strength; hook; proof } = cur_pstate () in
+    pid, (List.map snd (Proof.initial_goals proof), strength, hook)
 end
+
+type state = pstate list
+        
+let freeze ~marshallable =
+  match marshallable with
+  | `Yes ->
+      Errors.anomaly (Pp.str"full marshalling of proof state not supported")
+  | `Shallow -> !pstates
+  | `No -> !pstates
+let unfreeze s = pstates := s; update_proof_mode ()
 

@@ -61,8 +61,7 @@ let out_word b1 b2 b3 b4 =
       then 2 * len
       else
 	if len = Sys.max_string_length
-	then raise (Invalid_argument "String.create")  (* Pas la bonne execption
-.... *)
+	then invalid_arg "String.create"  (* Pas la bonne exception .... *)
 	else Sys.max_string_length in
     let new_buffer = String.create new_len in
     String.blit !out_buffer 0 new_buffer 0 len;
@@ -97,7 +96,7 @@ let label_table  = ref ([| |] : label_definition array)
 let extend_label_table needed =
   let new_size = ref(Array.length !label_table) in
   while needed >= !new_size do new_size := 2 * !new_size done;
-  let new_table = Array.create !new_size (Label_undefined []) in
+  let new_table = Array.make !new_size (Label_undefined []) in
   Array.blit !label_table 0 new_table 0 (Array.length !label_table);
   label_table := new_table
 
@@ -165,7 +164,7 @@ let emit_instr = function
       then out(opENVACC1 + n - 1)
       else (out opENVACC; out_int n)
   | Koffsetclosure ofs ->
-      if ofs = -2 || ofs = 0 || ofs = 2
+      if Int.equal ofs (-2) || Int.equal ofs 0 || Int.equal ofs 2
       then out (opOFFSETCLOSURE0 + ofs / 2)
       else (out opOFFSETCLOSURE; out_int ofs)
   | Kpush ->
@@ -214,7 +213,7 @@ let emit_instr = function
   | Kconst c ->
       out opGETGLOBAL; slot_for_const c
   | Kmakeblock(n, t) ->
-      if n = 0 then raise (Invalid_argument "emit_instr : block size = 0")
+      if Int.equal n 0 then invalid_arg "emit_instr : block size = 0"
       else if n < 4 then (out(opMAKEBLOCK1 + n - 1); out_int t)
       else (out opMAKEBLOCK; out_int n; out_int t)
   | Kmakeprod ->
@@ -237,7 +236,7 @@ let emit_instr = function
   | Ksetfield n ->
       if n <= 1 then out (opSETFIELD0+n)
       else (out opSETFIELD;out_int n)
-  | Ksequence _ -> raise (Invalid_argument "Cemitcodes.emit_instr")
+  | Ksequence _ -> invalid_arg "Cemitcodes.emit_instr"
   (* spiwack *)
   | Kbranch lbl -> out opBRANCH; out_label lbl
   | Kaddint31 -> out opADDINT31
@@ -258,6 +257,9 @@ let emit_instr = function
   | Kareconst(n,lbl) -> out opARECONST; out_int n; out_label lbl
   | Kcompint31 -> out opCOMPINT31
   | Kdecompint31 -> out opDECOMPINT31
+  | Klorint31 -> out opORINT31
+  | Klandint31 -> out opANDINT31
+  | Klxorint31 -> out opXORINT31
   (*/spiwack *)
   | Kstop ->
       out opSTOP
@@ -276,7 +278,7 @@ let rec emit = function
       else (out opPUSHENVACC; out_int n);
       emit c
   | Kpush :: Koffsetclosure ofs :: c ->
-      if ofs = -2 || ofs = 0 || ofs = 2
+      if Int.equal ofs (-2) || Int.equal ofs 0 || Int.equal ofs 2
       then out(opPUSHOFFSETCLOSURE0 + ofs / 2)
       else (out opPUSHOFFSETCLOSURE; out_int ofs);
       emit c
@@ -302,7 +304,7 @@ let rec emit = function
 
 let init () =
   out_position := 0;
-  label_table := Array.create 16 (Label_undefined []);
+  label_table := Array.make 16 (Label_undefined []);
   reloc_info := []
 
 type emitcodes = string

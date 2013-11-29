@@ -12,7 +12,9 @@
 #directory "lib";;
 #directory "proofs";;
 #directory "tactics";;
-#directory "translate";;
+#directory "printing";;
+#directory "grammar";;
+#directory "intf";;
 
 #directory "+camlp4";; (* lazy solution: add both of camlp4/5 so that *)
 #directory "+camlp5";; (* Gramext is found in top_printers.ml *)
@@ -32,7 +34,7 @@
 #install_printer  (* kernel_name *) ppkn;;
 #install_printer  (* constant *) ppcon;;
 #install_printer  (* cl_index *) ppclindex;;
-#install_printer  (* constr *)  print_pure_constr;; 
+#install_printer  (* constr *)  print_pure_constr;;
 #install_printer  (* patch *) ppripos;;
 #install_printer  (* values *) ppvalues;;
 #install_printer  (* Idpred.t *) pp_idpred;;
@@ -63,29 +65,30 @@ open Declare
 open Declaremods
 open Impargs
 open Libnames
+open Globnames
 open Nametab
 open Library
 
 open Cases
 open Pattern
+open Patternops
 open Cbv
 open Classops
 open Pretyping
-open Pretyping.Default
-open Pretyping.Default.Cases
 open Cbv
 open Classops
 open Clenv
 open Clenvtac
 open Glob_term
+open Glob_ops
 open Coercion
-open Coercion.Default
 open Recordops
 open Detyping
 open Reductionops
 open Evarconv
 open Retyping
 open Evarutil
+open Evarsolve
 open Tacred
 open Evd
 open Termops
@@ -105,7 +108,11 @@ open Notation
 open Ppextend
 open Reserve
 open Syntax_def
+open Constrexpr
+open Constrexpr_ops
 open Topconstr
+open Notation_term
+open Notation_ops
 open Prettyp
 open Search
 
@@ -129,11 +136,11 @@ open Equality
 open Evar_tactics
 open Extraargs
 open Extratactics
-open Hiddentac
 open Hipattern
 open Inv
 open Leminv
-open Refine
+open Tacsubst
+open Tacintern
 open Tacinterp
 open Tacticals
 open Tactics
@@ -183,10 +190,11 @@ let constr_of_string s =
 (* get the body of a constant *)
 
 open Declarations;;
+open Declareops;;
 
 let constbody_of_string s =
   let b = Global.lookup_constant (Nametab.locate_constant (qualid_of_string s)) in
-  Option.get (body_of_constant b);;
+  Option.get (Declareops.body_of_constant b);;
 
 (* Get the current goal *)
 (*

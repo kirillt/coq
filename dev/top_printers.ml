@@ -8,24 +8,19 @@
 
 (* Printers for the ocaml toplevel. *)
 
-open System
 open Util
 open Pp
 open Names
 open Libnames
+open Globnames
 open Nameops
-open Sign
 open Univ
 open Environ
 open Printer
-open Tactic_printer
 open Term
-open Termops
-open Cerrors
 open Evd
 open Goptions
 open Genarg
-open Mod_subst
 open Clenv
 
 let _ = Constrextern.print_evar_arguments := true
@@ -39,7 +34,7 @@ let pppp x = pp x
 (* name printers *)
 let ppid id = pp (pr_id id)
 let pplab l = pp (pr_lab l)
-let ppmbid mbid = pp (str (debug_string_of_mbid mbid))
+let ppmbid mbid = pp (str (MBId.debug_to_string mbid))
 let ppdir dir = pp (pr_dirpath dir)
 let ppmp mp = pp(str (string_of_mp mp))
 let ppcon con = pp(debug_pr_con con)
@@ -51,10 +46,11 @@ let ppclindex cl = pp(Classops.pr_cl_index cl)
 
 (* term printers *)
 let rawdebug = ref false
+let ppevar evk = pp (str (Evd.string_of_existential evk))
 let ppconstr x = pp (Termops.print_constr x)
 let ppconstrdb x = pp(Flags.with_option rawdebug Termops.print_constr x)
 let ppterm = ppconstr
-let ppsconstr x = ppconstr (Declarations.force x)
+let ppsconstr x = ppconstr (Lazyconstr.force x)
 let ppconstr_univ x = Constrextern.with_universes ppconstr x
 let ppglob_constr = (fun x -> pp(pr_lglob_constr x))
 let pppattern = (fun x -> pp(pr_constr_pattern x))
@@ -65,13 +61,13 @@ let ppfconstr c = ppconstr (Closure.term_of_fconstr c)
 let ppbigint n = pp (str (Bigint.to_string n));;
 
 let prset pr l = str "[" ++ hov 0 (prlist_with_sep spc pr l) ++ str "]"
-let ppintset l = pp (prset int (Intset.elements l))
-let ppidset l = pp (prset pr_id (Idset.elements l))
+let ppintset l = pp (prset int (Int.Set.elements l))
+let ppidset l = pp (prset pr_id (Id.Set.elements l))
 
 let prset' pr l = str "[" ++ hov 0 (prlist_with_sep pr_comma pr l) ++ str "]"
 let ppidmap pr l =
   let pr (id,b) = pr_id id ++ str "=>" ++ pr id b in
-  pp (prset' pr (Idmap.fold (fun a b l -> (a,b)::l) l []))
+  pp (prset' pr (Id.Map.fold (fun a b l -> (a,b)::l) l []))
 
 let ppevarsubst = ppidmap (fun id0 -> prset (fun (c,copt,id) ->
   hov 0
@@ -111,11 +107,12 @@ let pp_cpred s = pp (pr_cpred s)
 let pp_transparent_state s = pp (pr_transparent_state s)
 
 (* proof printers *)
+let pr_evar ev = Pp.int (Evar.repr ev)
 let ppmetas metas = pp(pr_metaset metas)
 let ppevm evd = pp(pr_evar_map (Some 2) evd)
 let ppevmall evd = pp(pr_evar_map None evd)
 let pr_existentialset evars =
-  prlist_with_sep spc pr_meta (ExistentialSet.elements evars)
+  prlist_with_sep spc pr_evar (Evar.Set.elements evars)
 let ppexistentialset evars =
   pp (pr_existentialset evars)
 let ppclenv clenv = pp(pr_clenv clenv)
@@ -131,7 +128,7 @@ let pppftreestate p = pp(print_pftreestate p)
 
 (* let pr_glls glls = *)
 (*   hov 0 (pr_evar_defs (sig_sig glls) ++ fnl () ++ *)
-(*          prlist_with_sep pr_fnl db_pr_goal (sig_it glls)) *)
+(*          prlist_with_sep fnl db_pr_goal (sig_it glls)) *)
 
 (* let ppsigmagoal g = pp(pr_goal (sig_it g)) *)
 (* let prgls gls = pp(pr_gls gls) *)
@@ -150,8 +147,6 @@ let ppenv e = pp
 
 let pptac = (fun x -> pp(Pptactic.pr_glob_tactic (Global.env()) x))
 
-let ppinsts c = pp (pr_instance_gmap c)
-
 let ppobj obj = Format.print_string (Libobject.object_tag obj)
 
 let cnt = ref 0
@@ -161,12 +156,13 @@ let cast_kind_display k =
   | VMcast -> "VMcast"
   | DEFAULTcast -> "DEFAULTcast"
   | REVERTcast -> "REVERTcast"
+  | NATIVEcast -> "NATIVEcast"
 
 let constr_display csr =
   let rec term_display c = match kind_of_term c with
   | Rel n -> "Rel("^(string_of_int n)^")"
   | Meta n -> "Meta("^(string_of_int n)^")"
-  | Var id -> "Var("^(string_of_id id)^")"
+  | Var id -> "Var("^(Id.to_string id)^")"
   | Sort s -> "Sort("^(sort_display s)^")"
   | Cast (c,k, t) ->
       "Cast("^(term_display c)^","^(cast_kind_display k)^","^(term_display t)^")"
@@ -178,7 +174,7 @@ let constr_display csr =
       "LetIn("^(name_display na)^","^(term_display b)^","
       ^(term_display t)^","^(term_display c)^")"
   | App (c,l) -> "App("^(term_display c)^","^(array_display l)^")\n"
-  | Evar (e,l) -> "Evar("^(string_of_int e)^","^(array_display l)^")"
+  | Evar (e,l) -> "Evar("^(string_of_existential e)^","^(array_display l)^")"
   | Const c -> "Const("^(string_of_con c)^")"
   | Ind (sp,i) ->
       "MutInd("^(string_of_mind sp)^","^(string_of_int i)^")"
@@ -216,11 +212,11 @@ let constr_display csr =
 	"Type("^(string_of_int !cnt)^")"
 
   and name_display = function
-    | Name id -> "Name("^(string_of_id id)^")"
+    | Name id -> "Name("^(Id.to_string id)^")"
     | Anonymous -> "Anonymous"
 
   in
-    msg (str (term_display csr) ++fnl ())
+  Pp.pp (str (term_display csr) ++fnl ()); Pp.pp_flush ()
 
 open Format;;
 
@@ -228,14 +224,14 @@ let print_pure_constr csr =
   let rec term_display c = match kind_of_term c with
   | Rel n -> print_string "#"; print_int n
   | Meta n -> print_string "Meta("; print_int n; print_string ")"
-  | Var id -> print_string (string_of_id id)
+  | Var id -> print_string (Id.to_string id)
   | Sort s -> sort_display s
   | Cast (c,_, t) -> open_hovbox 1;
       print_string "("; (term_display c); print_cut();
       print_string "::"; (term_display t); print_string ")"; close_box()
   | Prod (Name(id),t,c) ->
       open_hovbox 1;
-      print_string"("; print_string (string_of_id id);
+      print_string"("; print_string (Id.to_string id);
       print_string ":"; box_display t;
       print_string ")"; print_cut();
       box_display c; close_box()
@@ -256,7 +252,7 @@ let print_pure_constr csr =
       box_display c;
       Array.iter (fun x -> print_space (); box_display x) l;
       print_string ")"
-  | Evar (e,l) -> print_string "Evar#"; print_int e; print_string "{";
+  | Evar (e,l) -> print_string "Evar#"; print_int (Evar.repr e); print_string "{";
       Array.iter (fun x -> print_space (); box_display x) l;
       print_string"}"
   | Const c -> print_string "Cons(";
@@ -287,7 +283,7 @@ let print_pure_constr csr =
       print_string "Fix("; print_int i; print_string ")";
       print_cut();
       open_vbox 0;
-      let rec print_fix () =
+      let print_fix () =
         for k = 0 to (Array.length tl) - 1 do
 	  open_vbox 0;
 	  name_display lna.(k); print_string "/";
@@ -301,7 +297,7 @@ let print_pure_constr csr =
       print_string "CoFix("; print_int i; print_string ")";
       print_cut();
       open_vbox 0;
-      let rec print_fix () =
+      let print_fix () =
         for k = 0 to (Array.length tl) - 1 do
           open_vbox 1;
 	  name_display lna.(k);  print_cut(); print_string ":";
@@ -320,13 +316,13 @@ let print_pure_constr csr =
 	print_string "Type("; pp (pr_uni u); print_string ")"; close_box()
 
   and name_display = function
-    | Name id -> print_string (string_of_id id)
+    | Name id -> print_string (Id.to_string id)
     | Anonymous -> print_string "_"
 (* Remove the top names for library and Scratch to avoid long names *)
   and sp_display sp =
 (*    let dir,l = decode_kn sp in
     let ls =
-      match List.rev (List.map string_of_id (repr_dirpath dir)) with
+      match List.rev_map Id.to_string (DirPath.repr dir) with
           ("Top"::l)-> l
 	| ("Coq"::_::l) -> l
 	| l             -> l
@@ -335,7 +331,7 @@ let print_pure_constr csr =
   and sp_con_display sp =
 (*    let dir,l = decode_kn sp in
     let ls =
-      match List.rev (List.map string_of_id (repr_dirpath dir)) with
+      match List.rev_map Id.to_string (DirPath.repr dir) with
           ("Top"::l)-> l
 	| ("Coq"::_::l) -> l
 	| l             -> l
@@ -351,42 +347,22 @@ let print_pure_constr csr =
 
 let ppfconstr c = ppconstr (Closure.term_of_fconstr c)
 
-let pploc x = let (l,r) = unloc x in
+let pploc x = let (l,r) = Loc.unloc x in
   print_string"(";print_int l;print_string",";print_int r;print_string")"
-
-(* extendable tactic arguments *)
-let rec pr_argument_type = function
-  (* Basic types *)
-  | BoolArgType -> str"bool"
-  | IntArgType -> str"int"
-  | IntOrVarArgType -> str"int-or-var"
-  | StringArgType -> str"string"
-  | PreIdentArgType -> str"pre-ident"
-  | IntroPatternArgType -> str"intro-pattern"
-  | IdentArgType true -> str"ident"
-  | IdentArgType false -> str"pattern_ident"
-  | VarArgType -> str"var"
-  | RefArgType -> str"ref"
-  (* Specific types *)
-  | SortArgType -> str"sort"
-  | ConstrArgType -> str"constr"
-  | ConstrMayEvalArgType -> str"constr-may-eval"
-  | QuantHypArgType -> str"qhyp"
-  | OpenConstrArgType _ -> str"open-constr"
-  | ConstrWithBindingsArgType -> str"constr-with-bindings"
-  | BindingsArgType -> str"bindings"
-  | RedExprArgType -> str"redexp"
-  | List0ArgType t -> pr_argument_type t ++ str" list0"
-  | List1ArgType t -> pr_argument_type t ++ str" list1"
-  | OptArgType t -> pr_argument_type t ++ str" opt"
-  | PairArgType (t1,t2) ->
-      str"("++ pr_argument_type t1 ++ str"*" ++ pr_argument_type t2 ++str")"
-  | ExtraArgType s -> str"\"" ++ str s ++ str "\""
 
 let pp_argument_type t = pp (pr_argument_type t)
 
 let pp_generic_argument arg =
   pp(str"<genarg:"++pr_argument_type(genarg_tag arg)++str">")
+
+let ppgenarginfo arg =
+  let tpe = pr_argument_type (genarg_tag arg) in
+  let pr_gtac _ x = Pptactic.pr_glob_tactic (Global.env()) x in
+  try
+    let data = Pptactic.pr_top_generic pr_constr pr_lconstr pr_gtac pr_constr_pattern arg in
+    pp (str "<genarg:" ++ tpe ++ str " := [ " ++ data ++ str " ] >")
+  with _any ->
+    pp (str "<genarg:" ++ tpe ++ str ">")
 
 (**********************************************************************)
 (* Vernac-level debugging commands                                    *)
@@ -409,14 +385,15 @@ END
 
 open Pcoq
 open Genarg
-open Egrammar
+open Constrarg
+open Egramml
 
 let _ =
   try
     Vernacinterp.vinterp_add "PrintConstr"
       (function
          [c] when genarg_tag c = ConstrArgType && true ->
-           let c = out_gen rawwit_constr c in
+           let c = out_gen (rawwit wit_constr) c in
            (fun () -> in_current_context constr_display c)
        | _ -> failwith "Vernac extension: cannot occur")
   with
@@ -425,15 +402,15 @@ let _ =
   extend_vernac_command_grammar "PrintConstr" None
     [[GramTerminal "PrintConstr";
       GramNonTerminal
-        (dummy_loc,ConstrArgType,Aentry ("constr","constr"),
-	 Some (Names.id_of_string "c"))]]
+        (Loc.ghost,ConstrArgType,Aentry ("constr","constr"),
+	 Some (Names.Id.of_string "c"))]]
 
 let _ =
   try
     Vernacinterp.vinterp_add "PrintPureConstr"
       (function
          [c] when genarg_tag c = ConstrArgType && true ->
-           let c = out_gen rawwit_constr c in
+           let c = out_gen (rawwit wit_constr) c in
            (fun () -> in_current_context print_pure_constr c)
        | _ -> failwith "Vernac extension: cannot occur")
   with
@@ -442,50 +419,49 @@ let _ =
   extend_vernac_command_grammar "PrintPureConstr" None
     [[GramTerminal "PrintPureConstr";
       GramNonTerminal
-        (dummy_loc,ConstrArgType,Aentry ("constr","constr"),
-	 Some (Names.id_of_string "c"))]]
+        (Loc.ghost,ConstrArgType,Aentry ("constr","constr"),
+	 Some (Names.Id.of_string "c"))]]
 
 (* Setting printer of unbound global reference *)
 open Names
-open Nameops
 open Libnames
 
 let encode_path loc prefix mpdir suffix id =
   let dir = match mpdir with
     | None -> []
     | Some (mp,dir) ->
-	(repr_dirpath (dirpath_of_string (string_of_mp mp))@
-	repr_dirpath dir) in
+	(DirPath.repr (dirpath_of_string (string_of_mp mp))@
+	DirPath.repr dir) in
   Qualid (loc, make_qualid
-    (make_dirpath (List.rev (id_of_string prefix::dir@suffix))) id)
+    (DirPath.make (List.rev (Id.of_string prefix::dir@suffix))) id)
 
 let raw_string_of_ref loc _ = function
   | ConstRef cst ->
       let (mp,dir,id) = repr_con cst in
-      encode_path loc "CST" (Some (mp,dir)) [] (id_of_label id)
+      encode_path loc "CST" (Some (mp,dir)) [] (Label.to_id id)
   | IndRef (kn,i) ->
       let (mp,dir,id) = repr_mind kn in
-      encode_path loc "IND" (Some (mp,dir)) [id_of_label id]
-	(id_of_string ("_"^string_of_int i))
+      encode_path loc "IND" (Some (mp,dir)) [Label.to_id id]
+	(Id.of_string ("_"^string_of_int i))
   | ConstructRef ((kn,i),j) ->
       let (mp,dir,id) = repr_mind kn in
       encode_path loc "CSTR" (Some (mp,dir))
-	[id_of_label id;id_of_string ("_"^string_of_int i)]
-	(id_of_string ("_"^string_of_int j))
+	[Label.to_id id;Id.of_string ("_"^string_of_int i)]
+	(Id.of_string ("_"^string_of_int j))
   | VarRef id ->
       encode_path loc "SECVAR" None [] id
 
 let short_string_of_ref loc _ = function
   | VarRef id -> Ident (loc,id)
-  | ConstRef cst -> Ident (loc,id_of_label (pi3 (repr_con cst)))
-  | IndRef (kn,0) -> Ident (loc,id_of_label (pi3 (repr_mind kn)))
+  | ConstRef cst -> Ident (loc,Label.to_id (pi3 (repr_con cst)))
+  | IndRef (kn,0) -> Ident (loc,Label.to_id (pi3 (repr_mind kn)))
   | IndRef (kn,i) ->
-      encode_path loc "IND" None [id_of_label (pi3 (repr_mind kn))]
-        (id_of_string ("_"^string_of_int i))
+      encode_path loc "IND" None [Label.to_id (pi3 (repr_mind kn))]
+        (Id.of_string ("_"^string_of_int i))
   | ConstructRef ((kn,i),j) ->
       encode_path loc "CSTR" None
-        [id_of_label (pi3 (repr_mind kn));id_of_string ("_"^string_of_int i)]
-        (id_of_string ("_"^string_of_int j))
+        [Label.to_id (pi3 (repr_mind kn));Id.of_string ("_"^string_of_int i)]
+        (Id.of_string ("_"^string_of_int j))
 
 (* Anticipate that printers can be used from ocamldebug and that 
    pretty-printer should not make calls to the global env since ocamldebug

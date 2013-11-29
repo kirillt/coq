@@ -16,10 +16,14 @@ open Environ
 open Explore
 
 val hintbases : hint_db_name list option Pcoq.Gram.entry
-val wit_hintbases : hint_db_name list option typed_abstract_argument_type
-val rawwit_hintbases : hint_db_name list option raw_abstract_argument_type
 
-val rawwit_auto_using : Genarg.open_constr_expr list raw_abstract_argument_type
+val wit_hintbases : hint_db_name list option Genarg.uniform_genarg_type
+
+val wit_auto_using :
+  (Tacexpr.open_constr_expr list,
+  Tacexpr.open_glob_constr list, Evd.open_constr list)
+    Genarg.genarg_type
+
 
 val e_assumption : tactic
 
@@ -35,4 +39,4 @@ val eauto_with_bases :
   bool * int ->
   open_constr list -> Auto.hint_db list -> Proof_type.tactic
 
-val autounfold : hint_db_name list -> Tacticals.clause -> tactic
+val autounfold : hint_db_name list -> Locus.clause -> tactic

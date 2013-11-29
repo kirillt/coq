@@ -30,13 +30,8 @@
 BIN := ../bin/
 LIB := ..
 
-ifeq ($(BEST),byte)
-  coqtop := $(BIN)coqtop.byte -boot -q -batch -I prerequisite
-  bincoqc := $(BIN)coqc -coqlib $(LIB) -byte -I prerequisite
-else
-  coqtop := $(BIN)coqtop -boot -q -batch -I prerequisite
-  bincoqc := $(BIN)coqc -coqlib $(LIB) -I prerequisite
-endif
+coqtop := $(BIN)coqtop -boot -q -batch -I prerequisite
+bincoqc := $(BIN)coqc -coqlib $(LIB) -I prerequisite
 
 command := $(coqtop) -top Top -load-vernac-source
 coqc := $(coqtop) -compile
@@ -46,6 +41,7 @@ SHOW := $(if $(VERBOSE),@true,@echo)
 HIDE := $(if $(VERBOSE),,@)
 REDIR := $(if $(VERBOSE),,> /dev/null 2>&1)
 
+bogomips:=
 ifneq (,$(wildcard /proc/cpuinfo))
   sedbogo := -e "s/bogomips.*: \([0-9]*\).*/\1/p" # i386, ppc
   sedbogo += -e "s/Cpu0Bogo.*: \([0-9]*\).*/\1/p" # sparc
@@ -69,10 +65,10 @@ log_intro = "==========> TESTING $(1) <=========="
 COMPLEXITY := $(if $(bogomips),complexity)
 
 BUGS := bugs/opened/shouldnotfail bugs/opened/shouldnotsucceed \
-  bugs/closed/shouldsucceed bugs/closed/shouldfail
+  bugs/closed
 
 VSUBSYSTEMS := prerequisite success failure $(BUGS) output \
-  interactive micromega $(COMPLEXITY) modules
+  interactive micromega $(COMPLEXITY) modules stm
 
 # All subsystems
 SUBSYSTEMS := $(VSUBSYSTEMS) misc bugs ide
@@ -96,6 +92,9 @@ clean:
 	$(HIDE)find . \( \
 	  -name '*.stamp' -o -name '*.vo' -o -name '*.log' \
 	\) -print0 | xargs -0 rm -f
+
+distclean: clean
+	$(HIDE)find . -name '*.log' -print0 | xargs -0 rm -f
 
 #######################################################################
 # Per-subsystem targets
@@ -128,6 +127,7 @@ summary:
 	  $(call summary_dir, "Miscellaneous tests", misc); \
 	  $(call summary_dir, "Complexity tests", complexity); \
 	  $(call summary_dir, "Module tests", modules); \
+	  $(call summary_dir, "STM tests", stm); \
 	  $(call summary_dir, "IDE tests", ide); \
 	  nb_success=`find . -name '*.log' -exec tail -n2 '{}' \; | grep -e $(log_success) | wc -l`; \
 	  nb_failure=`find . -name '*.log' -exec tail -n2 '{}' \; | grep -e $(log_failure) | wc -l`; \
@@ -151,30 +151,13 @@ summary.log:
 
 # All files are assumed to have <# of the bug>.v as a name
 
-# Opened bugs that should not succeed (FIXME: there were no such tests
-# at the time of writing this Makefile, but the possibility was in the
-# original shellscript... so left it here, but untested)
-$(addsuffix .log,$(wildcard bugs/opened/shouldnotsucceed/*.v)): %.v.log: %.v
-	@echo "TEST      $<"
-	$(HIDE){ \
-	  $(call test_intro,$<); \
-	  $(command) "$<" 2>&1; R=$$?; times; \
-	  if [ $$R = 0 ]; then \
-	    echo $(log_success); \
-	    echo "    $<...still active"; \
-	  else \
-	    echo $(log_failure); \
-	    echo "    $<...Error! (bug seems to be closed, please check)";
-	  fi;
-	} > "$@"
-
 # Opened bugs that should not fail
 $(addsuffix .log,$(wildcard bugs/opened/shouldnotfail/*.v)): %.v.log: %.v
 	@echo "TEST      $<"
 	$(HIDE){ \
 	  echo $(call log_intro,$<); \
 	  $(command) "$<" 2>&1; R=$$?; times; \
-	  if [ $$R != 0 ]; then \
+	  if [ $$R = 0 ]; then \
 	    echo $(log_success); \
 	    echo "    $<...still active"; \
 	  else \
@@ -184,27 +167,12 @@ $(addsuffix .log,$(wildcard bugs/opened/shouldnotfail/*.v)): %.v.log: %.v
 	} > "$@"
 
 # Closed bugs that should succeed
-$(addsuffix .log,$(wildcard bugs/closed/shouldsucceed/*.v)): %.v.log: %.v
+$(addsuffix .log,$(wildcard bugs/closed/*.v)): %.v.log: %.v
 	@echo "TEST      $<"
 	$(HIDE){ \
 	  echo $(call log_intro,$<); \
 	  $(command) "$<" 2>&1; R=$$?; times; \
 	  if [ $$R = 0 ]; then \
-	    echo $(log_success); \
-	    echo "    $<...Ok"; \
-	  else \
-	    echo $(log_failure); \
-	    echo "    $<...Error! (bug seems to be opened, please check)"; \
-	  fi; \
-	} > "$@"
-
-# Closed bugs that should fail
-$(addsuffix .log,$(wildcard bugs/closed/shouldfail/*.v)): %.v.log: %.v
-	@echo "TEST      $<"
-	$(HIDE){ \
-	  echo $(call log_intro,$<); \
-	  $(command) "$<" 2>&1; R=$$?; times; \
-	  if [ $$R != 0 ]; then \
 	    echo $(log_success); \
 	    echo "    $<...Ok"; \
 	  else \
@@ -246,12 +214,29 @@ $(addsuffix .log,$(wildcard success/*.v micromega/*.v modules/*.v)): %.v.log: %.
 	  fi; \
 	} > "$@"
 
+stm: $(wildcard stm/*.v:%.v=%.v.log)
+$(addsuffix .log,$(wildcard stm/*.v)): %.v.log: %.v
+	@echo "TEST      $<"
+	$(HIDE){ \
+	  echo $(call log_intro,$<); \
+	  $(coqc) "$*" -coq-slaves on \
+	    -coq-slaves-opts fallback-to-lazy-if-marshal-error=no,fallback-to-lazy-if-slave-dies=no \
+	    $$opts 2>&1; R=$$?; times; \
+	  if [ $$R = 0 ]; then \
+	    echo $(log_success); \
+	    echo "    $<...Ok"; \
+	  else \
+	    echo $(log_failure); \
+	    echo "    $<...Error! (should be accepted)"; \
+	  fi; \
+	} > "$@"
+
 $(addsuffix .log,$(wildcard failure/*.v)): %.v.log: %.v
 	@echo "TEST      $<"
 	$(HIDE){ \
 	  echo $(call log_intro,$<); \
 	  $(command) "$<" 2>&1; R=$$?; times; \
-	  if [ $$R != 0 ]; then \
+	  if [ $$R = 0 ]; then \
 	    echo $(log_success); \
 	    echo "    $<...Ok"; \
 	  else \
@@ -267,6 +252,7 @@ $(addsuffix .log,$(wildcard output/*.v)): %.v.log: %.v
 	  tmpoutput=`mktemp /tmp/coqcheck.XXXXXX`; \
 	  $(command) "$<" 2>&1 \
 	    | grep -v "Welcome to Coq" \
+	    | grep -v "\[Loading ML file" \
 	    | grep -v "Skipping rcfile loading" \
 	    > $$tmpoutput; \
 	  diff -u $*.out $$tmpoutput 2>&1; R=$$?; times; \
@@ -400,7 +386,7 @@ misc/deps-order.log:
 	} > "$@"
 
 # Sort universes for the whole standard library
-EXPECTED_UNIVERSES := 3
+EXPECTED_UNIVERSES := 4
 universes: misc/universes.log
 misc/universes.log: misc/universes/all_stdlib.v
 	@echo "TEST      misc/universes"
@@ -431,7 +417,7 @@ ide : $(patsubst %.fake,%.fake.log,$(wildcard ide/*.fake))
 	@echo "TEST      $<"
 	$(HIDE){ \
 	  echo $(call log_intro,$<); \
-	  $(BIN)fake_ide "$(BIN)coqtop -boot" < $< 2>&1; \
+	  $(BIN)fake_ide $< "$(BIN)coqtop -boot -coq-slaves on -coq-slaves-opts min-proof-length-to-delegate=0" 2>&1; \
 	  if [ $$? = 0 ]; then \
 	    echo $(log_success); \
 	    echo "    $<...Ok"; \

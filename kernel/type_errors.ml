@@ -8,7 +8,6 @@
 
 open Names
 open Term
-open Sign
 open Environ
 open Reduction
 
@@ -42,21 +41,21 @@ type type_error =
   | UnboundVar of variable
   | NotAType of unsafe_judgment
   | BadAssumption of unsafe_judgment
-  | ReferenceVariables of constr
+  | ReferenceVariables of identifier * constr
   | ElimArity of inductive * sorts_family list * constr * unsafe_judgment
       * (sorts_family * sorts_family * arity_error) option
   | CaseNotInductive of unsafe_judgment
   | WrongCaseInfo of inductive * case_info
   | NumberBranches of unsafe_judgment * int
   | IllFormedBranch of constr * constructor * constr * constr
-  | Generalization of (name * types) * unsafe_judgment
+  | Generalization of (Name.t * types) * unsafe_judgment
   | ActualType of unsafe_judgment * types
   | CantApplyBadType of
       (int * constr * constr) * unsafe_judgment * unsafe_judgment array
   | CantApplyNonFunctional of unsafe_judgment * unsafe_judgment array
-  | IllFormedRecBody of guard_error * name array * int * env * unsafe_judgment array
+  | IllFormedRecBody of guard_error * Name.t array * int * env * unsafe_judgment array
   | IllTypedRecBody of
-      int * name array * unsafe_judgment array * types array
+      int * Name.t array * unsafe_judgment array * types array
 
 exception TypeError of env * type_error
 
@@ -75,8 +74,8 @@ let error_not_type env j =
 let error_assumption env j =
   raise (TypeError (env, BadAssumption j))
 
-let error_reference_variables env id =
-  raise (TypeError (env, ReferenceVariables id))
+let error_reference_variables env id c =
+  raise (TypeError (env, ReferenceVariables (id,c)))
 
 let error_elim_arity env ind aritylst c pj okinds =
   raise (TypeError (env, ElimArity (ind,aritylst,c,pj,okinds)))

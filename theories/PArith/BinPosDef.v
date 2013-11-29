@@ -30,8 +30,6 @@ Notation "p ~ 0" := (xO p)
  (at level 7, left associativity, format "p '~' '0'") : positive_scope.
 
 Local Open Scope positive_scope.
-Local Unset Boolean Equality Schemes.
-Local Unset Case Analysis Schemes.
 
 Module Pos.
 
@@ -484,8 +482,8 @@ Fixpoint lxor (p q:positive) : N :=
 
 (** Shifts. NB: right shift of 1 stays at 1. *)
 
-Definition shiftl_nat (p:positive)(n:nat) := nat_iter n xO p.
-Definition shiftr_nat (p:positive)(n:nat) := nat_iter n div2 p.
+Definition shiftl_nat (p:positive)(n:nat) := nat_rect _ p (fun _ => xO) n.
+Definition shiftr_nat (p:positive)(n:nat) := nat_rect _ p (fun _ => div2) n.
 
 Definition shiftl (p:positive)(n:N) :=
   match n with

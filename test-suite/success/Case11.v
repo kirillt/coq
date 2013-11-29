@@ -1,5 +1,5 @@
-(* L'algo d'inférence du prédicat doit gérer le K-rédex dans le type de b *)
-(* Problème rapporté par Solange Coupet *)
+(* L'algo d'infÃ©rence du prÃ©dicat doit gÃ©rer le K-rÃ©dex dans le type de b *)
+(* ProblÃ¨me rapportÃ© par Solange Coupet *)
 
 Section A.
 
@@ -7,7 +7,7 @@ Variables (Alpha : Set) (Beta : Set).
 
 Definition nodep_prod_of_dep (c : sigS (fun a : Alpha => Beta)) :
   Alpha * Beta := match c with
-                  | existS a b => (a, b)
+                  | existS _ a b => (a, b)
                   end.
 
 End A.

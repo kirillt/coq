@@ -6,26 +6,23 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
 open Flags
 open Pp
-open Util
-open System
+open Errors
 open Names
 open Term
-open Environ
 open Glob_term
 open Libnames
+open Globnames
 open Nametab
 open Detyping
 open Constrintern
 open Dischargedhypsmap
-open Command
 open Pfedit
-open Refiner
 open Tacmach
-open Syntax_def
+open Misctypes
 
 (* Coq interface to the Whelp query engine developed at
    the University of Bologna *)
@@ -60,8 +57,8 @@ let make_whelp_request req c =
 let b = Buffer.create 16
 
 let url_char c =
-  if 'A' <= c & c <= 'Z' or 'a' <= c & c <= 'z' or
-     '0' <= c & c <= '9' or c ='.'
+  if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' ||
+     '0' <= c && c <= '9' || c ='.'
   then Buffer.add_char b c
   else Buffer.add_string b (Printf.sprintf "%%%2X" (Char.code c))
 
@@ -72,13 +69,13 @@ let rec url_list_with_sep sep f = function
   | [a] -> f a
   | a::l -> f a; url_string sep; url_list_with_sep sep f l
 
-let url_id id = url_string (string_of_id id)
+let url_id id = url_string (Id.to_string id)
 
 let uri_of_dirpath dir =
   url_string "cic:/"; url_list_with_sep "/" url_id (List.rev dir)
 
 let error_whelp_unknown_reference ref =
-  let qid = Nametab.shortest_qualid_of_global Idset.empty ref in
+  let qid = Nametab.shortest_qualid_of_global Id.Set.empty ref in
   errorlabstrm ""
     (strbrk "Definitions of the current session, like " ++ pr_qualid qid ++
      strbrk ", are not supported in Whelp.")
@@ -86,7 +83,7 @@ let error_whelp_unknown_reference ref =
 let uri_of_repr_kn ref (mp,dir,l) =
   match mp with
     | MPfile sl ->
-        uri_of_dirpath (id_of_label l :: repr_dirpath dir @ repr_dirpath sl)
+        uri_of_dirpath (Label.to_id l :: DirPath.repr dir @ DirPath.repr sl)
     | _ ->
         error_whelp_unknown_reference ref
 
@@ -94,8 +91,8 @@ let url_paren f l = url_char '('; f l; url_char ')'
 let url_bracket f l = url_char '['; f l; url_char ']'
 
 let whelp_of_glob_sort = function
-  | GProp Null -> "Prop"
-  | GProp Pos -> "Set"
+  | GProp -> "Prop"
+  | GSet -> "Set"
   | GType _ -> "Type"
 
 let uri_int n = Buffer.add_string b (string_of_int n)
@@ -105,7 +102,7 @@ let uri_of_ind_pointer l =
 
 let uri_of_global ref =
   match ref with
-  | VarRef id -> error ("Unknown Whelp reference: "^(string_of_id id)^".")
+  | VarRef id -> error ("Unknown Whelp reference: "^(Id.to_string id)^".")
   | ConstRef cst ->
       uri_of_repr_kn ref (repr_con cst); url_string ".con"
   | IndRef (kn,i) ->
@@ -113,7 +110,7 @@ let uri_of_global ref =
   | ConstructRef ((kn,i),j) ->
       uri_of_repr_kn ref (repr_mind kn); uri_of_ind_pointer [1;i+1;j]
 
-let whelm_special = id_of_string "WHELM_ANON_VAR"
+let whelm_special = Id.of_string "WHELM_ANON_VAR"
 
 let url_of_name = function
   | Name id -> url_id id
@@ -163,21 +160,21 @@ let rec uri_of_constr c =
   | GLetIn (_,na,b,c) ->
       url_string "let "; url_of_name na; url_string "\\def ";
       uri_of_constr b; url_string " in "; uri_of_constr c
-  | GCast (_,c, CastConv (_,t)) ->
+  | GCast (_,c, (CastConv t|CastVM t|CastNative t)) ->
       uri_of_constr c; url_string ":"; uri_of_constr t
   | GRec _ | GIf _ | GLetTuple _ | GCases _ ->
       error "Whelp does not support pattern-matching and (co-)fixpoint."
   | GVar _ | GRef _ | GHole _ | GEvar _ | GSort _ | GCast (_,_, CastCoerce) ->
-      anomaly "Written w/o parenthesis"
+      anomaly (Pp.str "Written w/o parenthesis")
   | GPatVar _ ->
-      anomaly "Found constructors not supported in constr") ()
+      anomaly (Pp.str "Found constructors not supported in constr")) ()
 
 let make_string f x = Buffer.reset b; f x; Buffer.contents b
 
 let send_whelp req s =
   let url = make_whelp_request req s in
-  let command = subst_command_placeholder browser_cmd_fmt url in
-  let _ = run_command (fun x -> x) print_string command in ()
+  let command = Util.subst_command_placeholder browser_cmd_fmt url in
+  let _ = CUnix.run_command (fun x -> x) print_string command in ()
 
 let whelp_constr req c =
   let c = detype false [whelm_special] [] c in
@@ -195,8 +192,8 @@ let whelp_elim ind =
   send_whelp "elim" (make_string uri_of_global (IndRef ind))
 
 let on_goal f =
-  let { Evd.it=goals ; sigma=sigma } = Proof.V82.subgoals (get_pftreestate ()) in
-  let gls = { Evd.it=List.hd goals ; sigma = sigma }  in
+  let gls = Proof.V82.subgoals (get_pftreestate ()) in
+  let gls = { gls with Evd.it = List.hd gls.Evd.it }  in
   f (Termops.it_mkNamedProd_or_LetIn (pf_concl gls) (pf_hyps gls))
 
 type whelp_request =
@@ -214,14 +211,15 @@ VERNAC ARGUMENT EXTEND whelp_constr_request
 | [ "Instance" ] -> [ "instance" ]
 END
 
-VERNAC COMMAND EXTEND Whelp
+VERNAC COMMAND EXTEND Whelp CLASSIFIED AS QUERY
 | [ "Whelp" "Locate" string(s) ] -> [ whelp_locate s ]
 | [ "Whelp" "Locate" preident(s) ] -> [ whelp_locate s ]
 | [ "Whelp" "Elim" global(r) ] -> [ whelp_elim (Smartlocate.global_inductive_with_alias r) ]
 | [ "Whelp" whelp_constr_request(req) constr(c) ] -> [ whelp_constr_expr req c]
 END
 
-VERNAC COMMAND EXTEND WhelpHint
+VERNAC COMMAND EXTEND WhelpHint CLASSIFIED AS QUERY
 | [ "Whelp" "Hint" constr(c) ] -> [ whelp_constr_expr "hint" c ]
-| [ "Whelp" "Hint" ] -> [ on_goal (whelp_constr "hint") ]
+| [ "Whelp" "Hint" ] => [ Vernacexpr.VtProofStep, Vernacexpr.VtLater ] ->
+  [ on_goal (whelp_constr "hint") ]
 END

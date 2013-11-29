@@ -8,8 +8,52 @@
 
 (** Universes. *)
 
-type universe_level
-type universe
+module UniverseLevel :
+sig
+  type t
+  (** Type of universe levels. A universe level is essentially a unique name
+      that will be associated to constraints later on. *)
+
+  val compare : t -> t -> int
+  (** Comparison function *)
+
+  val equal : t -> t -> bool
+  (** Equality function *)
+
+  val hash : t -> int
+  (** Hash function *)
+
+  val make : Names.DirPath.t -> int -> t
+  (** Create a new universe level from a unique identifier and an associated
+      module path. *)
+
+end
+
+type universe_level = UniverseLevel.t
+(** Alias name. *)
+
+module Universe :
+sig
+  type t
+  (** Type of universes. A universe is defined as a set of constraints w.r.t.
+      other universes. *)
+
+  val compare : t -> t -> int
+  (** Comparison function *)
+
+  val equal : t -> t -> bool
+  (** Equality function *)
+
+  val hash : t -> int
+  (** Hash function *)
+
+  val make : UniverseLevel.t -> t
+  (** Create a constraint-free universe out of a given level. *)
+
+end
+
+type universe = Universe.t
+(** Alias name. *)
 
 module UniverseLSet : Set.S with type elt = universe_level
 
@@ -20,16 +64,11 @@ val type0m_univ : universe  (** image of Prop in the universes hierarchy *)
 val type0_univ : universe  (** image of Set in the universes hierarchy *)
 val type1_univ : universe  (** the universe of the type of Prop/Set *)
 
-val make_universe_level : Names.dir_path * int -> universe_level
-val make_universe : universe_level -> universe
-val make_univ : Names.dir_path * int -> universe
-
 val is_type0_univ : universe -> bool
 val is_type0m_univ : universe -> bool
 val is_univ_variable : universe -> bool
 
 val universe_level : universe -> universe_level option
-val compare_levels : universe_level -> universe_level -> int
 
 (** The type of a universe *)
 val super : universe -> universe
@@ -42,8 +81,9 @@ val sup   : universe -> universe -> universe
 type universes
 
 type check_function = universes -> universe -> universe -> bool
-val check_geq : check_function
+val check_leq : check_function
 val check_eq : check_function
+val lax_check_eq : check_function (* same, without anomaly *)
 
 (** The empty graph of universes *)
 val initial_universes : universes
@@ -60,7 +100,7 @@ val is_empty_constraint : constraints -> bool
 
 type constraint_function = universe -> universe -> constraints -> constraints
 
-val enforce_geq : constraint_function
+val enforce_leq : constraint_function
 val enforce_eq : constraint_function
 
 (** {6 ... } *)
@@ -71,7 +111,22 @@ val enforce_eq : constraint_function
 
 type constraint_type = Lt | Le | Eq
 
-exception UniverseInconsistency of constraint_type * universe * universe
+(** Type explanation is used to decorate error messages to provide
+  useful explanation why a given constraint is rejected. It is composed
+  of a path of universes and relation kinds [(r1,u1);..;(rn,un)] means
+   .. <(r1) u1 <(r2) ... <(rn) un (where <(ri) is the relation symbol
+  denoted by ri, currently only < and <=). The lowest end of the chain
+  is supposed known (see UniverseInconsistency exn). The upper end may
+  differ from the second univ of UniverseInconsistency because all
+  universes in the path are canonical. Note that each step does not
+  necessarily correspond to an actual constraint, but reflect how the
+  system stores the graph and may result from combination of several
+  constraints...
+*)
+type explanation = (constraint_type * universe) list
+
+exception UniverseInconsistency of
+    constraint_type * universe * universe * explanation
 
 val merge_constraints : constraints -> universes -> universes
 val normalize_universes : universes -> universes
@@ -80,6 +135,7 @@ val sort_universes : universes -> universes
 (** {6 Support for sort-polymorphic inductive types } *)
 
 val fresh_local_univ : unit -> universe
+val set_remote_fresh_local_univ : universe RemoteCounter.installer
 
 val solve_constraints_system : universe option array -> universe array ->
   universe array

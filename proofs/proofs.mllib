@@ -1,10 +1,12 @@
 Goal
 Evar_refiner
+Proof_type
+Proof_errors
+Proofview_gen
+Proofview_monad
 Proofview
 Proof
 Proof_global
-Tacexpr
-Proof_type
 Redexpr
 Logic
 Refiner

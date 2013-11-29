@@ -7,7 +7,6 @@
 (************************************************************************)
 
 open Pp
-open Util
 open Names
 open Proof_type
 open Tacmach
@@ -15,32 +14,40 @@ open Tactic_debug
 open Term
 open Tacexpr
 open Genarg
-open Topconstr
+open Constrexpr
 open Mod_subst
 open Redexpr
+open Misctypes
+
+module Value :
+sig
+  type t = tlevel generic_argument
+  val of_constr : constr -> t
+  val to_constr : t -> constr option
+  val of_int : int -> t
+  val to_int : t -> int option
+  val to_list : t -> t list option
+end
 
 (** Values for interpretation *)
-type value =
-  | VRTactic of (goal list sigma)
-  | VFun of ltac_trace * (identifier*value) list *
-      identifier option list * glob_tactic_expr
-  | VVoid
-  | VInteger of int
-  | VIntroPattern of intro_pattern_expr
-  | VConstr of Pattern.constr_under_binders
-  | VConstr_context of constr
-  | VList of value list
-  | VRec of (identifier*value) list ref * glob_tactic_expr
+type value = Value.t
+
+module TacStore : Store.S with
+  type t = Geninterp.TacStore.t
+  and type 'a field = 'a Geninterp.TacStore.field
 
 (** Signature for interpretation: val\_interp and interpretation functions *)
-and interp_sign =
-  { lfun : (identifier * value) list;
-    avoid_ids : identifier list;
-    debug : debug_info;
-    trace : ltac_trace }
+type interp_sign = Geninterp.interp_sign = {
+  lfun : value Id.Map.t;
+  extra : TacStore.t }
+
+val f_avoid_ids : Id.t list TacStore.field
+val f_debug : debug_info TacStore.field
 
 val extract_ltac_constr_values : interp_sign -> Environ.env ->
-  Pretyping.ltac_var_map
+  Pattern.constr_under_binders Id.Map.t
+(** Given an interpretation signature, extract all values which are coercible to
+    a [constr]. *)
 
 (** To embed several objects in Coqast.t *)
 val tactic_in : (interp_sign -> glob_tactic_expr) -> Dyn.t
@@ -56,117 +63,60 @@ val set_debug : debug_info -> unit
 (** Gives the state of debug *)
 val get_debug : unit -> debug_info
 
-(** Adds a definition for tactics in the table *)
-val add_tacdef :
-  Vernacexpr.locality_flag -> bool ->
-  (Libnames.reference * bool * raw_tactic_expr) list -> unit
-val add_primitive_tactic : string -> glob_tactic_expr -> unit
-
-(** Tactic extensions *)
-val add_tactic :
-  string -> (typed_generic_argument list -> tactic) -> unit
-val overwriting_add_tactic :
-  string -> (typed_generic_argument list -> tactic) -> unit
-val lookup_tactic :
-  string -> (typed_generic_argument list) -> tactic
-
 (** Adds an interpretation function for extra generic arguments *)
-type glob_sign = {
-  ltacvars : identifier list * identifier list;
-  ltacrecvars : (identifier * Nametab.ltac_constant) list;
-  gsigma : Evd.evar_map;
-  genv : Environ.env }
 
-val fully_empty_glob_sign : glob_sign
-
-val add_interp_genarg :
-  string ->
-    (glob_sign -> raw_generic_argument -> glob_generic_argument) *
-    (interp_sign -> goal sigma -> glob_generic_argument ->
-      Evd.evar_map * typed_generic_argument) *
-    (substitution -> glob_generic_argument -> glob_generic_argument)
-    -> unit
-
-val interp_genarg :
-  interp_sign -> goal sigma -> glob_generic_argument -> Evd.evar_map * typed_generic_argument
-
-val intern_genarg :
-  glob_sign -> raw_generic_argument -> glob_generic_argument
-
-val intern_pure_tactic :
-  glob_sign -> raw_tactic_expr -> glob_tactic_expr
-
-val intern_constr :
-  glob_sign -> constr_expr -> glob_constr_and_expr
-
-val intern_constr_with_bindings :
-  glob_sign -> constr_expr * constr_expr Glob_term.bindings ->
-  glob_constr_and_expr * glob_constr_and_expr Glob_term.bindings
-
-val intern_hyp :
-  glob_sign -> identifier Util.located -> identifier Util.located
-
-val subst_genarg :
-  substitution -> glob_generic_argument -> glob_generic_argument
-
-val subst_glob_constr_and_expr :
-  substitution -> glob_constr_and_expr -> glob_constr_and_expr
-
-val subst_glob_with_bindings :
-  substitution -> glob_constr_and_expr Glob_term.with_bindings -> glob_constr_and_expr Glob_term.with_bindings
+(* spiwack: the [Term.constr] argument is the conclusion of the goal,
+   for "casted open constr" *)
+val interp_genarg : interp_sign -> Environ.env -> Evd.evar_map -> Term.constr -> Goal.goal ->
+  glob_generic_argument -> Evd.evar_map * typed_generic_argument
 
 (** Interprets any expression *)
-val val_interp : interp_sign -> goal sigma -> glob_tactic_expr -> Evd.evar_map * value
+val val_interp : interp_sign -> glob_tactic_expr -> value Proofview.glist Proofview.tactic
 
 (** Interprets an expression that evaluates to a constr *)
-val interp_ltac_constr : interp_sign -> goal sigma -> glob_tactic_expr ->
-  Evd.evar_map * constr
+val interp_ltac_constr : interp_sign -> glob_tactic_expr -> constr Proofview.glist Proofview.tactic
 
 (** Interprets redexp arguments *)
-val dump_glob_red_expr : raw_red_expr -> unit
 val interp_redexp : Environ.env -> Evd.evar_map -> raw_red_expr -> Evd.evar_map * red_expr
 
 (** Interprets tactic expressions *)
-val interp_tac_gen : (identifier * value) list -> identifier list ->
-                 debug_info -> raw_tactic_expr -> tactic
 
-val interp_hyp :  interp_sign -> goal sigma -> identifier located -> identifier
+val interp_hyp :  interp_sign -> Environ.env -> Id.t Loc.located -> Id.t
 
-val interp_bindings : interp_sign -> Environ.env -> Evd.evar_map -> glob_constr_and_expr Glob_term.bindings -> Evd.evar_map * constr Glob_term.bindings
+val interp_bindings : interp_sign -> Environ.env -> Evd.evar_map ->
+ glob_constr_and_expr bindings -> Evd.evar_map * constr bindings
 
-val interp_open_constr_with_bindings : interp_sign -> Environ.env -> Evd.evar_map -> 
-  glob_constr_and_expr Glob_term.with_bindings -> Evd.evar_map * constr Glob_term.with_bindings
+val interp_open_constr_with_bindings : interp_sign -> Environ.env -> Evd.evar_map ->
+  glob_constr_and_expr with_bindings -> Evd.evar_map * constr with_bindings
 
 (** Initial call for interpretation *)
-val glob_tactic : raw_tactic_expr -> glob_tactic_expr
 
-val glob_tactic_env : identifier list -> Environ.env -> raw_tactic_expr -> glob_tactic_expr
+val eval_tactic : glob_tactic_expr -> unit Proofview.tactic
 
-val eval_tactic : glob_tactic_expr -> tactic
+val eval_tactic_ist : interp_sign -> glob_tactic_expr -> unit Proofview.tactic
+(** Same as [eval_tactic], but with the provided [interp_sign]. *)
 
-val interp : raw_tactic_expr -> tactic
+(** Globalization + interpretation *)
 
-val eval_ltac_constr : goal sigma -> raw_tactic_expr -> Evd.evar_map * constr
+val interp_tac_gen : value Id.Map.t -> Id.t list ->
+                 debug_info -> raw_tactic_expr -> unit Proofview.tactic
 
-val subst_tactic : substitution -> glob_tactic_expr -> glob_tactic_expr
+val interp : raw_tactic_expr -> unit Proofview.tactic
+
+val eval_ltac_constr : raw_tactic_expr -> constr Proofview.glist Proofview.tactic
 
 (** Hides interpretation for pretty-print *)
 
-val hide_interp : raw_tactic_expr -> tactic option -> tactic
+val hide_interp : bool -> raw_tactic_expr -> unit Proofview.tactic option -> unit Proofview.tactic
 
 (** Declare the xml printer *)
 val declare_xml_printer :
   (out_channel -> Environ.env -> Evd.evar_map -> constr -> unit) -> unit
 
-(** printing *)
-val print_ltac : Libnames.qualid -> std_ppcmds
-
 (** Internals that can be useful for syntax extensions. *)
 
-exception CannotCoerceTo of string
+val interp_ltac_var : (value -> 'a) -> interp_sign -> Environ.env option -> Id.t Loc.located -> 'a
 
-val interp_ltac_var : (value -> 'a) -> interp_sign -> Environ.env option -> identifier located -> 'a
+val interp_int : interp_sign -> Id.t Loc.located -> int
 
-val interp_int : interp_sign -> identifier located -> int
-
-val error_ltac_variable : loc -> identifier -> Environ.env option -> value -> string -> 'a
+val error_ltac_variable : Loc.t -> Id.t -> Environ.env option -> value -> string -> 'a

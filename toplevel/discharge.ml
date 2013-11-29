@@ -7,9 +7,11 @@
 (************************************************************************)
 
 open Names
+open Errors
 open Util
-open Sign
+open Context
 open Term
+open Vars
 open Entries
 open Declarations
 open Cooking
@@ -20,7 +22,7 @@ open Cooking
 let detype_param = function
   | (Name id,None,p) -> id, Entries.LocalAssum p
   | (Name id,Some p,_) -> id, Entries.LocalDef p
-  | (Anonymous,_,_) -> anomaly"Unnamed inductive local variable"
+  | (Anonymous,_,_) -> anomaly (Pp.str "Unnamed inductive local variable")
 
 (* Replace
 
@@ -37,7 +39,8 @@ let abstract_inductive hyps nparams inds =
   let ntyp = List.length inds in
   let nhyp = named_context_length hyps in
   let args = instance_from_named_context (List.rev hyps) in
-  let subs = list_tabulate (fun k -> lift nhyp (mkApp(mkRel (k+1),args))) ntyp in
+  let args = Array.of_list args in
+  let subs = List.init ntyp (fun k -> lift nhyp (mkApp(mkRel (k+1),args))) in
   let inds' =
     List.map
       (function (tname,arity,cnames,lc) ->
@@ -76,7 +79,7 @@ let refresh_polymorphic_type_of_inductive (_,mip) =
 let process_inductive sechyps modlist mib =
   let nparams = mib.mind_nparams in
   let inds =
-    array_map_to_list
+    Array.map_to_list
       (fun mip ->
 	 let arity = expmod_constr modlist (refresh_polymorphic_type_of_inductive (mib,mip)) in
 	 let lc = Array.map (expmod_constr modlist) mip.mind_user_lc in

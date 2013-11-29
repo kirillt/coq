@@ -7,10 +7,9 @@
 (************************************************************************)
 
 (* Module defining the last essential tiles of interactive proofs.
-   The features of the Proof module are undoing and focusing.
-   A proof is a mutable object, it contains a proofview, and some information
-   to be able to undo actions, and to unfocus the current view. All three
-   of these being meant to evolve.
+   A proof deals with the focusing commands (including the braces and bullets),
+   the shelf (see the [shelve] tactic) and given up goal (see the [give_up]
+   tactic). A proof is made of the following:
    - Proofview: a proof is primarily the data of the current view.
      That which is shown to the user (as a remainder, a proofview
      is mainly the logical state of the proof, together with the
@@ -23,10 +22,11 @@
      the focus kind is actually stored inside the condition). To unfocus, one
      needs to know the focus kind, and the condition (for instance "no condition" or
      the proof under focused must be complete) must be met.
-   - Undo: since proofviews and focus stacks are immutable objects, 
-     it could suffice to hold the previous states, to allow to return to the past.
-     However, we also allow other modules to do actions that can be undone.
-     Therefore the undo stack stores action to be ran to undo.
+   - Shelf: A list of goals which have been put aside during the proof. They can be
+     retrieved with the [Unshelve] command, or solved by side effects
+   - Given up goals: as long as there is a given up goal, the proof is not completed.
+     Given up goals cannot be retrieved, the user must go back where the tactic
+     [give_up] was run and solve the goal there.
 *)
 
 open Term
@@ -40,13 +40,21 @@ type proof
    functions to ide-s. This would be better than spawning a new nearly
    identical function everytime. Hence the generic name. *)
 (* In this version: returns the focused goals, a representation of the
-   focus stack (the number of goals at each level) and the underlying
+   focus stack (the goals at each level), a representation of the
+   shelf (the list of goals on the shelf), a representation of the
+   given up goals (the list of the given up goals) and the underlying
    evar_map *)
-val proof : proof -> Goal.goal list * (Goal.goal list * Goal.goal list) list * Evd.evar_map
+val proof : proof ->
+  Goal.goal list
+  * (Goal.goal list * Goal.goal list) list
+  * Goal.goal list
+  * Goal.goal list
+  * Evd.evar_map
 
 (*** General proof functions ***)
 
-val start : (Environ.env * Term.types) list -> proof
+val start : Evd.evar_map -> (Environ.env * Term.types) list -> proof
+val initial_goals : proof -> (Term.constr * Term.types) list
 
 (* Returns [true] if the considered proof is completed, that is if no goal remain
     to be considered (this does not require that all evars have been solved). *)
@@ -57,23 +65,14 @@ val partial_proof : proof -> Term.constr list
 
 (* Returns the proofs (with their type) of the initial goals.
     Raises [UnfinishedProof] is some goals remain to be considered.
+    Raises [HasShelvedGoals] if some goals are left on the shelf.
+    Raises [HasGivenUpGoals] if some goals have been given up.
     Raises [HasUnresolvedEvar] if some evars have been left undefined. *)
 exception UnfinishedProof
+exception HasShelvedGoals
+exception HasGivenUpGoals
 exception HasUnresolvedEvar
-val return : proof -> (Term.constr * Term.types) list
-
-(* Interpretes the Undo command. Raises [EmptyUndoStack] if 
-    the undo stack is empty. *)
-exception EmptyUndoStack
-val undo : proof -> unit
-
-(* Adds an undo effect to the undo stack. Use it with care, errors here might result
-    in inconsistent states.
-   An undo effect is meant to undo an effect on a proof (a canonical example
-   of which is {!Proofglobal.set_proof_mode} which changes the current parser for
-   tactics). Make sure it will work even if the effects have been only partially
-   applied at the time of failure. *)
-val add_undo : (unit -> unit) -> proof -> unit
+val return : proof -> Evd.evar_map
 
 (*** Focusing actions ***)
 
@@ -113,7 +112,7 @@ val done_cond : ?loose_end:bool -> 'a focus_kind -> 'a focus_condition
 (* focus command (focuses on the [i]th subgoal) *)
 (* spiwack: there could also, easily be a focus-on-a-range tactic, is there 
    a need for it? *)
-val focus : 'a focus_condition -> 'a -> int -> proof -> unit
+val focus : 'a focus_condition -> 'a -> int -> proof -> proof
 
 exception FullyUnfocused
 exception CannotUnfocusThisWay
@@ -121,7 +120,7 @@ exception CannotUnfocusThisWay
    Raises [FullyUnfocused] if the proof is not focused.
    Raises [CannotUnfocusThisWay] if the proof the unfocusing condition
      is not met. *)
-val unfocus : 'a focus_kind -> proof -> unit
+val unfocus : 'a focus_kind -> proof -> unit -> proof
 
 (* [unfocused p] returns [true] when [p] is fully unfocused. *)
 val unfocused : proof -> bool
@@ -138,42 +137,23 @@ val is_last_focus : 'a focus_kind -> proof -> bool
 (* returns [true] if there is no goal under focus. *)
 val no_focused_goal : proof -> bool
 
-(*** Function manipulation proof extra informations ***)
-
-val get_proof_info : proof -> Store.t
-
-(* Sets the section variables assumed by the proof *)
-val set_used_variables : Sign.section_context -> proof -> unit
-val get_used_variables : proof -> Sign.section_context option
-
-(*** Endline tactic ***)
-
-(* Sets the tactic to be used when a tactic line is closed with [...] *)
-val set_endline_tactic : unit Proofview.tactic -> proof -> unit
-
-val with_end_tac : proof -> unit Proofview.tactic -> unit Proofview.tactic
-
 (*** Tactics ***)
 
-val run_tactic : Environ.env -> unit Proofview.tactic -> proof -> unit
+(* the returned boolean signal whether an unsafe tactic has been
+   used. In which case it is [false]. *)
+val run_tactic : Environ.env -> unit Proofview.tactic -> proof -> proof*bool
 
+val emit_side_effects : Declareops.side_effects -> proof -> proof
 
-(*** Transactions ***)
-
-(* A transaction chains several commands into a single one. For instance,
-   a focusing command and a tactic. Transactions are such that if
-   any of the atomic action fails, the whole transaction fails.
-
-   During a transaction, the visible undo stack is constituted only
-   of the actions performed done during the transaction.
-
-   [transaction p f] can be called on an [f] using, itself, [transaction p].*)
-val transaction : proof -> (unit -> unit) -> unit
-
+val maximal_unfocus : 'a focus_kind -> proof -> proof
 
 (*** Commands ***)
 
 val in_proof : proof -> (Evd.evar_map -> 'a) -> 'a
+
+(* Remove all the goals from the shelf and adds them at the end of the
+   focused goals. *)
+val unshelve : proof -> proof
 
 (*** Compatibility layer with <=v8.2 ***)
 module V82 : sig
@@ -182,19 +162,15 @@ module V82 : sig
   (* All the subgoals of the proof, including those which are not focused. *)
   val background_subgoals : proof -> Goal.goal list Evd.sigma
 
-  val get_initial_conclusions : proof -> Term.types list 
-
-  val depth : proof -> int 
-
   val top_goal : proof -> Goal.goal Evd.sigma
-  
+
   (* returns the existential variable used to start the proof *)
   val top_evars : proof -> Evd.evar list
 
   (* Turns the unresolved evars into goals.
      Raises [UnfinishedProof] if there are still unsolved goals. *)
-  val grab_evars : proof -> unit
+  val grab_evars : proof -> proof
 
   (* Implements the Existential command *)
-  val instantiate_evar : int -> Topconstr.constr_expr -> proof -> unit
+  val instantiate_evar : int -> Constrexpr.constr_expr -> proof -> proof
 end

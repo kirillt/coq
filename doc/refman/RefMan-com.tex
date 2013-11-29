@@ -207,7 +207,7 @@ Section~\ref{LongNames}).
   some standard axioms of classical mathematics such as the functional
   axiom of choice or the principle of description
 
-\item[{\tt -compat} {\em version}] \null
+\item[{\tt -compat} {\em version}] \mbox{}
 
   Attempt to maintain some of the incompatible changes in their {\em version}
   behavior.
@@ -219,27 +219,21 @@ Section~\ref{LongNames}).
 
 \item[{\tt -dont-load-proofs}]\ 
 
-  Warning: this is an unsafe mode.
-  Instead of loading in memory the proofs of opaque theorems, they are
-  treated as axioms. This results in smaller memory requirement and
-  faster compilation, but the behavior of the system might slightly change
-  (for instance during module subtyping), and some features won't be
-  available (for example {\tt Print Assumptions}).
+  In this mode, it is an error to access the body of opaque theorems
+  (for example via {\tt Print} or {\tt Print Assumptions}).
 
 \item[{\tt -lazy-load-proofs}]\
 
   This is the default behavior. Proofs of opaque theorems aren't
   loaded immediately in memory, but only when necessary, for instance
-  during some module subtyping or {\tt Print Assumptions}. This should be
-  almost as fast and efficient as {\tt -dont-load-proofs}, with none
-  of its drawbacks.
+  during a {\tt Print} or {\tt Print Assumptions}. This mode should be
+  almost as fast and efficient as {\tt -dont-load-proofs}.
 
 \item[{\tt -force-load-proofs}]\
 
-  Proofs of opaque theorems are loaded in memory as soon as the
-  corresponding {\tt Require} is done. This used to be Coq's default behavior.
+  Deprecated, now the same as {\tt -lazy-load-proofs}.
 
-\item[{\tt -no-hash-consing}] \null
+\item[{\tt -no-hash-consing}] \mbox{}
 
 \item[{\tt -vm}]\ 
 

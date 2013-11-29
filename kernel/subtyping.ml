@@ -17,12 +17,10 @@ open Names
 open Univ
 open Term
 open Declarations
-open Environ
 open Reduction
 open Inductive
 open Modops
 open Mod_subst
-open Entries
 (*i*)
 
 (* This local type is used to subtype a constant with a constructor or
@@ -41,42 +39,42 @@ type namedmodule =
    constructors *)
 
 let add_mib_nameobjects mp l mib map =
-  let ind = make_mind mp empty_dirpath l in
+  let ind = MutInd.make2 mp l in
   let add_mip_nameobjects j oib map =
     let ip = (ind,j) in
     let map =
-      array_fold_right_i
+      Array.fold_right_i
       (fun i id map ->
-        Labmap.add (label_of_id id) (IndConstr((ip,i+1), mib)) map)
+        Label.Map.add (Label.of_id id) (IndConstr((ip,i+1), mib)) map)
       oib.mind_consnames
       map
     in
-      Labmap.add (label_of_id oib.mind_typename) (IndType (ip, mib)) map
+      Label.Map.add (Label.of_id oib.mind_typename) (IndType (ip, mib)) map
   in
-  array_fold_right_i add_mip_nameobjects mib.mind_packets map
+  Array.fold_right_i add_mip_nameobjects mib.mind_packets map
 
 
 (* creates (namedobject/namedmodule) map for the whole signature *)
 
-type labmap = { objs : namedobject Labmap.t; mods : namedmodule Labmap.t }
+type labmap = { objs : namedobject Label.Map.t; mods : namedmodule Label.Map.t }
 
-let empty_labmap = { objs = Labmap.empty; mods = Labmap.empty }
+let empty_labmap = { objs = Label.Map.empty; mods = Label.Map.empty }
 
 let get_obj mp map l =
-  try Labmap.find l map.objs
+  try Label.Map.find l map.objs
   with Not_found -> error_no_such_label_sub l (string_of_mp mp)
 
 let get_mod mp map l =
-  try Labmap.find l map.mods
+  try Label.Map.find l map.mods
   with Not_found -> error_no_such_label_sub l (string_of_mp mp)
 
 let make_labmap mp list =
   let add_one (l,e) map =
    match e with
-    | SFBconst cb -> { map with objs = Labmap.add l (Constant cb) map.objs }
+    | SFBconst cb -> { map with objs = Label.Map.add l (Constant cb) map.objs }
     | SFBmind mib -> { map with objs = add_mib_nameobjects mp l mib map.objs }
-    | SFBmodule mb -> { map with mods = Labmap.add l (Module mb) map.mods }
-    | SFBmodtype mtb -> { map with mods = Labmap.add l (Modtype mtb) map.mods }
+    | SFBmodule mb -> { map with mods = Label.Map.add l (Module mb) map.mods }
+    | SFBmodtype mtb -> { map with mods = Label.Map.add l (Modtype mtb) map.mods }
   in
   List.fold_right add_one list empty_labmap
 
@@ -90,16 +88,16 @@ let check_conv_error error why cst f env a1 a2 =
 (* for now we do not allow reorderings *)
 
 let check_inductive cst env mp1 l info1 mp2 mib2 spec2 subst1 subst2 reso1 reso2= 
-  let kn1 = make_mind mp1 empty_dirpath l in
-  let kn2 = make_mind mp2 empty_dirpath l in
+  let kn1 = KerName.make2 mp1 l in
+  let kn2 = KerName.make2 mp2 l in
   let error why = error_signature_mismatch l spec2 why in
   let check_conv why cst f = check_conv_error error why cst f in
   let mib1 =
     match info1 with
-      | IndType ((_,0), mib) -> subst_mind subst1 mib
+      | IndType ((_,0), mib) -> Declareops.subst_mind subst1 mib
       | _ -> error (InductiveFieldExpected mib2)
   in
-  let mib2 =  subst_mind subst2 mib2 in
+  let mib2 =  Declareops.subst_mind subst2 mib2 in
   let check_inductive_type cst name env t1 t2 =
 
     (* Due to sort-polymorphism in inductive types, the conclusions of
@@ -137,14 +135,14 @@ let check_inductive cst env mp1 l info1 mp2 mib2 spec2 subst1 subst2 reso1 reso2
   in
 
   let check_packet cst p1 p2 =
-    let check f why = if f p1 <> f p2 then error why in
-      check (fun p -> p.mind_consnames) NotSameConstructorNamesField;
-      check (fun p -> p.mind_typename) NotSameInductiveNameInBlockField;
+    let check f test why = if not (test (f p1) (f p2)) then error why in
+      check (fun p -> p.mind_consnames) (Array.equal Id.equal) NotSameConstructorNamesField;
+      check (fun p -> p.mind_typename) Id.equal NotSameInductiveNameInBlockField;
       (* nf_lc later *)
       (* nf_arity later *)
       (* user_lc ignored *)
       (* user_arity ignored *)
-      check (fun p -> p.mind_nrealargs) (NotConvertibleInductiveField p2.mind_typename); (* How can it fail since the type of inductive are checked below? [HH] *)
+      check (fun p -> p.mind_nrealargs) Int.equal (NotConvertibleInductiveField p2.mind_typename); (* How can it fail since the type of inductive are checked below? [HH] *)
       (* kelim ignored *)
       (* listrec ignored *)
       (* finite done *)
@@ -155,18 +153,19 @@ let check_inductive cst env mp1 l info1 mp2 mib2 spec2 subst1 subst2 reso1 reso2
       in
 	cst
   in
+  let mind = mind_of_kn kn1 in
   let check_cons_types i cst p1 p2 =
-    array_fold_left3
+    Array.fold_left3
       (fun cst id t1 t2 -> check_conv (NotConvertibleConstructorField id) cst conv env t1 t2)
       cst
       p2.mind_consnames
-      (arities_of_specif kn1 (mib1,p1))
-      (arities_of_specif kn1 (mib2,p2))
+      (arities_of_specif mind (mib1,p1))
+      (arities_of_specif mind (mib2,p2))
   in
-  let check f why = if f mib1 <> f mib2 then error (why (f mib2)) in
-  check (fun mib -> mib.mind_finite) (fun x -> FiniteInductiveFieldExpected x);
-  check (fun mib -> mib.mind_ntypes) (fun x -> InductiveNumbersFieldExpected x);
-  assert (mib1.mind_hyps=[] && mib2.mind_hyps=[]);
+  let check f test why = if not (test (f mib1) (f mib2)) then error (why (f mib2)) in
+  check (fun mib -> mib.mind_finite) (==) (fun x -> FiniteInductiveFieldExpected x);
+  check (fun mib -> mib.mind_ntypes) Int.equal (fun x -> InductiveNumbersFieldExpected x);
+  assert (List.is_empty mib1.mind_hyps && List.is_empty mib2.mind_hyps);
   assert (Array.length mib1.mind_packets >= 1
 	    && Array.length mib2.mind_packets >= 1);
 
@@ -175,17 +174,18 @@ let check_inductive cst env mp1 l info1 mp2 mib2 spec2 subst1 subst2 reso1 reso2
   (* at the time of checking the inductive arities in check_packet. *)
   (* Notice that we don't expect the local definitions to match: only *)
   (* the inductive types and constructors types have to be convertible *)
-  check (fun mib -> mib.mind_nparams) (fun x -> InductiveParamsNumberField x);
+  check (fun mib -> mib.mind_nparams) Int.equal (fun x -> InductiveParamsNumberField x);
 
   begin
-  match mind_of_delta reso2 kn2  with
-      | kn2' when kn2=kn2' -> ()
-      | kn2' -> 
-	  if not (eq_mind (mind_of_delta reso1 kn1) (subst_ind subst2 kn2')) then 
-	    error NotEqualInductiveAliases
+    let kn2' = kn_of_delta reso2 kn2 in
+    if KerName.equal kn2 kn2' ||
+       MutInd.equal (mind_of_delta_kn reso1 kn1)
+                    (subst_ind subst2 (MutInd.make kn2 kn2'))
+    then ()
+    else error NotEqualInductiveAliases
   end;
   (* we check that records and their field names are preserved. *)
-  check (fun mib -> mib.mind_record) (fun x -> RecordFieldExpected x);
+  check (fun mib -> mib.mind_record) (==) (fun x -> RecordFieldExpected x);
   if mib1.mind_record then begin
     let rec names_prod_letin t = match kind_of_term t with
       | Prod(n,_,t) -> n::(names_prod_letin t)
@@ -193,23 +193,23 @@ let check_inductive cst env mp1 l info1 mp2 mib2 spec2 subst1 subst2 reso1 reso2
       | Cast(t,_,_) -> names_prod_letin t
       | _ -> []
     in
-    assert (Array.length mib1.mind_packets = 1);
-    assert (Array.length mib2.mind_packets = 1);
-    assert (Array.length mib1.mind_packets.(0).mind_user_lc = 1);
-    assert (Array.length mib2.mind_packets.(0).mind_user_lc = 1);
+    assert (Int.equal (Array.length mib1.mind_packets) 1);
+    assert (Int.equal (Array.length mib2.mind_packets) 1);
+    assert (Int.equal (Array.length mib1.mind_packets.(0).mind_user_lc) 1);
+    assert (Int.equal (Array.length mib2.mind_packets.(0).mind_user_lc) 1);
     check (fun mib ->
       let nparamdecls = List.length mib.mind_params_ctxt in
       let names = names_prod_letin (mib.mind_packets.(0).mind_user_lc.(0)) in
-      snd (list_chop nparamdecls names))
+      snd (List.chop nparamdecls names)) (List.equal Name.equal)
       (fun x -> RecordProjectionsExpected x);
   end;
   (* we first check simple things *)
   let cst =
-    array_fold_left2 check_packet cst mib1.mind_packets mib2.mind_packets
+    Array.fold_left2 check_packet cst mib1.mind_packets mib2.mind_packets
   in
   (* and constructor types in the end *)
   let cst =
-    array_fold_left2_i check_cons_types cst mib1.mind_packets mib2.mind_packets
+    Array.fold_left2_i check_cons_types cst mib1.mind_packets mib2.mind_packets
   in
     cst
 
@@ -269,9 +269,9 @@ let check_constant cst env mp1 l info1 cb2 spec2 subst1 subst2 =
 
   match info1 with
     | Constant cb1 ->
-      assert (cb1.const_hyps=[] && cb2.const_hyps=[]) ;
-      let cb1 = subst_const_body subst1 cb1 in
-      let cb2 = subst_const_body subst2 cb2 in
+      let () = assert (List.is_empty cb1.const_hyps && List.is_empty cb2.const_hyps) in
+      let cb1 = Declareops.subst_const_body subst1 cb1 in
+      let cb2 = Declareops.subst_const_body subst2 cb2 in
       (* Start by checking types*)
       let typ1 = Typeops.type_of_constant_type env cb1.const_type in
       let typ2 = Typeops.type_of_constant_type env cb2.const_type in
@@ -290,39 +290,38 @@ let check_constant cst env mp1 l info1 cb2 spec2 subst1 subst2 =
 	    | Def lc1 ->
 	      (* NB: cb1 might have been strengthened and appear as transparent.
 		 Anyway [check_conv] will handle that afterwards. *)
-	      let c1 = Declarations.force lc1 in
-	      let c2 = Declarations.force lc2 in
+	      let c1 = Lazyconstr.force lc1 in
+	      let c2 = Lazyconstr.force lc2 in
 	      check_conv NotConvertibleBodyField cst conv env c1 c2))
    | IndType ((kn,i),mind1) ->
-       ignore (Util.error (
+       ignore (Errors.error (
        "The kernel does not recognize yet that a parameter can be " ^
        "instantiated by an inductive type. Hint: you can rename the " ^
        "inductive type and give a definition to map the old name to the new " ^
        "name."));
-      assert (mind1.mind_hyps=[] && cb2.const_hyps=[]) ;
-      if constant_has_body cb2 then error DefinitionFieldExpected;
+      let () = assert (List.is_empty mind1.mind_hyps && List.is_empty cb2.const_hyps) in
+      if Declareops.constant_has_body cb2 then error DefinitionFieldExpected;
       let arity1 = type_of_inductive env (mind1,mind1.mind_packets.(i)) in
       let typ2 = Typeops.type_of_constant_type env cb2.const_type in
       let error = NotConvertibleTypeField (env, arity1, typ2) in
        check_conv error cst conv_leq env arity1 typ2
    | IndConstr (((kn,i),j) as cstr,mind1) ->
-      ignore (Util.error (
+      ignore (Errors.error (
        "The kernel does not recognize yet that a parameter can be " ^
        "instantiated by a constructor. Hint: you can rename the " ^
        "constructor and give a definition to map the old name to the new " ^
        "name."));
-      assert (mind1.mind_hyps=[] && cb2.const_hyps=[]) ;
-      if constant_has_body cb2 then error DefinitionFieldExpected;
+      let () = assert (List.is_empty mind1.mind_hyps && List.is_empty cb2.const_hyps) in
+      if Declareops.constant_has_body cb2 then error DefinitionFieldExpected;
       let ty1 = type_of_constructor cstr (mind1,mind1.mind_packets.(i)) in
       let ty2 = Typeops.type_of_constant_type env cb2.const_type in
       let error = NotConvertibleTypeField (env, ty1, ty2) in
        check_conv error cst conv env ty1 ty2
 
 let rec check_modules cst env msb1 msb2 subst1 subst2 =
-  let mty1 = module_type_of_module None msb1 in
-  let mty2 =  module_type_of_module None msb2 in
-  let cst = check_modtypes cst env mty1 mty2 subst1 subst2 false in
-    cst
+  let mty1 = module_type_of_module msb1 in
+  let mty2 =  module_type_of_module msb2 in
+  check_modtypes cst env mty1 mty2 subst1 subst2 false
 
 and check_signatures cst env mp1 sig1 mp2 sig2 subst1 subst2 reso1 reso2= 
   let map1 = make_labmap mp1 sig1 in
@@ -344,67 +343,62 @@ and check_signatures cst env mp1 sig1 mp2 sig2 subst1 subst2 reso1 reso2=
 	      | Modtype mtb -> mtb
 	      | _ -> error_signature_mismatch l spec2 ModuleTypeFieldExpected
 	    in
-	    let env = add_module (module_body_of_type mtb2.typ_mp mtb2)
-	      (add_module (module_body_of_type mtb1.typ_mp mtb1) env) in
-	      check_modtypes cst env mtb1 mtb2 subst1 subst2 true
+	    let env =
+              add_module_type mtb2.typ_mp mtb2
+	        (add_module_type mtb1.typ_mp mtb1 env)
+            in
+	    check_modtypes cst env mtb1 mtb2 subst1 subst2 true
   in
     List.fold_left check_one_body cst sig2
 
-and check_modtypes cst env mtb1 mtb2 subst1 subst2 equiv = 
-  if mtb1==mtb2 then cst else 
-  let mtb1',mtb2'=mtb1.typ_expr,mtb2.typ_expr in
-  let rec check_structure cst env str1 str2 equiv subst1 subst2 = 
-	match str1,str2 with
-	  | SEBstruct (list1), 
-	    SEBstruct (list2) -> 
-	      if equiv then
-		let subst2 = 
-		  add_mp mtb2.typ_mp mtb1.typ_mp mtb1.typ_delta subst2 in
-		Univ.union_constraints 
-		  (check_signatures cst env
-		     mtb1.typ_mp list1 mtb2.typ_mp list2 subst1 subst2
-		  mtb1.typ_delta mtb2.typ_delta) 
-		  (check_signatures cst env 
-		     mtb2.typ_mp list2 mtb1.typ_mp list1 subst2 subst1
-		  mtb2.typ_delta  mtb1.typ_delta)
-	      else
-		check_signatures cst env
-		  mtb1.typ_mp list1 mtb2.typ_mp list2 subst1 subst2
-		  mtb1.typ_delta  mtb2.typ_delta
-	  | SEBfunctor (arg_id1,arg_t1,body_t1),
-	      SEBfunctor (arg_id2,arg_t2,body_t2) ->
-	      let subst1 = 
-		(join (map_mbid arg_id1 (MPbound arg_id2) arg_t2.typ_delta) subst1) in
-	      let cst = check_modtypes cst env 
-		arg_t2 arg_t1 subst2 subst1
-		equiv in 
-		(* contravariant *)
-	      let env = add_module 
-		(module_body_of_type (MPbound arg_id2) arg_t2) env 
-	      in
-	      let env = match body_t1 with
-		  SEBstruct str -> 
-		    add_module {mod_mp = mtb1.typ_mp;
-				mod_expr = None;
-				mod_type = subst_struct_expr subst1 body_t1;
-				mod_type_alg= None;
-				mod_constraints=mtb1.typ_constraints;
-				mod_retroknowledge = [];
-				mod_delta = mtb1.typ_delta} env
-		| _ -> env
-	      in
-		check_structure cst env body_t1 body_t2 equiv 
-		  subst1
-		  subst2
-	  | _ , _ -> error_incompatible_modtypes mtb1 mtb2
-      in
-     if mtb1'== mtb2' then cst
-     else check_structure cst env mtb1' mtb2' equiv subst1 subst2
+and check_modtypes cst env mtb1 mtb2 subst1 subst2 equiv =
+  if mtb1==mtb2 || mtb1.typ_expr == mtb2.typ_expr then cst
+  else
+    let rec check_structure cst env str1 str2 equiv subst1 subst2 =
+      match str1,str2 with
+      |NoFunctor list1,
+       NoFunctor list2 ->
+	if equiv then
+	  let subst2 = add_mp mtb2.typ_mp mtb1.typ_mp mtb1.typ_delta subst2 in
+          let cst1 = check_signatures cst env
+	    mtb1.typ_mp list1 mtb2.typ_mp list2 subst1 subst2
+	    mtb1.typ_delta mtb2.typ_delta
+          in
+          let cst2 = check_signatures cst env
+	    mtb2.typ_mp list2 mtb1.typ_mp list1 subst2 subst1
+	    mtb2.typ_delta  mtb1.typ_delta
+	  in
+	  Univ.union_constraints cst1 cst2
+	else
+	  check_signatures cst env
+	    mtb1.typ_mp list1 mtb2.typ_mp list2 subst1 subst2
+	    mtb1.typ_delta  mtb2.typ_delta
+      |MoreFunctor (arg_id1,arg_t1,body_t1),
+       MoreFunctor (arg_id2,arg_t2,body_t2) ->
+        let mp2 = MPbound arg_id2 in
+	let subst1 = join (map_mbid arg_id1 mp2 arg_t2.typ_delta) subst1 in
+	let cst = check_modtypes cst env arg_t2 arg_t1 subst2 subst1 equiv in
+        (* contravariant *)
+	let env = add_module_type mp2 arg_t2 env in
+	let env =
+          if Modops.is_functor body_t1 then env
+          else add_module
+            {mod_mp = mtb1.typ_mp;
+	     mod_expr = Abstract;
+	     mod_type = subst_signature subst1 body_t1;
+	     mod_type_alg = None;
+	     mod_constraints = mtb1.typ_constraints;
+	     mod_retroknowledge = [];
+	     mod_delta = mtb1.typ_delta} env
+	in
+	check_structure cst env body_t1 body_t2 equiv subst1 subst2
+      | _ , _ -> error_incompatible_modtypes mtb1 mtb2
+    in
+    check_structure cst env mtb1.typ_expr mtb2.typ_expr equiv subst1 subst2
 
 let check_subtypes env sup super =
-  let env = add_module 
-		(module_body_of_type sup.typ_mp sup) env in
-  check_modtypes empty_constraint env 
+  let env = add_module_type sup.typ_mp sup env in
+  check_modtypes empty_constraint env
     (strengthen sup sup.typ_mp) super empty_subst
     (map_mp super.typ_mp sup.typ_mp sup.typ_delta) false
 

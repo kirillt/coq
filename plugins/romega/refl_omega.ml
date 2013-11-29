@@ -6,6 +6,7 @@
 
  *************************************************************************)
 
+open Pp
 open Util
 open Const_omega
 module OmegaSolver = Omega.MakeOmegaSolver (Bigint)
@@ -16,7 +17,7 @@ open OmegaSolver
 let debug = ref false
 
 let show_goal gl =
-  if !debug then Pp.ppnl (Tacmach.pr_gls gl); Tacticals.tclIDTAC gl
+  if !debug then (); Tacticals.tclIDTAC gl
 
 let pp i = print_int i; print_newline (); flush stdout
 
@@ -37,9 +38,13 @@ type direction = Left of int | Right of int
 type occ_step = O_left | O_right | O_mono
 type occ_path = occ_step list
 
+let occ_step_eq s1 s2 = match s1, s2 with
+| O_left, O_left | O_right, O_right | O_mono, O_mono -> true
+| _ -> false
+
 (* chemin identifiant une proposition sous forme du nom de l'hypothèse et
    d'une liste de pas à partir de la racine de l'hypothèse *)
-type occurence = {o_hyp : Names.identifier; o_path : occ_path}
+type occurence = {o_hyp : Names.Id.t; o_path : occ_path}
 
 (* \subsection{refiable formulas} *)
 type oformula =
@@ -136,7 +141,7 @@ type context_content =
 
 (* \section{Specific utility functions to handle base types} *)
 (* Nom arbitraire de l'hypothèse codant la négation du but final *)
-let id_concl = Names.id_of_string "__goal__"
+let id_concl = Names.Id.of_string "__goal__"
 
 (* Initialisation de l'environnement de réification de la tactique *)
 let new_environment () = {
@@ -159,16 +164,15 @@ let indice = function Left x | Right x -> x
 (* Affichage de l'environnement de réification (termes et propositions) *)
 let print_env_reification env =
   let rec loop c i = function
-      [] -> Printf.printf "  ===============================\n\n"
+      [] ->  str "  ===============================\n\n"
     | t :: l ->
-	Printf.printf "  (%c%02d) := " c i;
-	Pp.ppnl (Printer.pr_lconstr t);
-	Pp.flush_all ();
-	loop c (succ i) l in
-  print_newline ();
-  Printf.printf "  ENVIRONMENT OF PROPOSITIONS :\n\n"; loop 'P' 0 env.props;
-  Printf.printf "  ENVIRONMENT OF TERMS :\n\n"; loop 'V' 0 env.terms
-
+      let s = Printf.sprintf "(%c%02d)" c i in
+      spc () ++ str s ++ str " := " ++ Printer.pr_lconstr t ++ fnl () ++
+      loop c (succ i) l
+  in
+  let prop_info = str "ENVIRONMENT OF PROPOSITIONS :" ++ fnl () ++ loop 'P' 0 env.props in
+  let term_info = str "ENVIRONMENT OF TERMS :" ++ fnl () ++ loop 'V' 0 env.terms in
+  msg_debug (prop_info ++ fnl () ++ term_info)
 
 (* \subsection{Gestion des environnements de variable pour Omega} *)
 (* generation d'identifiant d'equation pour Omega *)
@@ -194,7 +198,7 @@ let display_omega_var i = Printf.sprintf "OV%d" i
    le terme d'un monome (le plus souvent un atome) *)
 
 let intern_omega env t =
-  begin try List.assoc t env.om_vars
+  begin try List.assoc_f Pervasives.(=) t env.om_vars (* FIXME *)
   with Not_found ->
     let v = new_omega_var () in
     env.om_vars <- (t,v) :: env.om_vars; v
@@ -209,7 +213,7 @@ let intern_omega_force env t v = env.om_vars <- (t,v) :: env.om_vars
 let unintern_omega env id =
   let rec loop = function
 	[] -> failwith "unintern"
-      | ((t,j)::l) -> if id = j then t else loop l in
+      | ((t,j)::l) -> if Int.equal id j then t else loop l in
   loop env.om_vars
 
 (* \subsection{Gestion des environnements de variable pour la réflexion}
@@ -219,26 +223,24 @@ let unintern_omega env id =
    calcul des variables utiles. *)
 
 let add_reified_atom t env =
-  try list_index0_f Term.eq_constr t env.terms
+  try List.index0 Term.eq_constr t env.terms
   with Not_found ->
     let i = List.length env.terms in
     env.terms <- env.terms @ [t]; i
 
 let get_reified_atom env =
-  try List.nth env.terms
-  with e when Errors.noncritical e -> failwith "get_reified_atom"
+  try List.nth env.terms with Invalid_argument _ -> failwith "get_reified_atom"
 
 (* \subsection{Gestion de l'environnement de proposition pour Omega} *)
 (* ajout d'une proposition *)
 let add_prop env t =
-  try list_index0_f Term.eq_constr t env.props
+  try List.index0 Term.eq_constr t env.props
   with Not_found ->
     let i = List.length env.props in  env.props <- env.props @ [t]; i
 
 (* accès a une proposition *)
 let get_prop v env =
-  try List.nth v env
-  with e when Errors.noncritical e -> failwith "get_prop"
+  try List.nth v env with Invalid_argument _ -> failwith "get_prop"
 
 (* \subsection{Gestion du nommage des équations} *)
 (* Ajout d'une equation dans l'environnement de reification *)
@@ -305,7 +307,7 @@ let omega_of_oformula env kind =
 
 (* \subsection{Omega vers Oformula} *)
 
-let rec oformula_of_omega env af =
+let oformula_of_omega env af =
   let rec loop = function
     | ({v=v; c=n}::r) ->
 	Oplus(Omult(unintern_omega env v,Oint n),loop r)
@@ -316,7 +318,7 @@ let app f v = mkApp(Lazy.force f,v)
 
 (* \subsection{Oformula vers COQ reel} *)
 
-let rec coq_of_formula env t =
+let coq_of_formula env t =
   let rec loop = function
   | Oplus (t1,t2) -> app Z.plus [| loop t1; loop t2 |]
   | Oopp t -> app Z.opp [| loop t |]
@@ -402,11 +404,8 @@ let reified_of_omega env body constant =
   List.fold_right mk_coeff body coeff_constant
 
 let reified_of_omega env body c  =
-  try
-    reified_of_omega env body c
-  with reraise ->
-    display_eq display_omega_var (body,c); raise reraise
-
+  try reified_of_omega env body c
+  with reraise -> display_eq display_omega_var (body,c); raise reraise
 
 (* \section{Opérations sur les équations}
 Ces fonctions préparent les traces utilisées par la tactique réfléchie
@@ -416,7 +415,7 @@ pour faire des opérations de normalisation sur les équations.  *)
 (* Extraction des variables d'une équation. *)
 (* Chaque fonction retourne une liste triée sans redondance *)
 
-let (@@) = list_merge_uniq compare
+let (@@) = List.merge_uniq compare
 
 let rec vars_of_formula = function
   | Oint _ -> []
@@ -455,7 +454,7 @@ let rec scalar n = function
  | Omult(t1,Oint x) ->
      do_list [Lazy.force coq_c_mult_assoc_reduced], Omult(t1,Oint (n*x))
  | Omult(t1,t2) ->
-     Util.error "Omega: Can't solve a goal with non-linear products"
+     Errors.error "Omega: Can't solve a goal with non-linear products"
  | (Oatom _ as t) -> do_list [], Omult(t,Oint n)
  | Oint i -> do_list [Lazy.force coq_c_reduce],Oint(n*i)
  | (Oufo _ as t)-> do_list [], Oufo (Omult(t,Oint n))
@@ -474,23 +473,23 @@ let rec negate = function
  | Omult(t1,Oint x) ->
      do_list [Lazy.force coq_c_opp_mult_r], Omult(t1,Oint (Bigint.neg x))
  | Omult(t1,t2) ->
-     Util.error "Omega: Can't solve a goal with non-linear products"
+     Errors.error "Omega: Can't solve a goal with non-linear products"
  | (Oatom _ as t) ->
      do_list [Lazy.force coq_c_opp_one], Omult(t,Oint(negone))
  | Oint i -> do_list [Lazy.force coq_c_reduce] ,Oint(Bigint.neg i)
  | Oufo c -> do_list [], Oufo (Oopp c)
  | Ominus _ -> failwith "negate minus"
 
-let rec norm l = (List.length l)
+let norm l = (List.length l)
 
 (* \subsection{Mélange (fusion) de deux équations} *)
 (* \subsubsection{Version avec coefficients} *)
-let rec shuffle_path k1 e1 k2 e2 =
+let shuffle_path k1 e1 k2 e2 =
   let rec loop = function
       (({c=c1;v=v1}::l1) as l1'),
       (({c=c2;v=v2}::l2) as l2') ->
-	if v1 = v2 then
-          if k1*c1 + k2 * c2 = zero then (
+	if Int.equal v1 v2 then
+          if Bigint.equal (k1 * c1 + k2 * c2) zero then (
             Lazy.force coq_f_cancel :: loop (l1,l2))
           else (
             Lazy.force coq_f_equal :: loop (l1,l2) )
@@ -546,7 +545,7 @@ let shrink_pair f1 f2 =
        Lazy.force coq_c_red4, Omult(Oatom v,Oplus(c1,c2))
    | t1,t2 ->
        oprint stdout t1; print_newline (); oprint stdout t2; print_newline ();
-       flush Pervasives.stdout; Util.error "shrink.1"
+       flush Pervasives.stdout; Errors.error "shrink.1"
   end
 
 (* \subsection{Calcul d'une sous formule constante} *)
@@ -560,15 +559,15 @@ let reduce_factor = function
       let rec compute = function
           Oint n -> n
 	| Oplus(t1,t2) -> compute t1 + compute t2
-	| _ -> Util.error "condense.1" in
+	| _ -> Errors.error "condense.1" in
 	[Lazy.force coq_c_reduce], Omult(Oatom v,Oint(compute c))
-  | t -> Util.error "reduce_factor.1"
+  | t -> Errors.error "reduce_factor.1"
 
 (* \subsection{Réordonnancement} *)
 
 let rec condense env = function
     Oplus(f1,(Oplus(f2,r) as t)) ->
-      if weight env f1 = weight env f2 then begin
+      if Int.equal (weight env f1) (weight env f2) then begin
 	let shrink_tac,t = shrink_pair f1 f2 in
 	let assoc_tac = Lazy.force coq_c_plus_assoc_l in
 	let tac_list,t' = condense env (Oplus(t,r)) in
@@ -582,7 +581,7 @@ let rec condense env = function
       let tac,f1' = reduce_factor f1 in
       [do_left (do_list tac)],Oplus(f1',Oint n)
   | Oplus(f1,f2) ->
-      if weight env f1 = weight env f2 then begin
+      if Int.equal (weight env f1) (weight env f2) then begin
 	let tac_shrink,t = shrink_pair f1 f2 in
 	let tac,t' = condense env t in
 	tac_shrink :: tac,t'
@@ -600,12 +599,12 @@ let rec condense env = function
 (* \subsection{Elimination des zéros} *)
 
 let rec clear_zero = function
-   Oplus(Omult(Oatom v,Oint n),r) when n=zero ->
+   Oplus(Omult(Oatom v,Oint n),r) when Bigint.equal n zero ->
      let tac',t = clear_zero r in
      Lazy.force coq_c_red5 :: tac',t
   | Oplus(f,r) ->
       let tac,t = clear_zero r in
-      (if tac = [] then [] else [do_right (do_list tac)]),Oplus(f,t)
+      (if List.is_empty tac then [] else [do_right (do_list tac)]),Oplus(f,t)
   | t -> [],t;;
 
 (* \subsection{Transformation des hypothèses} *)
@@ -751,7 +750,7 @@ let reify_gl env gl =
       (i,t) :: lhyps ->
 	let t' = oproposition_of_constr env (false,[],i,[]) gl t in
 	if !debug then begin
-	  Printf.printf "  %s: " (Names.string_of_id i);
+	  Printf.printf "  %s: " (Names.Id.to_string i);
 	  pprint stdout t';
 	  Printf.printf "\n"
 	end;
@@ -816,7 +815,7 @@ let destructurate_hyps syst =
       (i,t) :: l ->
 	let l_syst1 = destructurate_pos_hyp i []  [] t in
 	let l_syst2 = loop l in
-	list_cartesian (@) l_syst1 l_syst2
+	List.cartesian (@) l_syst1 l_syst2
     | [] -> [[]] in
   loop syst
 
@@ -845,7 +844,7 @@ let display_systems syst_list =
 	 (List.map (function O_left -> "L" | O_right -> "R" | O_mono -> "M")
 	    oformula_eq.e_origin.o_path));
     Printf.printf "\n  Origin: %s (negated : %s)\n\n"
-      (Names.string_of_id oformula_eq.e_origin.o_hyp)
+      (Names.Id.to_string oformula_eq.e_origin.o_hyp)
       (if oformula_eq.e_negated then "yes" else "no") in
 
   let display_system syst =
@@ -916,13 +915,13 @@ let add_stated_equations env tree =
 
 (* PL: experimentally, the result order of the following function seems
    _very_ crucial for efficiency. No idea why. Do not remove the List.rev
-   or modify the current semantics of Util.list_union (some elements of first
+   or modify the current semantics of Util.List.union (some elements of first
    arg, then second arg), unless you know what you're doing. *)
 
 let rec get_eclatement env = function
     i :: r ->
       let l = try (get_equation env i).e_depends with Not_found -> [] in
-      list_union (List.rev l) (get_eclatement env r)
+      List.union Pervasives.(=) (List.rev l) (get_eclatement env r)
   | [] -> []
 
 let select_smaller l =
@@ -933,10 +932,14 @@ let filter_compatible_systems required systems =
   let rec select = function
       (x::l) ->
 	if List.mem x required then select l
-	else if List.mem (barre x) required then failwith "Exit"
+	else if List.mem (barre x) required then raise Exit
 	else x :: select l
-    | [] -> [] in
-  map_succeed (function (sol,splits) -> (sol,select splits)) systems
+    | [] -> []
+  in
+  List.map_filter
+    (function (sol, splits) ->
+      try Some (sol, select splits) with Exit -> None)
+    systems
 
 let rec equas_of_solution_tree = function
     Tree(_,t1,t2) -> (equas_of_solution_tree t1)@@(equas_of_solution_tree t2)
@@ -1015,10 +1018,10 @@ let rec solve_with_constraints all_solutions path =
 let find_path {o_hyp=id;o_path=p} env =
   let rec loop_path = function
       ([],l) -> Some l
-    | (x1::l1,x2::l2) when x1 = x2 -> loop_path (l1,l2)
+    | (x1::l1,x2::l2) when occ_step_eq x1 x2 -> loop_path (l1,l2)
     | _ -> None in
   let rec loop_id i = function
-      CCHyp{o_hyp=id';o_path=p'} :: l when id = id' ->
+      CCHyp{o_hyp=id';o_path=p'} :: l when Names.Id.equal id id' ->
 	begin match loop_path (p',p) with
 	  Some r -> i,r
 	| None -> loop_id (succ i) l
@@ -1036,7 +1039,7 @@ let mk_direction_list l =
 (* \section{Rejouer l'historique} *)
 
 let get_hyp env_hyp i =
-  try list_index0 (CCEqua i) env_hyp
+  try List.index0 Pervasives.(=) (CCEqua i) env_hyp
   with Not_found -> failwith (Printf.sprintf "get_hyp %d" i)
 
 let replay_history env env_hyp =
@@ -1203,13 +1206,17 @@ let resolution env full_reified_goal systems_list =
   let useful_equa_id = equas_of_solution_tree solution_tree in
   (* recupere explicitement ces equations *)
   let equations = List.map (get_equation env) useful_equa_id in
-  let l_hyps' = list_uniquize (List.map (fun e -> e.e_origin.o_hyp) equations) in
-  let l_hyps = id_concl :: list_remove id_concl l_hyps' in
+  let l_hyps' = List.uniquize (List.map (fun e -> e.e_origin.o_hyp) equations) in
+  let l_hyps = id_concl :: List.remove Names.Id.equal id_concl l_hyps' in
   let useful_hyps =
-    List.map (fun id -> List.assoc id full_reified_goal) l_hyps in
+    List.map
+      (fun id -> List.assoc_f Names.Id.equal id full_reified_goal) l_hyps
+  in
   let useful_vars =
     let really_useful_vars = vars_of_equations equations in
-    let concl_vars = vars_of_prop (List.assoc id_concl full_reified_goal) in
+    let concl_vars =
+      vars_of_prop (List.assoc_f Names.Id.equal id_concl full_reified_goal)
+    in
     really_useful_vars @@ concl_vars
   in
   (* variables a introduire *)
@@ -1258,10 +1265,10 @@ let resolution env full_reified_goal systems_list =
       |	((O_left | O_mono) :: l) -> app coq_p_left [| loop l |]
       |	(O_right :: l) -> app coq_p_right [| loop l |] in
     let correct_index =
-      let i = list_index0 e.e_origin.o_hyp l_hyps in
+      let i = List.index0 Names.Id.equal e.e_origin.o_hyp l_hyps in
       (* PL: it seems that additionnally introduced hyps are in the way during
              normalization, hence this index shifting... *)
-      if i=0 then 0 else Pervasives.(+) i (List.length to_introduce)
+      if Int.equal i 0 then 0 else Pervasives.(+) i (List.length to_introduce)
     in
     app coq_pair_step [| mk_nat correct_index; loop e.e_origin.o_path |] in
   let normalization_trace =
@@ -1297,7 +1304,7 @@ let total_reflexive_omega_tactic gl =
   let systems_list = destructurate_hyps full_reified_goal in
   if !debug then display_systems systems_list;
   resolution env full_reified_goal systems_list gl
-  with NO_CONTRADICTION -> Util.error "ROmega can't solve this system"
+  with NO_CONTRADICTION -> Errors.error "ROmega can't solve this system"
 
 
 (*i let tester = Tacmach.hide_atomic_tactic "TestOmega" test_tactic i*)

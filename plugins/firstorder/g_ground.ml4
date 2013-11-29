@@ -6,18 +6,14 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma"  i*)
+(*i camlp4deps: "grammar/grammar.cma"  i*)
 
 open Formula
 open Sequent
 open Ground
 open Goptions
-open Tactics
 open Tacticals
 open Tacinterp
-open Term
-open Names
-open Util
 open Libnames
 
 (* declaring search depth as a global option *)
@@ -57,16 +53,16 @@ let _=
 let (set_default_solver, default_solver, print_default_solver) = 
   Tactic_option.declare_tactic_option ~default:(<:tactic<auto with *>>) "Firstorder default solver"
 
-VERNAC COMMAND EXTEND Firstorder_Set_Solver
+VERNAC COMMAND EXTEND Firstorder_Set_Solver CLASSIFIED AS SIDEFF
 | [ "Set" "Firstorder" "Solver" tactic(t) ] -> [
     set_default_solver 
-      (Vernacexpr.use_section_locality ())
-      (Tacinterp.glob_tactic t) ]
+      (Locality.make_section_locality (Locality.LocalityFixme.consume ()))
+      (Tacintern.glob_tactic t) ]
 END
 
-VERNAC COMMAND EXTEND Firstorder_Print_Solver
+VERNAC COMMAND EXTEND Firstorder_Print_Solver CLASSIFIED AS QUERY
 | [ "Print" "Firstorder" "Solver" ] -> [
-    Pp.msgnl
+    Pp.msg_info
       (Pp.(++) (Pp.str"Firstorder solver tactic is ") (print_default_solver ())) ]
 END
 
@@ -83,9 +79,9 @@ let gen_ground_tac flag taco ids bases gl=
       let startseq gl=
 	let seq=empty_seq !ground_depth in
 	extend_with_auto_hints bases (extend_with_ref_list ids seq gl) gl in
-      let result=ground_tac solver startseq gl in
+      let result=ground_tac (Proofview.V82.of_tactic solver) startseq gl in
 	qflag:=backup;result
-    with reraise ->qflag:=backup;raise reraise
+    with reraise -> qflag:=backup;raise reraise
 
 (* special for compatibility with Intuition
 
@@ -103,11 +99,12 @@ let normalize_evaluables=
 	   unfold_in_hyp (Lazy.force defined_connectives)
 	   (Tacexpr.InHypType id)) *)
 
+open Pp
 open Genarg
 open Ppconstr
 open Printer
 let pr_firstorder_using_raw _ _ _ = prlist_with_sep pr_comma pr_reference
-let pr_firstorder_using_glob _ _ _ = prlist_with_sep pr_comma (pr_or_var (pr_located pr_global))
+let pr_firstorder_using_glob _ _ _ = prlist_with_sep pr_comma (pr_or_var (fun x -> (pr_global (snd x))))
 let pr_firstorder_using_typed _ _ _ = prlist_with_sep pr_comma pr_global
 
 ARGUMENT EXTEND firstorder_using
@@ -128,29 +125,31 @@ END
 
 TACTIC EXTEND firstorder
     [ "firstorder" tactic_opt(t) firstorder_using(l) ] ->
-      [ gen_ground_tac true (Option.map eval_tactic t) l [] ]
+      [ Proofview.V82.tactic (gen_ground_tac true (Option.map eval_tactic t) l []) ]
 |   [ "firstorder" tactic_opt(t) "with" ne_preident_list(l) ] ->
-      [ gen_ground_tac true (Option.map eval_tactic t) [] l ]
+      [ Proofview.V82.tactic (gen_ground_tac true (Option.map eval_tactic t) [] l) ]
 |   [ "firstorder" tactic_opt(t) firstorder_using(l)
        "with" ne_preident_list(l') ] ->
-      [ gen_ground_tac true (Option.map eval_tactic t) l l' ]
+      [ Proofview.V82.tactic (gen_ground_tac true (Option.map eval_tactic t) l l') ]
 END
 
 TACTIC EXTEND gintuition
   [ "gintuition" tactic_opt(t) ] ->
-     [ gen_ground_tac false (Option.map eval_tactic t) [] [] ]
+     [ Proofview.V82.tactic (gen_ground_tac false (Option.map eval_tactic t) [] []) ]
 END
 
+open Proofview.Notations
 
-let default_declarative_automation gls =
-  tclORELSE
-    (tclORELSE (Auto.h_trivial [] None)
+let default_declarative_automation =
+  Proofview.tclUNIT () >= fun () -> (* delay for [congruence_depth] *)
+  Tacticals.New.tclORELSE
+    (Tacticals.New.tclORELSE (Auto.h_trivial [] None)
     (Cctac.congruence_tac !congruence_depth []))
-    (gen_ground_tac true
-       (Some (tclTHEN
+    (Proofview.V82.tactic (gen_ground_tac true
+       (Some (Tacticals.New.tclTHEN
 		(snd (default_solver ()))
 		(Cctac.congruence_tac !congruence_depth [])))
-       [] []) gls
+       [] []))
 
 
 

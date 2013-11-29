@@ -6,51 +6,42 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-val async : ('a -> unit) -> 'a -> unit
-val sync  : ('a -> 'b) -> 'a -> 'b
+val warn_image : GMisc.image
+val warning : string -> unit
 
-(* avoid running two instances of a function concurrently *)
-val mutex : string -> ('a -> unit) -> 'a -> unit
+val cb : GData.clipboard
 
 val doc_url : unit -> string
 val browse : (string -> unit) -> string -> unit
 val browse_keyword : (string -> unit) -> string -> unit
+
+(* These two functions are equivalent, the latter is named following
+   glib schema, and exists in glib but is not in lablgtk2 *)
 val byte_offset_to_char_offset : string -> int -> int
-val debug : bool ref
-val disconnect_revert_timer : unit -> unit
-val disconnect_auto_save_timer : unit -> unit
+val glib_utf8_pos_to_offset : string -> off:int -> int
+
+type timer = { run : ms:int -> callback:(unit->bool) -> unit;
+               kill : unit -> unit }
+val mktimer : unit -> timer
+
 val do_convert : string -> string
 val find_tag_limits : GText.tag -> GText.iter -> GText.iter * GText.iter
 val find_tag_start : GText.tag -> GText.iter -> GText.iter
 val find_tag_stop : GText.tag -> GText.iter -> GText.iter
-val get_insert : < get_iter_at_mark : [> `INSERT] -> 'a; .. > -> 'a
-
-val is_char_start : char -> bool
-
-val my_stat : string -> Unix.stats option
-
-(** debug printing *)
-val prerr_endline : string -> unit
 
 val print_id : 'a -> unit
 
-val revert_timer : GMain.Timeout.id option ref
-val auto_save_timer : GMain.Timeout.id option ref
-val select_file_for_open :
-  title:string ->
-  ?dir:string ref -> ?filename:string -> unit -> string option
+val select_file_for_open : title:string -> unit -> string option
 val select_file_for_save :
-  title:string ->
-  ?dir:string ref -> ?filename:string -> unit -> string option
-val set_highlight_timer : (unit -> 'a) -> unit
+  title:string -> ?filename:string -> unit -> string option
 val try_convert : string -> string
 val try_export : string -> string -> bool
-val stock_to_widget :  ?size:Gtk.Tags.icon_size -> GtkStock.id -> GObj.widget
+val stock_to_widget :
+  ?size:[`CUSTOM of int * int | Gtk.Tags.icon_size] ->
+    GtkStock.id -> GObj.widget
 
 open Format
 val print_list : (formatter -> 'a -> unit) -> formatter -> 'a list -> unit
-
-val run_command : (string -> unit) -> string -> Unix.process_status*string
 
 val custom_coqtop : string option ref
 (* @return command to call coqtop
@@ -63,16 +54,10 @@ val coqtop_path : unit -> string
 val status : GMisc.statusbar
 val push_info : string -> unit
 val pop_info : unit -> unit
+val clear_info : unit -> unit
 val flash_info : ?delay:int -> string -> unit
 
 val set_location : (string -> unit) ref
-
-val pbar : GRange.progress_bar
-
-(*
-  returns an absolute filename equivalent to given filename
-*)
-val absolute_filename : string -> string
 
 (* In win32, when a command-line is to be executed via cmd.exe
    (i.e. Sys.command, Unix.open_process, ...), it cannot contain several
@@ -80,3 +65,36 @@ val absolute_filename : string -> string
    everything. Reference: http://ss64.com/nt/cmd.html *)
 
 val requote : string -> string
+
+val textview_width : #GText.view_skel -> int
+(** Returns an approximate value of the character width of a textview *)
+
+type logger = Interface.message_level -> string -> unit
+
+val default_logger : Interface.message_level -> string -> unit
+(** Default logger. It logs messages that the casual user should not see. *)
+
+(** {6 I/O operations} *)
+
+(** A customized [stat] function. Exceptions are catched. *)
+
+type stats = MTime of float | NoSuchFile | OtherError
+val stat : string -> stats
+
+(** Read the content of file [f] and add it to buffer [b].
+    I/O Exceptions are propagated. *)
+
+val read_file : string -> Buffer.t -> unit
+
+(** Read what is available on a gtk input channel.
+    This channel should have been set as non-blocking. *)
+
+val io_read_all : Glib.Io.channel -> string
+
+(** [run_command display finally cmd] allow to run a command
+    asynchronously, calling [display] on any output of this command
+    and [finally] when the command has returned. *)
+
+val run_command :
+  (string -> unit) -> (Unix.process_status -> unit) -> string -> unit
+

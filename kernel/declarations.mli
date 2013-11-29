@@ -7,11 +7,8 @@
 (************************************************************************)
 
 open Names
-open Univ
 open Term
-open Cemitcodes
-open Sign
-open Mod_subst
+open Context
 
 (** This module defines the internal representation of global
    declarations. This includes global constants/axioms, mutual
@@ -22,32 +19,13 @@ type engagement = ImpredicativeSet
 (** {6 Representation of constants (Definition/Axiom) } *)
 
 type polymorphic_arity = {
-  poly_param_levels : universe option list;
-  poly_level : universe;
+  poly_param_levels : Univ.universe option list;
+  poly_level : Univ.universe;
 }
 
 type constant_type =
   | NonPolymorphicType of types
   | PolymorphicArity of rel_context * polymorphic_arity
-
-type constr_substituted
-
-val from_val : constr -> constr_substituted
-val force : constr_substituted -> constr
-
-(** Opaque proof terms are not loaded immediately, but are there
-    in a lazy form. Forcing this lazy may trigger some unmarshal of
-    the necessary structure. *)
-
-type lazy_constr
-
-val subst_lazy_constr : substitution -> lazy_constr -> lazy_constr
-val force_lazy_constr : lazy_constr -> constr_substituted
-val make_lazy_constr : constr_substituted Lazy.t -> lazy_constr
-val lazy_constr_is_val : lazy_constr -> bool
-
-val force_opaque : lazy_constr -> constr
-val opaque_from_val : constr -> lazy_constr
 
 (** Inlining level of parameters at functor applications.
     None means no inlining *)
@@ -59,29 +37,32 @@ type inline = int option
 
 type constant_def =
   | Undef of inline
-  | Def of constr_substituted
-  | OpaqueDef of lazy_constr
+  | Def of Lazyconstr.constr_substituted
+  | OpaqueDef of Lazyconstr.lazy_constr Future.computation
+
+(** Linking information for the native compiler. The boolean flag indicates if
+  the term is protected by a lazy tag *)
+
+type native_name =
+  | Linked of string * bool
+  | LinkedInteractive of string * bool
+  | NotLinked
+
+type constant_constraints = Univ.constraints Future.computation
 
 type constant_body = {
-    const_hyps : section_context; (** New: younger hyp at top *)
+    const_hyps : Context.section_context; (** New: younger hyp at top *)
     const_body : constant_def;
     const_type : constant_type;
-    const_body_code : to_patch_substituted;
-    const_constraints : constraints }
+    const_body_code : Cemitcodes.to_patch_substituted;
+    const_constraints : constant_constraints;
+    const_native_name : native_name ref;
+    const_inline_code : bool }
 
-val subst_const_def : substitution -> constant_def -> constant_def
-val subst_const_body : substitution -> constant_body -> constant_body
-
-(** Is there a actual body in const_body or const_body_opaque ? *)
-
-val constant_has_body : constant_body -> bool
-
-(** Accessing const_body_opaque or const_body *)
-
-val body_of_constant : constant_body -> constr_substituted option
-
-val is_opaque : constant_body -> bool
-
+type side_effect =
+  | SEsubproof of constant * constant_body
+  | SEscheme of (inductive * constant * constant_body) list * string
+    
 (** {6 Representation of mutual inductive types in the kernel } *)
 
 type recarg =
@@ -89,17 +70,7 @@ type recarg =
   | Mrec of inductive
   | Imbr of inductive
 
-val subst_recarg : substitution -> recarg -> recarg
-
 type wf_paths = recarg Rtree.t
-
-val mk_norec : wf_paths
-val mk_paths : recarg -> wf_paths list array -> wf_paths
-val dest_recarg : wf_paths -> recarg
-val dest_subterms : wf_paths -> wf_paths list array
-val recarg_length : wf_paths -> int -> int
-
-val subst_wf_paths : substitution -> wf_paths -> wf_paths
 
 (**
 {v
@@ -121,13 +92,13 @@ type inductive_arity =
 type one_inductive_body = {
 (** {8 Primitive datas } *)
 
-    mind_typename : identifier; (** Name of the type: [Ii] *)
+    mind_typename : Id.t; (** Name of the type: [Ii] *)
 
     mind_arity_ctxt : rel_context; (** Arity context of [Ii] with parameters: [forall params, Ui] *)
 
     mind_arity : inductive_arity; (** Arity sort and original user arity if monomorphic *)
 
-    mind_consnames : identifier array; (** Names of the constructors: [cij] *)
+    mind_consnames : Id.t array; (** Names of the constructors: [cij] *)
 
     mind_user_lc : types array;
  (** Types of the constructors with parameters:  [forall params, Tij],
@@ -169,7 +140,7 @@ type mutual_inductive_body = {
 
     mind_ntypes : int;  (** Number of types in the block *)
 
-    mind_hyps : section_context;  (** Section hypotheses on which the block depends *)
+    mind_hyps : Context.section_context;  (** Section hypotheses on which the block depends *)
 
     mind_nparams : int;  (** Number of expected parameters *)
 
@@ -177,14 +148,39 @@ type mutual_inductive_body = {
 
     mind_params_ctxt : rel_context;  (** The context of parameters (includes let-in declaration) *)
 
-    mind_constraints : constraints;  (** Universes constraints enforced by the inductive declaration *)
+    mind_constraints : Univ.constraints;  (** Universes constraints enforced by the inductive declaration *)
+
+(** {8 Data for native compilation } *)
+
+    mind_native_name : native_name ref; (** status of the code (linked or not, and where) *)
+
 
   }
 
-val subst_mind : substitution -> mutual_inductive_body -> mutual_inductive_body
+(** {6 Module declarations } *)
 
-(** {6 Modules: signature component specifications, module types, and
-  module declarations } *)
+(** Functor expressions are forced to be on top of other expressions *)
+
+type ('ty,'a) functorize =
+  | NoFunctor of 'a
+  | MoreFunctor of MBId.t * 'ty * ('ty,'a) functorize
+
+(** The fully-algebraic module expressions : names, applications, 'with ...'.
+    They correspond to the user entries of non-interactive modules.
+    They will be later expanded into module structures in [Mod_typing],
+    and won't play any role into the kernel after that : they are kept
+    only for short module printing and for extraction. *)
+
+type with_declaration =
+  | WithMod of Id.t list * module_path
+  | WithDef of Id.t list * constr
+
+type module_alg_expr =
+  | MEident of module_path
+  | MEapply of module_alg_expr * module_path
+  | MEwith of module_alg_expr * with_declaration
+
+(** A component of a module structure *)
 
 type structure_field_body =
   | SFBconst of constant_body
@@ -192,57 +188,58 @@ type structure_field_body =
   | SFBmodule of module_body
   | SFBmodtype of module_type_body
 
-(** NB: we may encounter now (at most) twice the same label in
+(** A module structure is a list of labeled components.
+
+    Note : we may encounter now (at most) twice the same label in
     a [structure_body], once for a module ([SFBmodule] or [SFBmodtype])
     and once for an object ([SFBconst] or [SFBmind]) *)
 
-and structure_body = (label * structure_field_body) list
+and structure_body = (Label.t * structure_field_body) list
 
-and struct_expr_body =
-  | SEBident of module_path
-  | SEBfunctor of mod_bound_id * module_type_body * struct_expr_body
-  | SEBapply of struct_expr_body * struct_expr_body * constraints
-  | SEBstruct of structure_body
-  | SEBwith of struct_expr_body * with_declaration_body
+(** A module signature is a structure, with possibly functors on top of it *)
 
-and with_declaration_body =
-    With_module_body of identifier list * module_path
-  | With_definition_body of  identifier list * constant_body
+and module_signature = (module_type_body,structure_body) functorize
+
+(** A module expression is an algebraic expression, possibly functorized. *)
+
+and module_expression = (module_type_body,module_alg_expr) functorize
+
+and module_implementation =
+  | Abstract (** no accessible implementation *)
+  | Algebraic of module_expression (** non-interactive algebraic expression *)
+  | Struct of module_signature (** interactive body *)
+  | FullStruct (** special case of [Struct] : the body is exactly [mod_type] *)
 
 and module_body =
-    {  (** absolute path of the module *)
-      mod_mp : module_path;
-      (** Implementation *)
-      mod_expr : struct_expr_body option; 
-      (** Signature *)
-      mod_type : struct_expr_body;
-      (** algebraic structure expression is kept 
-	 if it's relevant for extraction  *)
-      mod_type_alg : struct_expr_body option; 
-      (** set of all constraint in the module  *)
-      mod_constraints : constraints;
-      (** quotiented set of equivalent constant and inductive name  *)
-      mod_delta : delta_resolver;
-      mod_retroknowledge : Retroknowledge.action list}
-      
+  { mod_mp : module_path; (** absolute path of the module *)
+    mod_expr : module_implementation; (** implementation *)
+    mod_type : module_signature; (** expanded type *)
+    (** algebraic type, kept if it's relevant for extraction *)
+    mod_type_alg : module_expression option;
+    (** set of all constraints in the module  *)
+    mod_constraints : Univ.constraints;
+    (** quotiented set of equivalent constants and inductive names *)
+    mod_delta : Mod_subst.delta_resolver;
+    mod_retroknowledge : Retroknowledge.action list }
+
+(** A [module_type_body] is similar to a [module_body], with
+    no implementation and retroknowledge fields *)
+
 and module_type_body =
-    { 
-      (** Path of the module type *)
-      typ_mp : module_path;
-      typ_expr : struct_expr_body;
-      (** algebraic structure expression is kept 
-	 if it's relevant for extraction  *)
-      typ_expr_alg : struct_expr_body option ;
-      typ_constraints : constraints;
-      (** quotiented set of equivalent constant and inductive name  *)
-      typ_delta :delta_resolver}
+  { typ_mp : module_path; (** path of the module type *)
+    typ_expr : module_signature; (** expanded type *)
+    (** algebraic expression, kept if it's relevant for extraction  *)
+    typ_expr_alg : module_expression option;
+    typ_constraints : Univ.constraints;
+    (** quotiented set of equivalent constants and inductive names *)
+    typ_delta : Mod_subst.delta_resolver}
 
+(** Extra invariants :
 
-(** Hash-consing *)
+    - No [MEwith] inside a [mod_expr] implementation : the 'with' syntax
+      is only supported for module types
 
-(** Here, strictly speaking, we don't perform true hash-consing
-    of the structure, but simply hash-cons all inner constr
-    and other known elements *)
-
-val hcons_const_body : constant_body -> constant_body
-val hcons_mind : mutual_inductive_body -> mutual_inductive_body
+    - A module application is atomic, for instance ((M N) P) :
+      * the head of [MEapply] can only be another [MEapply] or a [MEident]
+      * the argument of [MEapply] is now directly forced to be a [module_path].
+*)

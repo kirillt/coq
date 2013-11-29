@@ -1,24 +1,25 @@
 open Pp
 open Glob_term
+open Errors
 open Util
 open Names
-(* Ocaml 3.06 Map.S does not handle is_empty *)
-let idmap_is_empty m = m = Idmap.empty
+open Decl_kinds
+open Misctypes
 
 (*
    Some basic functions to rebuild glob_constr
-   In each of them the location is Util.dummy_loc
+   In each of them the location is Loc.ghost
 *)
-let mkGRef ref = GRef(dummy_loc,ref)
-let mkGVar id = GVar(dummy_loc,id)
-let mkGApp(rt,rtl) = GApp(dummy_loc,rt,rtl)
-let mkGLambda(n,t,b) = GLambda(dummy_loc,n,Explicit,t,b)
-let mkGProd(n,t,b) = GProd(dummy_loc,n,Explicit,t,b)
-let mkGLetIn(n,t,b) = GLetIn(dummy_loc,n,t,b)
-let mkGCases(rto,l,brl) = GCases(dummy_loc,Term.RegularStyle,rto,l,brl)
-let mkGSort s = GSort(dummy_loc,s)
-let mkGHole () = GHole(dummy_loc,Evd.BinderType Anonymous)
-let mkGCast(b,t) = GCast(dummy_loc,b,CastConv (Term.DEFAULTcast,t))
+let mkGRef ref = GRef(Loc.ghost,ref)
+let mkGVar id = GVar(Loc.ghost,id)
+let mkGApp(rt,rtl) = GApp(Loc.ghost,rt,rtl)
+let mkGLambda(n,t,b) = GLambda(Loc.ghost,n,Explicit,t,b)
+let mkGProd(n,t,b) = GProd(Loc.ghost,n,Explicit,t,b)
+let mkGLetIn(n,t,b) = GLetIn(Loc.ghost,n,t,b)
+let mkGCases(rto,l,brl) = GCases(Loc.ghost,Term.RegularStyle,rto,l,brl)
+let mkGSort s = GSort(Loc.ghost,s)
+let mkGHole () = GHole(Loc.ghost,Evar_kinds.BinderType Anonymous,None)
+let mkGCast(b,t) = GCast(Loc.ghost,b,CastConv t)
 
 (*
   Some basic functions to decompose glob_constrs
@@ -107,7 +108,7 @@ let glob_make_or t1 t2 = mkGApp (mkGRef(Lazy.force Coqlib.coq_or_ref),[t1;t2])
    to [P1 \/ ( .... \/ Pn)]
 *)
 let rec glob_make_or_list = function
-  | [] -> raise (Invalid_argument "mk_or")
+  | [] -> invalid_arg "mk_or"
   | [e] -> e
   | e::l -> glob_make_or e (glob_make_or_list l)
 
@@ -115,7 +116,7 @@ let rec glob_make_or_list = function
 let remove_name_from_mapping mapping na =
   match na with
     | Anonymous -> mapping
-    | Name id -> Idmap.remove id mapping
+    | Name id -> Id.Map.remove id mapping
 
 let change_vars =
   let rec change_vars mapping rt =
@@ -124,7 +125,7 @@ let change_vars =
       | GVar(loc,id) ->
 	  let new_id =
 	    try
-	      Idmap.find id mapping
+	      Id.Map.find id mapping
 	    with Not_found -> id
 	  in
 	  GVar(loc,new_id)
@@ -179,13 +180,12 @@ let change_vars =
       | GRec _ -> error "Local (co)fixes are not supported"
       | GSort _ -> rt
       | GHole _ -> rt
-      | GCast(loc,b,CastConv (k,t)) ->
-	  GCast(loc,change_vars mapping b, CastConv (k,change_vars mapping t))
-      | GCast(loc,b,CastCoerce) ->
-	  GCast(loc,change_vars mapping b,CastCoerce)
+      | GCast(loc,b,c) ->
+	  GCast(loc,change_vars mapping b,
+		Miscops.map_cast_type (change_vars mapping) c)
   and change_vars_br mapping ((loc,idl,patl,res) as br) =
-    let new_mapping = List.fold_right Idmap.remove idl mapping in
-    if idmap_is_empty new_mapping
+    let new_mapping = List.fold_right Id.Map.remove idl mapping in
+    if Id.Map.is_empty new_mapping
     then br
     else (loc,idl,patl,change_vars new_mapping res)
   in
@@ -197,27 +197,27 @@ let rec alpha_pat excluded pat =
   match pat with
     | PatVar(loc,Anonymous) ->
 	let new_id = Indfun_common.fresh_id excluded "_x" in
-	PatVar(loc,Name new_id),(new_id::excluded),Idmap.empty
+	PatVar(loc,Name new_id),(new_id::excluded),Id.Map.empty
     | PatVar(loc,Name id) ->
-	if List.mem id excluded
+	if Id.List.mem id excluded
 	then
 	  let new_id = Namegen.next_ident_away id excluded in
 	  PatVar(loc,Name new_id),(new_id::excluded),
-	(Idmap.add id new_id Idmap.empty)
-	else pat,excluded,Idmap.empty
+	(Id.Map.add id new_id Id.Map.empty)
+	else pat,excluded,Id.Map.empty
     | PatCstr(loc,constr,patl,na) ->
 	let new_na,new_excluded,map =
 	  match na with
-	    | Name id when List.mem id excluded ->
+	    | Name id when Id.List.mem id excluded ->
 		let new_id = Namegen.next_ident_away id excluded in
-		Name new_id,new_id::excluded, Idmap.add id new_id Idmap.empty
-	    | _ -> na,excluded,Idmap.empty
+		Name new_id,new_id::excluded, Id.Map.add id new_id Id.Map.empty
+	    | _ -> na,excluded,Id.Map.empty
 	in
 	let new_patl,new_excluded,new_map =
 	  List.fold_left
 	    (fun (patl,excluded,map) pat ->
 	       let new_pat,new_excluded,new_map = alpha_pat excluded pat in
-	       (new_pat::patl,new_excluded,Idmap.fold Idmap.add new_map map)
+	       (new_pat::patl,new_excluded,Id.Map.fold Id.Map.add new_map map)
 	    )
 	    ([],new_excluded,map)
 	    patl
@@ -229,9 +229,9 @@ let alpha_patl excluded patl  =
     List.fold_left
       (fun (patl,excluded,map) pat ->
 	 let new_pat,new_excluded,new_map = alpha_pat excluded pat in
-	 new_pat::patl,new_excluded,(Idmap.fold Idmap.add new_map map)
+	 new_pat::patl,new_excluded,(Id.Map.fold Id.Map.add new_map map)
       )
-      ([],excluded,Idmap.empty)
+      ([],excluded,Id.Map.empty)
       patl
   in
   (List.rev patl,new_excluded,map)
@@ -263,7 +263,7 @@ let rec alpha_rt excluded rt =
     match rt with
       | GRef _ | GVar _ | GEvar _ | GPatVar _ -> rt
       | GLambda(loc,Anonymous,k,t,b) ->
-	  let new_id = Namegen.next_ident_away (id_of_string "_x") excluded in
+	  let new_id = Namegen.next_ident_away (Id.of_string "_x") excluded in
 	  let new_excluded = new_id :: excluded in
 	  let new_t = alpha_rt new_excluded t in
 	  let new_b = alpha_rt new_excluded b in
@@ -279,10 +279,10 @@ let rec alpha_rt excluded rt =
     | GLambda(loc,Name id,k,t,b) ->
 	let new_id = Namegen.next_ident_away id excluded in
 	let t,b =
-	  if new_id = id
+	  if Id.equal new_id id
 	  then t,b
 	  else
-	    let replace = change_vars (Idmap.add id new_id Idmap.empty) in
+	    let replace = change_vars (Id.Map.add id new_id Id.Map.empty) in
 	    (t,replace b)
 	in
 	let new_excluded = new_id::excluded in
@@ -293,10 +293,10 @@ let rec alpha_rt excluded rt =
 	let new_id = Namegen.next_ident_away id excluded in
 	let new_excluded = new_id::excluded in
 	let t,b =
-	  if new_id = id
+	  if Id.equal new_id id
 	  then t,b
 	  else
-	    let replace = change_vars (Idmap.add id new_id Idmap.empty) in
+	    let replace = change_vars (Id.Map.add id new_id Id.Map.empty) in
 	    (t,replace b)
 	in
 	let new_t = alpha_rt new_excluded t in
@@ -305,10 +305,10 @@ let rec alpha_rt excluded rt =
     | GLetIn(loc,Name id,t,b) ->
 	let new_id = Namegen.next_ident_away id excluded in
 	let t,b =
-	  if new_id = id
+	  if Id.equal new_id id
 	  then t,b
 	  else
-	    let replace = change_vars (Idmap.add id new_id Idmap.empty) in
+	    let replace = change_vars (Id.Map.add id new_id Id.Map.empty) in
 	    (t,replace b)
 	in
 	let new_excluded = new_id::excluded in
@@ -325,18 +325,18 @@ let rec alpha_rt excluded rt =
 		 | Anonymous -> (na::nal,excluded,mapping)
 		 | Name id ->
 		     let new_id = Namegen.next_ident_away id excluded in
-		     if new_id = id
+		     if Id.equal new_id id
 		     then
 		       na::nal,id::excluded,mapping
 		     else
-		       (Name new_id)::nal,id::excluded,(Idmap.add id new_id mapping)
+		       (Name new_id)::nal,id::excluded,(Id.Map.add id new_id mapping)
 	    )
-	    ([],excluded,Idmap.empty)
+	    ([],excluded,Id.Map.empty)
 	    nal
 	in
 	let new_nal = List.rev rev_new_nal in
 	let new_rto,new_t,new_b =
-	  if idmap_is_empty mapping
+	  if Id.Map.is_empty mapping
 	  then rto,t,b
 	  else let replace = change_vars mapping in
 	  (Option.map replace rto, t,replace b)
@@ -359,10 +359,9 @@ let rec alpha_rt excluded rt =
     | GRec _ -> error "Not handled GRec"
     | GSort _ -> rt
     | GHole _ -> rt
-    | GCast (loc,b,CastConv (k,t)) ->
-	GCast(loc,alpha_rt excluded b,CastConv(k,alpha_rt excluded t))
-    | GCast (loc,b,CastCoerce) ->
-	GCast(loc,alpha_rt excluded b,CastCoerce)
+    | GCast (loc,b,c) ->
+	GCast(loc,alpha_rt excluded b,
+	      Miscops.map_cast_type (alpha_rt excluded) c)
     | GApp(loc,f,args) ->
 	GApp(loc,
 	     alpha_rt excluded f,
@@ -385,14 +384,14 @@ and alpha_br excluded (loc,ids,patl,res) =
 let is_free_in id =
   let rec is_free_in = function
     | GRef _ ->  false
-    | GVar(_,id') -> id_ord id' id == 0
+    | GVar(_,id') -> Id.compare id' id == 0
     | GEvar _ -> false
     | GPatVar _ -> false
     | GApp(_,rt,rtl) -> List.exists is_free_in (rt::rtl)
     | GLambda(_,n,_,t,b) | GProd(_,n,_,t,b) | GLetIn(_,n,t,b) ->
 	let check_in_b =
 	  match n with
-	    | Name id' -> id_ord id' id <> 0
+	    | Name id' -> not (Id.equal id' id)
 	    | _ -> true
 	in
 	is_free_in t || (check_in_b && is_free_in b)
@@ -401,7 +400,7 @@ let is_free_in id =
 	  List.exists is_free_in_br brl
     | GLetTuple(_,nal,_,b,t) ->
 	let check_in_nal =
-	  not (List.exists (function Name id' -> id'= id | _ -> false) nal)
+	  not (List.exists (function Name id' -> Id.equal id' id | _ -> false) nal)
 	in
 	is_free_in t  || (check_in_nal && is_free_in b)
 
@@ -410,10 +409,10 @@ let is_free_in id =
     | GRec _ -> raise (UserError("",str "Not handled GRec"))
     | GSort _ -> false
     | GHole _ -> false
-    | GCast (_,b,CastConv (_,t)) -> is_free_in b || is_free_in t
+    | GCast (_,b,(CastConv t|CastVM t|CastNative t)) -> is_free_in b || is_free_in t
     | GCast (_,b,CastCoerce) -> is_free_in b
   and is_free_in_br (_,ids,_,rt) =
-    (not (List.mem id ids)) && is_free_in rt
+    (not (Id.List.mem id ids)) && is_free_in rt
   in
   is_free_in
 
@@ -439,7 +438,7 @@ let rec pattern_to_term  = function
       let patl_as_term =
 	List.map pattern_to_term patternl
       in
-      mkGApp(mkGRef(Libnames.ConstructRef constr),
+      mkGApp(mkGRef(Globnames.ConstructRef constr),
 	     implicit_args@patl_as_term
 	    )
 
@@ -449,7 +448,7 @@ let replace_var_by_term x_id term =
   let rec replace_var_by_pattern rt =
     match rt with
       | GRef _ -> rt
-      | GVar(_,id) when id_ord id x_id == 0 -> term
+      | GVar(_,id) when Id.compare id x_id == 0 -> term
       | GVar _ -> rt
       | GEvar _ -> rt
       | GPatVar _ -> rt
@@ -458,7 +457,7 @@ let replace_var_by_term x_id term =
 	       replace_var_by_pattern rt',
 	       List.map replace_var_by_pattern rtl
 	      )
-      | GLambda(_,Name id,_,_,_) when id_ord id x_id == 0 -> rt
+      | GLambda(_,Name id,_,_,_) when Id.compare id x_id == 0 -> rt
       | GLambda(loc,name,k,t,b) ->
 	  GLambda(loc,
 		  name,
@@ -466,7 +465,7 @@ let replace_var_by_term x_id term =
 		  replace_var_by_pattern t,
 		  replace_var_by_pattern b
 		 )
-      | GProd(_,Name id,_,_,_) when id_ord id x_id == 0 -> rt
+      | GProd(_,Name id,_,_,_) when Id.compare id x_id == 0 -> rt
       | GProd(loc,name,k,t,b) ->
 	  GProd(loc,
 		  name,
@@ -474,7 +473,7 @@ let replace_var_by_term x_id term =
 		  replace_var_by_pattern t,
 		  replace_var_by_pattern b
 		 )
-      | GLetIn(_,Name id,_,_) when id_ord id x_id == 0 -> rt
+      | GLetIn(_,Name id,_,_) when Id.compare id x_id == 0 -> rt
       | GLetIn(loc,name,def,b) ->
 	  GLetIn(loc,
 		 name,
@@ -482,7 +481,7 @@ let replace_var_by_term x_id term =
 		 replace_var_by_pattern b
 		)
       | GLetTuple(_,nal,_,_,_)
-	  when List.exists (function Name id -> id = x_id | _ -> false) nal  ->
+	  when List.exists (function Name id -> Id.equal id x_id | _ -> false) nal  ->
 	  rt
       | GLetTuple(loc,nal,(na,rto),def,b) ->
 	  GLetTuple(loc,
@@ -506,12 +505,11 @@ let replace_var_by_term x_id term =
       | GRec _ -> raise (UserError("",str "Not handled GRec"))
       | GSort _ -> rt
       | GHole _ -> rt
-      | GCast(loc,b,CastConv(k,t)) ->
-	  GCast(loc,replace_var_by_pattern b,CastConv(k,replace_var_by_pattern t))
-      | GCast(loc,b,CastCoerce) ->
-	  GCast(loc,replace_var_by_pattern b,CastCoerce)
+      | GCast(loc,b,c) ->
+	  GCast(loc,replace_var_by_pattern b,
+		Miscops.map_cast_type replace_var_by_pattern c)
   and replace_var_by_pattern_br ((loc,idl,patl,res) as br) =
-    if List.exists (fun id -> id_ord id x_id == 0) idl
+    if List.exists (fun id -> Id.compare id x_id == 0) idl
     then br
     else (loc,idl,patl,replace_var_by_pattern res)
   in
@@ -529,13 +527,12 @@ let rec are_unifiable_aux  = function
       match eq with
 	 | PatVar _,_ | _,PatVar _ -> are_unifiable_aux eqs
 	 | PatCstr(_,constructor1,cpl1,_),PatCstr(_,constructor2,cpl2,_) ->
-	     if constructor2 <> constructor1
+	     if not (eq_constructor constructor2 constructor1)
 	     then raise NotUnifiable
 	     else
 	       let eqs' =
- 		 try  ((List.combine cpl1 cpl2)@eqs)
-		 with e when Errors.noncritical e ->
-                   anomaly "are_unifiable_aux"
+		 try (List.combine cpl1 cpl2) @ eqs
+		 with Invalid_argument _ -> anomaly (Pp.str "are_unifiable_aux")
 	       in
 	       are_unifiable_aux eqs'
 
@@ -552,13 +549,12 @@ let rec eq_cases_pattern_aux  = function
       match eq with
 	 | PatVar _,PatVar _ -> eq_cases_pattern_aux eqs
 	 | PatCstr(_,constructor1,cpl1,_),PatCstr(_,constructor2,cpl2,_) ->
-	     if constructor2 <> constructor1
+	     if not (eq_constructor constructor2 constructor1)
 	     then raise NotUnifiable
 	     else
 	       let eqs' =
- 		 try  ((List.combine cpl1 cpl2)@eqs)
-		 with e when Errors.noncritical e ->
-                   anomaly "eq_cases_pattern_aux"
+		 try (List.combine cpl1 cpl2) @ eqs
+		 with Invalid_argument _ -> anomaly (Pp.str "eq_cases_pattern_aux")
 	       in
 	       eq_cases_pattern_aux eqs'
 	 | _ -> raise NotUnifiable
@@ -574,13 +570,13 @@ let eq_cases_pattern pat1 pat2 =
 let ids_of_pat =
   let rec ids_of_pat ids = function
     | PatVar(_,Anonymous) -> ids
-    | PatVar(_,Name id) -> Idset.add id ids
+    | PatVar(_,Name id) -> Id.Set.add id ids
     | PatCstr(_,_,patl,_) -> List.fold_left ids_of_pat ids patl
   in
-  ids_of_pat Idset.empty
+  ids_of_pat Id.Set.empty
 
 let id_of_name = function
-  | Names.Anonymous -> id_of_string "x"
+  | Names.Anonymous -> Id.of_string "x"
   | Names.Name x -> x
 
 (* TODO: finish Rec caes *)
@@ -594,7 +590,7 @@ let ids_of_glob_constr c =
       | GLambda (loc,na,k,ty,c) -> idof na :: ids_of_glob_constr [] ty @ ids_of_glob_constr [] c @ acc
       | GProd (loc,na,k,ty,c) -> idof na :: ids_of_glob_constr [] ty @ ids_of_glob_constr [] c @ acc
       | GLetIn (loc,na,b,c) -> idof na :: ids_of_glob_constr [] b @ ids_of_glob_constr [] c @ acc
-      | GCast (loc,c,CastConv(k,t)) -> ids_of_glob_constr [] c @ ids_of_glob_constr [] t @ acc
+      | GCast (loc,c,(CastConv t|CastVM t|CastNative t)) -> ids_of_glob_constr [] c @ ids_of_glob_constr [] t @ acc
       | GCast (loc,c,CastCoerce) -> ids_of_glob_constr [] c @ acc
       | GIf (loc,c,(na,po),b1,b2) -> ids_of_glob_constr [] c @ ids_of_glob_constr [] b1 @ ids_of_glob_constr [] b2 @ acc
       | GLetTuple (_,nal,(na,po),b,c) ->
@@ -605,7 +601,7 @@ let ids_of_glob_constr c =
       | (GSort _ | GHole _ | GRef _ | GEvar _ | GPatVar _) -> []
   in
   (* build the set *)
-  List.fold_left (fun acc x -> Idset.add x acc) Idset.empty (ids_of_glob_constr [] c)
+  List.fold_left (fun acc x -> Id.Set.add x acc) Id.Set.empty (ids_of_glob_constr [] c)
 
 
 
@@ -662,10 +658,9 @@ let zeta_normalize =
       | GRec _ -> raise (UserError("",str "Not handled GRec"))
       | GSort _ -> rt
       | GHole _ -> rt
-      | GCast(loc,b,CastConv(k,t)) ->
-	  GCast(loc,zeta_normalize_term b,CastConv(k,zeta_normalize_term t))
-      | GCast(loc,b,CastCoerce) ->
-	  GCast(loc,zeta_normalize_term b,CastCoerce)
+      | GCast(loc,b,c) ->
+	  GCast(loc,zeta_normalize_term b,
+                Miscops.map_cast_type zeta_normalize_term c)
   and zeta_normalize_br (loc,idl,patl,res) =
     (loc,idl,patl,zeta_normalize_term res)
   in
@@ -680,7 +675,7 @@ let expand_as =
     match pat with
       | PatVar _ -> map
       | PatCstr(_,_,patl,Name id) ->
-	  Idmap.add id (pattern_to_term pat) (List.fold_left add_as map patl)
+	  Id.Map.add id (pattern_to_term pat) (List.fold_left add_as map patl)
       | PatCstr(_,_,patl,_) -> List.fold_left add_as map patl
   in
   let rec expand_as map rt =
@@ -689,7 +684,7 @@ let expand_as =
       | GVar(_,id) ->
 	  begin
 	    try
-	      Idmap.find id map
+	      Id.Map.find id map
 	    with Not_found -> rt
 	  end
       | GApp(loc,f,args) -> GApp(loc,expand_as map f,List.map (expand_as map) args)
@@ -703,12 +698,13 @@ let expand_as =
 	  GIf(loc,expand_as map e,(na,Option.map (expand_as map) po),
 	      expand_as map br1, expand_as map br2)
       | GRec _ ->  error "Not handled GRec"
-      | GCast(loc,b,CastConv(kind,t)) -> GCast(loc,expand_as map b,CastConv(kind,expand_as map t))
-      | GCast(loc,b,CastCoerce) -> GCast(loc,expand_as map b,CastCoerce)
+      | GCast(loc,b,c) ->
+	  GCast(loc,expand_as map b,
+		Miscops.map_cast_type (expand_as map) c)
       | GCases(loc,sty,po,el,brl) ->
 	  GCases(loc, sty, Option.map (expand_as map) po, List.map (fun (rt,t) -> expand_as map rt,t) el,
 		List.map (expand_as_br map) brl)
   and expand_as_br map (loc,idl,cpl,rt) =
     (loc,idl,cpl, expand_as (List.fold_left add_as map cpl) rt)
   in
-  expand_as Idmap.empty
+  expand_as Id.Map.empty

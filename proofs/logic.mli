@@ -8,7 +8,7 @@
 
 open Names
 open Term
-open Sign
+open Context
 open Evd
 open Environ
 open Proof_type
@@ -32,10 +32,6 @@ val with_check    : tactic -> tactic
 
 val prim_refiner : prim_rule -> evar_map -> goal -> goal list * evar_map
 
-type proof_variable
-
-
-val proof_variable_index : identifier -> proof_variable list -> int
 
 (** {6 Refiner errors. } *)
 
@@ -43,7 +39,7 @@ type refiner_error =
 
   (*i Errors raised by the refiner i*)
   | BadType of constr * constr * constr
-  | UnresolvedBindings of name list
+  | UnresolvedBindings of Name.t list
   | CannotApply of constr * constr
   | NotWellTyped of constr
   | NonLinearProof of constr
@@ -51,7 +47,7 @@ type refiner_error =
 
   (*i Errors raised by the tactics i*)
   | IntroNeedsProduct
-  | DoesNotOccurIn of constr * identifier
+  | DoesNotOccurIn of constr * Id.t
 
 exception RefinerError of refiner_error
 

@@ -13,29 +13,29 @@
 (* [t] is the type of object to hash-cons
  * [u] is the type of hash-cons functions for the sub-structures
  *   of objects of type t (u usually has the form (t1->t1)*(t2->t2)*...).
- * [hash_sub u x] is a function that hash-cons the sub-structures of x using
+ * [hashcons u x] is a function that hash-cons the sub-structures of x using
  *   the hash-consing functions u provides.
  * [equal] is a comparison function. It is allowed to use physical equality
- *   on the sub-terms hash-consed by the hash_sub function.
+ *   on the sub-terms hash-consed by the hashcons function.
  * [hash] is the hash function given to the Hashtbl.Make function
  *
  * Note that this module type coerces to the argument of Hashtbl.Make.
  *)
 
-module type Comp =
+module type HashconsedType =
   sig
     type t
     type u
-    val hash_sub :  u -> t -> t
+    val hashcons :  u -> t -> t
     val equal : t -> t -> bool
     val hash : t -> int
   end
 
-(* The output is a function f such that
- * [f ()] has the side-effect of creating (internally) a hash-table of the
+(* The output is a function [generate] such that
+ * [generate ()] has the side-effect of creating (internally) a hash-table of the
  *   hash-consed objects. The result is a function taking the sub-hashcons
  *   functions and an object, and hashcons it. It does not really make sense
- *   to call f() with different sub-hcons functions. That's why we use the
+ *   to call generate() with different sub-hcons functions. That's why we use the
  *   wrappers simple_hcons, recursive_hcons, ... The latter just take as
  *   argument the sub-hcons functions (the tables are created at that moment),
  *   and returns the hcons function for t.
@@ -45,10 +45,10 @@ module type S =
   sig
     type t
     type u
-    val f : unit -> (u -> t -> t)
+    val generate : unit -> (u -> t -> t)
   end
 
-module Make(X:Comp) =
+module Make (X : HashconsedType) =
   struct
     type t = X.t
     type u = X.u
@@ -58,34 +58,30 @@ module Make(X:Comp) =
      * w.r.t (=), although the equality on keys is X.equal. This is
      * granted since we hcons the subterms before looking up in the table.
      *)
-    module Htbl = Hashtbl.Make(
-      struct type t=X.t
-             type u=X.u
-             let hash=X.hash
-             let equal x1 x2 = (*incr comparaison;*) X.equal x1 x2
-      end)
+    module Htbl = Hashset.Make(X)
 
     (* The table is created when () is applied.
      * Hashconsing is then very simple:
-     *  1- hashcons the subterms using hash_sub and u
+     *  1- hashcons the subterms using hashcons and u
      *  2- look up in the table, if we do not get a hit, we add it
      *)
-    let f () =
+    let generate () =
       let tab = Htbl.create 97 in
         (fun u x ->
-           let y = X.hash_sub u x in
-            (* incr acces;*)
-             try let r = Htbl.find tab y in(* incr succes;*) r
-             with Not_found -> Htbl.add tab y y; y)
+           let y = X.hashcons u x in
+            Htbl.repr (X.hash y) y tab)
+
   end
 
 (* A few usefull wrappers:
- * takes as argument the function f above and build a function of type
+ * takes as argument the function [generate] above and build a function of type
  * u -> t -> t that creates a fresh table each time it is applied to the
  * sub-hcons functions. *)
 
 (* For non-recursive types it is quite easy. *)
-let simple_hcons h u = h () u
+let simple_hcons h u =
+  let h = h () in
+  fun x -> h u x
 
 (* For a recursive type T, we write the module of sig Comp with u equals
  * to (T -> T) * u0
@@ -97,15 +93,6 @@ let recursive_hcons h u =
   let hc = h () in
   let rec hrec x = hc (hrec,u) x in
   hrec
-
-(* If the structure may contain loops, use this one. *)
-let recursive_loop_hcons h u =
-  let hc = h () in
-  let rec hrec visited x =
-    if List.memq x visited then x
-    else hc (hrec (x::visited),u) x
-  in
-  hrec []
 
 (* For 2 mutually recursive types *)
 let recursive2_hcons h1 h2 u1 u2 =
@@ -132,15 +119,48 @@ let register_hcons h u =
 (* Basic hashcons modules for string and obj. Integers do not need be
    hashconsed.  *)
 
+module type HashedType = sig type t val hash : t -> int end
+
+(* list *)
+module Hlist (D:HashedType) =
+  Make(
+    struct
+      type t = D.t list
+      type u = (t -> t) * (D.t -> D.t)
+      let hashcons (hrec,hdata) = function
+        | x :: l -> hdata x :: hrec l
+        | l -> l
+      let equal l1 l2 =
+        l1 == l2 ||
+          match l1, l2 with
+          | [], [] -> true
+          | x1::l1, x2::l2 -> x1==x2 && l1==l2
+          | _ -> false
+      let rec hash accu = function
+      | [] -> accu
+      | x :: l ->
+        let accu = Hashset.Combine.combine (D.hash x) accu in
+        hash accu l
+      let hash l = hash 0 l
+    end)
+
 (* string *)
 module Hstring = Make(
   struct
     type t = string
     type u = unit
-    let hash_sub () s =(* incr accesstr;*) s
-    let equal s1 s2 =(* incr comparaisonstr;
-      if*) s1=s2(* then (incr successtr; true) else false*)
-    let hash = Hashtbl.hash
+    let hashcons () s =(* incr accesstr;*) s
+    external equal : string -> string -> bool = "caml_string_equal" "noalloc"
+    (** Copy from CString *)
+    let rec hash len s i accu =
+      if i = len then accu
+      else
+        let c = Char.code (String.unsafe_get s i) in
+        hash len s (succ i) (accu * 19 + c)
+
+    let hash s =
+      let len = String.length s in
+      hash len s 0 0
   end)
 
 (* Obj.t *)
@@ -148,10 +168,10 @@ exception NotEq
 
 (* From CAMLLIB/caml/mlvalues.h *)
 let no_scan_tag = 251
-let tuple_p obj = Obj.is_block obj & (Obj.tag obj < no_scan_tag)
+let tuple_p obj = Obj.is_block obj && (Obj.tag obj < no_scan_tag)
 
 let comp_obj o1 o2 =
-  if tuple_p o1 & tuple_p o2 then
+  if tuple_p o1 && tuple_p o2 then
     let n1 = Obj.size o1 and n2 = Obj.size o2 in
       if n1=n2 then
         try
@@ -176,7 +196,7 @@ module Hobj = Make(
   struct
     type t = Obj.t
     type u = (Obj.t -> Obj.t) * unit
-    let hash_sub (hrec,_) = hash_obj hrec
+    let hashcons (hrec,_) = hash_obj hrec
     let equal = comp_obj
     let hash = Hashtbl.hash
   end)
@@ -186,8 +206,8 @@ module Hobj = Make(
  *)
 (* string : string -> string *)
 (* obj : Obj.t -> Obj.t *)
-let string = register_hcons (simple_hcons Hstring.f) ()
-let obj = register_hcons (recursive_hcons Hobj.f) ()
+let string = register_hcons (simple_hcons Hstring.generate) ()
+let obj = register_hcons (recursive_hcons Hobj.generate) ()
 
 (* The unsafe polymorphic hashconsing function *)
 let magic_hash (c : 'a) =

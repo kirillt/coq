@@ -16,7 +16,7 @@ Require Fin.
 Require Import VectorDef.
 Import VectorNotations.
 
-Definition cons_inj A a1 a2 n (v1 v2 : t A n)
+Definition cons_inj {A} {a1 a2} {n} {v1 v2 : t A n}
  (eq : a1 :: v1 = a2 :: v2) : a1 = a2 /\ v1 = v2 :=
    match eq in _ = x return caseS _ (fun a2' _ v2' => fun v1' => a1 = a2' /\ v1' = v2') x v1
    with | eq_refl => conj eq_refl eq_refl
@@ -59,7 +59,7 @@ Qed.
 Lemma shiftrepeat_nth A: forall n k (v: t A (S n)),
   nth (shiftrepeat v) (Fin.L_R 1 k) = nth v k.
 Proof.
-refine (@Fin.rectS _ _ _); intros.
+refine (@Fin.rectS _ _ _); lazy beta; [ intros n v | intros n p H v ].
   revert n v; refine (@caseS _ _ _); simpl; intros. now destruct t.
   revert p H.
   refine (match v as v' in t _ m return match m as m' return t A m' -> Type with

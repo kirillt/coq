@@ -9,7 +9,7 @@
 open Names
 open Libnames
 open Term
-open Sign
+open Context
 open Declarations
 open Entries
 open Indtypes
@@ -29,10 +29,10 @@ open Nametab
 (** Declaration of local constructions (Variable/Hypothesis/Local) *)
 
 type section_variable_entry =
-  | SectionLocalDef of constr * types option * bool (** opacity *)
+  | SectionLocalDef of definition_entry
   | SectionLocalAssum of types * bool (** Implicit status *)
 
-type variable_declaration = dir_path * section_variable_entry * logical_kind
+type variable_declaration = DirPath.t * section_variable_entry * logical_kind
 
 val declare_variable : variable -> variable_declaration -> object_name
 
@@ -55,7 +55,16 @@ type internal_flag =
   | UserVerbose
 
 val declare_constant :
- ?internal:internal_flag -> identifier -> constant_declaration -> constant
+ ?internal:internal_flag -> ?local:bool -> Id.t -> constant_declaration -> constant
+
+val declare_definition : 
+  ?internal:internal_flag -> ?opaque:bool -> ?kind:definition_object_kind ->
+  ?local:bool -> Id.t -> ?types:constr -> Entries.const_entry_body -> constant
+
+(** Since transparent constant's side effects are globally declared, we
+ *  need that *)
+val set_declare_scheme :
+  (string -> (inductive * constant) array -> unit) -> unit
 
 (** [declare_mind me] declares a block of inductive types with
    their constructors in the current section; it returns the path of
@@ -63,20 +72,17 @@ val declare_constant :
 val declare_mind : internal_flag -> mutual_inductive_entry -> object_name
 
 (** Hooks for XML output *)
-val set_xml_declare_variable : (object_name -> unit) -> unit
-val set_xml_declare_constant : (internal_flag * constant -> unit) -> unit
-val set_xml_declare_inductive : (internal_flag * object_name -> unit) -> unit
-
-(** Hook for the cache function of constants and inductives *)
-val add_cache_hook : (full_path -> unit) -> unit
+val xml_declare_variable : (object_name -> unit) Hook.t
+val xml_declare_constant : (internal_flag * constant -> unit) Hook.t
+val xml_declare_inductive : (internal_flag * object_name -> unit) Hook.t
 
 (** Declaration messages *)
 
-val definition_message : identifier -> unit
-val assumption_message : identifier -> unit
-val fixpoint_message : int array option -> identifier list -> unit
-val cofixpoint_message : identifier list -> unit
+val definition_message : Id.t -> unit
+val assumption_message : Id.t -> unit
+val fixpoint_message : int array option -> Id.t list -> unit
+val cofixpoint_message : Id.t list -> unit
 val recursive_message : bool (** true = fixpoint *) ->
-  int array option -> identifier list -> unit
+  int array option -> Id.t list -> unit
 
-val exists_name : identifier -> bool
+val exists_name : Id.t -> bool

@@ -17,10 +17,9 @@
 (*   the number of source of numbering.                                   *)
 (**************************************************************************)
 
-open Names
-
 module type INT = sig
   type bigint
+  val equal : bigint -> bigint -> bool
   val less_than : bigint -> bigint -> bool
   val add : bigint -> bigint -> bigint
   val sub : bigint -> bigint -> bigint
@@ -34,26 +33,26 @@ end
 
 let debug = ref false
 
-module MakeOmegaSolver (Int:INT) = struct
+module MakeOmegaSolver (I:INT) = struct
 
-type bigint = Int.bigint
-let (<?) = Int.less_than
-let (<=?) x y = Int.less_than x y or x = y
-let (>?) x y = Int.less_than y x
-let (>=?) x y = Int.less_than y x or x = y
-let (=?) = (=)
-let (+) = Int.add
-let (-) = Int.sub
-let ( * ) = Int.mult
-let (/) x y = fst (Int.euclid x y)
-let (mod) x y = snd (Int.euclid x y)
-let zero = Int.zero
-let one = Int.one
+type bigint = I.bigint
+let (=?) = I.equal
+let (<?) = I.less_than
+let (<=?) x y = I.less_than x y || x = y
+let (>?) x y = I.less_than y x
+let (>=?) x y = I.less_than y x || x = y
+let (+) = I.add
+let (-) = I.sub
+let ( * ) = I.mult
+let (/) x y = fst (I.euclid x y)
+let (mod) x y = snd (I.euclid x y)
+let zero = I.zero
+let one = I.one
 let two = one + one
-let negone = Int.neg one
-let abs x = if Int.less_than x zero then Int.neg x else x
-let string_of_bigint = Int.to_string
-let neg = Int.neg
+let negone = I.neg one
+let abs x = if I.less_than x zero then I.neg x else x
+let string_of_bigint = I.to_string
+let neg = I.neg
 
 (* To ensure that polymorphic (<) is not used mistakenly on big integers *)
 (* Warning: do not use (=) either on big int *)
@@ -241,7 +240,7 @@ let add_event, history, clear_history =
   (fun () -> !accu),
   (fun () -> accu := [])
 
-let nf_linear = Sort.list (fun x y -> x.v > y.v)
+let nf_linear = List.sort (fun x y -> Pervasives.(-) y.v x.v)
 
 let nf ((b : bool),(e,(x : int))) = (b,(nf_linear e,x))
 
@@ -303,16 +302,16 @@ let normalize ({id=id; kind=eq_flag; body=e; constant =x} as eq) =
           end
   end else
     let gcd = pgcd_l (List.map (fun f -> abs f.c) e) in
-    if eq_flag=EQUA & x mod gcd <> zero then begin
+    if eq_flag=EQUA && x mod gcd <> zero then begin
       add_event (NOT_EXACT_DIVIDE (eq,gcd)); raise UNSOLVABLE
-    end else if eq_flag=DISE & x mod gcd <> zero then begin
+    end else if eq_flag=DISE && x mod gcd <> zero then begin
       add_event (FORGET_C eq.id); []
     end else if gcd <> one then begin
       let c = floor_div x gcd in
       let d = x - c * gcd in
       let new_eq = {id=id; kind=eq_flag; constant=c;
                     body=map_eq_linear (fun c -> c / gcd) e} in
-      add_event (if eq_flag=EQUA or eq_flag = DISE then EXACT_DIVIDE(eq,gcd)
+      add_event (if eq_flag=EQUA || eq_flag = DISE then EXACT_DIVIDE(eq,gcd)
                  else DIVIDE_AND_APPROX(eq,new_eq,gcd,d));
       [new_eq]
     end else [eq]
@@ -352,11 +351,11 @@ let banerjee_step (new_eq_id,new_var_id,print_var) original l1 l2 =
   let new_eq = List.hd (normalize new_eq) in
   let eliminated_var, def = chop_var var new_eq.body in
   let other_equations =
-    Util.list_map_append
+    Util.List.map_append
       (fun e ->
         normalize (eliminate_with_in new_eq_id eliminated_var new_eq e)) l1 in
   let inequations =
-    Util.list_map_append
+    Util.List.map_append
       (fun e ->
         normalize (eliminate_with_in new_eq_id eliminated_var new_eq e)) l2 in
   let original' = eliminate_with_in new_eq_id eliminated_var new_eq original in
@@ -368,9 +367,9 @@ let rec eliminate_one_equation ((new_eq_id,new_var_id,print_var) as new_ids) (e,
   if !debug then display_system print_var (e::other);
   try
     let v,def = chop_factor_1 e.body in
-    (Util.list_map_append
+    (Util.List.map_append
       (fun e' -> normalize (eliminate_with_in new_eq_id v e e')) other,
-     Util.list_map_append
+     Util.List.map_append
        (fun e' -> normalize (eliminate_with_in new_eq_id v e e')) ineqs)
   with FACTOR1 ->
     eliminate_one_equation new_ids (banerjee_step new_ids e other ineqs)
@@ -474,7 +473,7 @@ let select_variable system =
   Hashtbl.iter
     (fun v ({contents =  c}) ->
        incr var_cpt;
-       if c <? !cmin or !vmin = (-1) then begin vmin := v; cmin := c end)
+       if c <? !cmin || !vmin = (-1) then begin vmin := v; cmin := c end)
     table;
   if !var_cpt < 1 then raise SOLVED_SYSTEM;
   !vmin
@@ -523,7 +522,7 @@ let simplify ((new_eq_id,new_var_id,print_var) as new_ids) dark_shadow system =
     failwith "disequation in simplify";
   clear_history ();
   List.iter (fun e -> add_event (HYP e)) system;
-  let system = Util.list_map_append normalize system in
+  let system = Util.List.map_append normalize system in
   let eqs,ineqs = List.partition (fun e -> e.kind=EQUA) system in
   let simp_eq,simp_ineq = redundancy_elimination new_eq_id ineqs in
   let system = (eqs @ simp_eq,simp_ineq) in
@@ -547,30 +546,30 @@ let rec depend relie_on accu = function
   | act :: l ->
       begin match act with
 	| DIVIDE_AND_APPROX (e,_,_,_) ->
-            if List.mem e.id relie_on then depend relie_on (act::accu) l
+            if Int.List.mem e.id relie_on then depend relie_on (act::accu) l
             else depend relie_on accu l
 	| EXACT_DIVIDE (e,_) ->
-            if List.mem e.id relie_on then depend relie_on (act::accu) l
+            if Int.List.mem e.id relie_on then depend relie_on (act::accu) l
             else depend relie_on accu l
 	| WEAKEN (e,_) ->
-            if List.mem e relie_on then depend relie_on (act::accu) l
+            if Int.List.mem e relie_on then depend relie_on (act::accu) l
             else depend relie_on accu l
 	| SUM (e,(_,e1),(_,e2)) ->
-            if List.mem e relie_on then
+            if Int.List.mem e relie_on then
 	      depend (e1.id::e2.id::relie_on) (act::accu) l
             else
 	      depend relie_on accu l
 	| STATE {st_new_eq=e;st_orig=o} ->
-            if List.mem e.id relie_on then depend (o.id::relie_on) (act::accu) l
+            if Int.List.mem e.id relie_on then depend (o.id::relie_on) (act::accu) l
             else depend relie_on accu l
 	| HYP e ->
-            if List.mem e.id relie_on then depend relie_on (act::accu) l
+            if Int.List.mem e.id relie_on then depend relie_on (act::accu) l
             else depend relie_on accu l
 	| FORGET_C _ -> depend relie_on accu l
 	| FORGET _ -> depend relie_on accu l
 	| FORGET_I _ -> depend relie_on accu l
 	| MERGE_EQ (e,e1,e2) ->
-            if List.mem e relie_on then
+            if Int.List.mem e relie_on then
 	      depend (e1.id::e2::relie_on) (act::accu) l
             else
 	      depend relie_on accu l
@@ -658,7 +657,7 @@ let simplify_strong ((new_eq_id,new_var_id,print_var) as new_ids) system =
     | ([],ineqs,expl_map) -> ineqs,expl_map
   in
   try
-    let system = Util.list_map_append normalize system in
+    let system = Util.List.map_append normalize system in
     let eqs,ineqs = List.partition (fun e -> e.kind=EQUA) system in
     let dise,ine = List.partition (fun e -> e.kind = DISE) ineqs in
     let simp_eq,simp_ineq = redundancy_elimination new_eq_id ine in
@@ -674,7 +673,7 @@ let simplify_strong ((new_eq_id,new_var_id,print_var) as new_ids) system =
            try let _ = loop2 sys in raise NO_CONTRADICTION
            with UNSOLVABLE ->
              let relie_on,path = depend [] [] (history ()) in
-             let dc,_ = List.partition (fun (_,id,_) -> List.mem id relie_on) decomp in
+             let dc,_ = List.partition (fun (_,id,_) -> Int.List.mem id relie_on) decomp in
              let red = List.map (fun (x,_,_) -> x) dc in
              (red,relie_on,decomp,path))
         sys_exploded
@@ -699,14 +698,16 @@ let simplify_strong ((new_eq_id,new_var_id,print_var) as new_ids) system =
           | [] -> failwith "solve" in
         let s1,s2 =
           List.partition (fun (_,_,decomp,_) -> sign decomp) systems in
-        let s1' =
-	  List.map (fun (dep,ro,dc,pa) -> (Util.list_except id dep,ro,dc,pa)) s1 in
-        let s2' =
-	  List.map (fun (dep,ro,dc,pa) -> (Util.list_except id dep,ro,dc,pa)) s2 in
+        let remove_int (dep,ro,dc,pa) =
+          (Util.List.except Int.equal id dep,ro,dc,pa)
+        in
+        let s1' = List.map remove_int s1 in
+        let s2' = List.map remove_int s2 in
         let (r1,relie1) = solve s1'
 	and (r2,relie2) = solve s2' in
-	let (eq,id1,id2) = List.assoc id explode_map in
-	[SPLIT_INEQ(eq,(id1,r1),(id2, r2))], eq.id :: Util.list_union relie1 relie2
+	let (eq,id1,id2) = Int.List.assoc id explode_map in
+	[SPLIT_INEQ(eq,(id1,r1),(id2, r2))],
+        eq.id :: Util.List.union Int.equal relie1 relie2
       with FULL_SOLUTION (x0,x1) -> (x0,x1)
     in
     let act,relie_on = solve all_solutions in

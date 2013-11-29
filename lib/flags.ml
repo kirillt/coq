@@ -8,17 +8,48 @@
 
 let with_option o f x =
   let old = !o in o:=true;
-  try let r = f x in o := old; r
-  with reraise -> o := old; raise reraise
+   try let r = f x in o := old; r
+   with reraise ->
+     let reraise = Backtrace.add_backtrace reraise in
+     let () = o := old in
+     raise reraise
+
+let with_options ol f x =
+  let vl = List.map (!) ol in
+  let () = List.iter (fun r -> r := true) ol in
+  try
+    let r = f x in
+    let () = List.iter2 (:=) ol vl in r
+  with reraise ->
+    let reraise = Backtrace.add_backtrace reraise in
+    let () = List.iter2 (:=) ol vl in
+    raise reraise
 
 let without_option o f x =
   let old = !o in o:=false;
   try let r = f x in o := old; r
-  with reraise -> o := old; raise reraise
+  with reraise ->
+    let reraise = Backtrace.add_backtrace reraise in
+    let () = o := old in
+    raise reraise
+
+let with_extra_values o l f x =
+  let old = !o in o:=old@l;
+  try let r = f x in o := old; r
+  with reraise ->
+    let reraise = Backtrace.add_backtrace reraise in
+    let () = o := old in
+    raise reraise
 
 let boot = ref false
 
 let batch_mode = ref false
+
+let ide_slave_mode = ref false
+let coq_slave_mode = ref (-1)
+let coq_slaves_number = ref 1
+
+let coq_slave_options = ref None
 
 let debug = ref false
 
@@ -28,6 +59,10 @@ let term_quality = ref false
 
 let xml_export = ref false
 
+let ide_slave = ref false
+
+let time = ref false
+
 type load_proofs = Force | Lazy | Dont
 
 let load_proofs = ref Lazy
@@ -36,19 +71,32 @@ let raw_print = ref false
 
 let record_print = ref true
 
+let we_are_parsing = ref false
+
 (* Compatibility mode *)
 
 (* Current means no particular compatibility consideration.
    For correct comparisons, this constructor should remain the last one. *)
 
-type compat_version = V8_2 | V8_3 | Current
+type compat_version = V8_2 | V8_3 | V8_4 | Current
+
 let compat_version = ref Current
-let version_strictly_greater v = !compat_version > v
+
+let version_strictly_greater v = match !compat_version, v with
+| V8_2, (V8_2 | V8_3 | V8_4 | Current) -> false
+| V8_3, (V8_3 | V8_4 | Current) -> false
+| V8_4, (V8_4 | Current) -> false
+| Current, Current -> false
+| V8_3, V8_2 -> true
+| V8_4, (V8_2 | V8_3) -> true
+| Current, (V8_2 | V8_3 | V8_4) -> true
+
 let version_less_or_equal v = not (version_strictly_greater v)
 
 let pr_version = function
   | V8_2 -> "8.2"
   | V8_3 -> "8.3"
+  | V8_4 -> "8.4"
   | Current -> "current"
 
 (* Translate *)
@@ -69,11 +117,17 @@ let verbosely f x = without_option silent f x
 let if_silent f x = if !silent then f x
 let if_verbose f x = if not !silent then f x
 
+(* Use terminal color *)
+let term_color = ref false
+let make_term_color b = term_color := b
+let is_term_color () = !term_color
+
 let auto_intros = ref true
 let make_auto_intros flag = auto_intros := flag
 let is_auto_intros () = version_strictly_greater V8_2 && !auto_intros
 
-let hash_cons_proofs = ref true
+let program_mode = ref false
+let is_program_mode () = !program_mode
 
 let warn = ref true
 let make_warn flag = warn := flag;  ()
@@ -88,24 +142,19 @@ let print_hyps_limit () = !print_hyps_limit
 (* A list of the areas of the system where "unsafe" operation
  * has been requested *)
 
-module Stringset = Set.Make(struct type t = string let compare = compare end)
+module StringOrd =
+struct
+  type t = string
+  let compare = String.compare
+end
+
+module Stringset = Set.Make(StringOrd)
 
 let unsafe_set = ref Stringset.empty
 let add_unsafe s = unsafe_set := Stringset.add s !unsafe_set
 let is_unsafe s = Stringset.mem s !unsafe_set
 
 (* Flags for external tools *)
-
-let subst_command_placeholder s t =
-  let buff = Buffer.create (String.length s + String.length t) in
-  let i = ref 0 in
-  while (!i < String.length s) do
-    if s.[!i] = '%' & !i+1 < String.length s & s.[!i+1] = 's'
-    then (Buffer.add_string buff t;incr i)
-    else Buffer.add_char buff s.[!i];
-    incr i
-  done;
-  Buffer.contents buff
 
 let browser_cmd_fmt =
  try
@@ -132,11 +181,7 @@ let canonical_path_name p =
 
 (* Options for changing coqlib *)
 let coqlib_spec = ref false
-let coqlib = ref (
-  (* same as Envars.coqroot, but copied here because of dependencies *)
-  Filename.dirname
-    (canonical_path_name (Filename.dirname Sys.executable_name))
-)
+let coqlib = ref "(not initialized yet)"
 
 (* Options for changing camlbin (used by coqmktop) *)
 let camlbin_spec = ref false
@@ -152,3 +197,11 @@ let default_inline_level = 100
 let inline_level = ref default_inline_level
 let set_inline_level = (:=) inline_level
 let get_inline_level () = !inline_level
+
+(* Disabling native code compilation for conversion and normalization *)
+let no_native_compiler = ref Coq_config.no_native_compiler
+
+(* Print the mod uid associated to a vo file by the native compiler *)
+let print_mod_uid = ref false
+
+let tactic_context_compat = ref false

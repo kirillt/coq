@@ -58,7 +58,7 @@ let _ = begin
   Options.ocamllex := A Coq_config.ocamllex;
 end
 
-let w32 = (Coq_config.arch = "win32")
+let w32 = Coq_config.arch_is_win32
 
 let w32pref = "i586-mingw32msvc"
 let w32ocamlc = w32pref^"-ocamlc"
@@ -88,7 +88,6 @@ let opt = (Coq_config.best = "opt")
 let ide = Coq_config.has_coqide
 let hasdynlink = Coq_config.has_natdynlink
 let os5fix = (Coq_config.natdynlinkflag = "os5fixme")
-let flag_dynlink = if hasdynlink then A"-DHasDynlink" else N
 let dep_dynlink = if hasdynlink then N else Sh"-natdynlink no"
 let lablgtkincl = Sh Coq_config.coqideincl
 let local = Coq_config.local
@@ -104,15 +103,15 @@ let _build = Options.build_dir
 (** Abbreviations about files *)
 
 let core_libs =
-  ["lib/lib"; "kernel/kernel"; "library/library";
+  ["lib/clib"; "lib/lib"; "kernel/kernel"; "library/library";
    "pretyping/pretyping"; "interp/interp";  "proofs/proofs";
-   "parsing/parsing"; "tactics/tactics"; "toplevel/toplevel";
-   "parsing/highparsing"; "tactics/hightactics"]
+   "printing/printing"; "parsing/parsing"; "tactics/tactics";
+   "toplevel/toplevel";  "parsing/highparsing"; "tactics/hightactics"]
 let core_cma = List.map (fun s -> s^".cma") core_libs
 let core_cmxa = List.map (fun s -> s^".cmxa") core_libs
 let core_mllib = List.map (fun s -> s^".mllib") core_libs
 
-let tolink = "scripts/tolink.ml"
+let tolink = "tools/tolink.ml"
 
 let c_headers_base =
   ["coq_fix_code.h";"coq_instruct.h"; "coq_memory.h"; "int64_emul.h";
@@ -126,9 +125,7 @@ let copcodes = "kernel/copcodes.ml"
 
 let libcoqrun = "kernel/byterun/libcoqrun.a"
 
-let initialcoq = "states/initial.coq"
-let init_vo = ["theories/Init/Prelude.vo";"theories/Init/Logic_Type.vo"]
-let makeinitial = "states/MakeInitial.v"
+let init_vo = "theories/Init/Prelude.vo"
 
 let nmake = "theories/Numbers/Natural/BigN/NMake_gen.v"
 let nmakegen = "theories/Numbers/Natural/BigN/NMake_gen.ml"
@@ -158,7 +155,7 @@ let coqdepdeps = theoriesv @ pluginsv @ pluginsmllib
 let coqtop = "toplevel/coqtop"
 let coqide = "ide/coqide"
 let coqdepboot = "tools/coqdep_boot"
-let coqmktop = "scripts/coqmktop"
+let coqmktop = "tools/coqmktop"
 
 (** The list of binaries to build:
     (name of link in bin/, name in _build, install both or only best) *)
@@ -170,7 +167,7 @@ let all_binaries =
  [ "coqtop", coqtop, Both;
    "coqide", "ide/coqide_main", Ide;
    "coqmktop", coqmktop, Both;
-   "coqc", "scripts/coqc", Both;
+   "coqc", "tools/coqc", Both;
    "coqchk", "checker/main", Both;
    "coqdep_boot", coqdepboot, Best;
    "coqdep", "tools/coqdep", Best;
@@ -278,8 +275,8 @@ let extra_rules () = begin
 	      T(tags_of_pathname ml4 ++ "p4option"); camlp4compat;
 	      A"-o"; Px ml; A"-impl"; P ml4]));
 
-  flag_and_dep ["p4mod"; "use_grammar"] (P "parsing/grammar.cma");
-  flag_and_dep ["p4mod"; "use_constr"] (P "parsing/q_constr.cmo");
+  flag_and_dep ["p4mod"; "use_grammar"] (P "grammar/grammar.cma");
+  flag_and_dep ["p4mod"; "use_constr"] (P "grammar/q_constr.cmo");
 
   flag_and_dep ["p4mod"; "use_compat5"] (P "tools/compat5.cmo");
   flag_and_dep ["p4mod"; "use_compat5b"] (P "tools/compat5b.cmo");
@@ -301,38 +298,17 @@ let extra_rules () = begin
   mlp_cmo "tools/compat5b";
   end;
 
-  ocaml_lib ~extern:true ~dir:Coq_config.camlp4lib ~tag_name:"use_camlpX"
-    ~byte:true ~native:true (if use_camlp5 then "gramlib" else "camlp4lib");
-
-(** Special case of toplevel/mltop.ml4:
-    - mltop.ml will be the old mltop.optml and be used to obtain mltop.cmx
-    - we add a special mltop.ml4 --> mltop.cmo rule, before all the others
-*)
-  flag ["is_mltop"; "p4option"] flag_dynlink;
-
-(*TODO: this is rather ugly for a simple file, we should try to
-        benefit more from predefined rules *)
-  let mltop = "toplevel/mltop" in
-  let ml4 = mltop^".ml4" and mlo = mltop^".cmo" and
-      ml = mltop^".ml" and mld = mltop^".ml.depends"
-  in
-  rule "mltop_byte" ~deps:[ml4;mld]  ~prod:mlo ~insert:`top
-    (fun env build ->
-       Ocaml_compiler.prepare_compile build ml;
-       Cmd (S [!Options.ocamlc; A"-c"; A"-pp";
-	       Quote (S [camlp4o; T(tags_of_pathname ml4 ++ "p4mod");
-			 A"-DByte";A"-DHasDynlink";camlp4compat;A"-impl"]);
-	       A"-rectypes"; camlp4incl; incl ml4; A"-impl"; P ml4]));
-
-(** All caml files are compiled with -rectypes and +camlp4/5
+(** All caml files are compiled with +camlp4/5
     and ide files need +lablgtk2 *)
 
   flag ["compile"; "ocaml"] (S [A"-rectypes"; camlp4incl]);
   flag ["link"; "ocaml"] (S [A"-rectypes"; camlp4incl]);
   flag ["ocaml"; "ide"; "compile"] lablgtkincl;
   flag ["ocaml"; "ide"; "link"] lablgtkincl;
-  flag ["ocaml"; "ide"; "link"; "byte"] (S [A"lablgtk.cma"; A"gtkThread.cmo"]);
-  flag ["ocaml"; "ide"; "link"; "native"] (S [A"lablgtk.cmxa"; A"gtkThread.cmx"]);
+  flag ["ocaml"; "ide"; "link"; "byte"]
+    (S [A"lablgtk.cma"; A"lablgtksourceview2.cma"]);
+  flag ["ocaml"; "ide"; "link"; "native"]
+    (S [A"lablgtk.cmxa"; A"lablgtksourceview2.cmxa"]);
 
 (** C code for the VM *)
 
@@ -381,8 +357,8 @@ let extra_rules () = begin
        let core_mods = String.concat " " (List.map cat core_mllib) in
        let core_cmas = String.concat " " core_cma in
        Echo (["let copts = \"-cclib -lcoqrun\"\n";
-	      "let core_libs = \"coq_config.cmo "^core_cmas^"\"\n";
-	      "let core_objs = \"Coq_config "^core_mods^"\"\n"],
+	      "let core_libs = \""^core_cmas^"\"\n";
+	      "let core_objs = \""^core_mods^"\"\n"],
 	     tolink));
 
 (** For windows, building coff object file from a .rc (for the icon) *)
@@ -419,8 +395,8 @@ let extra_rules () = begin
   let () =
     let fo = coqtop^".native" and fb = coqtop^".byte" in
     let depsall = (if w32 then [w32ico] else [])@[coqmktop_boot;libcoqrun] in
-    let depso = "coq_config.cmx" :: core_cmxa in
-    let depsb = "coq_config.cmo" :: core_cma in
+    let depso =  core_cmxa in
+    let depsb =  core_cma in
     let w32flag =
       if not w32 then N else S ([A"-camlbin";A w32bin;A "-ccopt";P w32ico])
     in
@@ -459,8 +435,8 @@ let extra_rules () = begin
   in
 
   let coq_v_rule d init =
-    let bootflag = if init then A"-nois" else N in
-    let gendep = if init then coqtopbest else initialcoq in
+    let bootflag = if init then A"-noinit" else N in
+    let gendep = if init then coqtopbest else init_vo in
     rule (d^".v.vo")
       ~prods:[d^"%.vo";d^"%.glob"] ~deps:[gendep;d^"%.v";d^"%.v.depends"]
       (fun env build ->
@@ -470,12 +446,6 @@ let extra_rules () = begin
   in
   coq_v_rule "theories/Init/" true;
   coq_v_rule "" false;
-
-(** Initial state *)
-
-  rule "initial.coq" ~prod:initialcoq ~deps:(makeinitial::init_vo)
-    (cmd [P coqtopbest;A"-boot";A"-batch";A"-nois";A"-notop";A"-silent";
-	  A"-l";P makeinitial; A"-outputstate";Px initialcoq]);
 
 (** Generation of _plugin_mod.ml files *)
 

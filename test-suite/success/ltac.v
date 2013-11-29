@@ -1,6 +1,6 @@
 (* The tactic language *)
 
-(* Submitted by Pierre Crégut *)
+(* Submitted by Pierre CrÃ©gut *)
 (* Checks substitution of x *)
 Ltac f x := unfold x; idtac.
 
@@ -9,7 +9,7 @@ f plus.
 reflexivity.
 Qed.
 
-(* Submitted by Pierre Crégut *)
+(* Submitted by Pierre CrÃ©gut *)
 (* Check syntactic correctness *)
 Ltac F x := idtac; G x
  with G y := idtac; F y.
@@ -211,7 +211,7 @@ is.
 exact I.
 Abort.
 
-(* Interférence entre espaces des noms *)
+(* InterfÃ©rence entre espaces des noms *)
 
 Ltac O := intro.
 Ltac Z1 t := set (x:=t).
@@ -298,7 +298,3 @@ evar(foo:nat).
 let evval := eval compute in foo in not_eq evval 1.
 let evval := eval compute in foo in not_eq 1 evval.
 Abort.
-
-(* Check that this returns an error and not an anomaly (see r13667) *)
-
-Fail Local Tactic Notation "myintro" := intro.

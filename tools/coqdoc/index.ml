@@ -6,8 +6,6 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Filename
-open Lexing
 open Printf
 open Cdglobals
 
@@ -36,7 +34,6 @@ type index_entry =
   | Def of string * entry_type
   | Ref of coq_module * string * entry_type
 
-let current_type : entry_type ref = ref Library
 let current_library = ref ""
   (** refers to the file being parsed *)
 
@@ -95,9 +92,6 @@ let empty_stack = []
 let module_stack = ref empty_stack
 let section_stack = ref empty_stack
 
-let init_stack () =
-  module_stack := empty_stack; section_stack := empty_stack
-
 let push st p = st := p::!st
 let pop st =
   match !st with
@@ -108,27 +102,6 @@ let head st =
   match st with
     | [] -> ""
     | x::_ -> x
-
-let begin_module m = push module_stack m
-let begin_section s = push section_stack s
-
-let end_block id =
-  (** determines if it ends a module or a section and pops the stack *)
-  if ((String.compare (head !module_stack) id ) == 0) then
-    pop module_stack
-  else if ((String.compare (head !section_stack) id) == 0) then
-    pop section_stack
-  else
-    ()
-
-let make_fullid id =
-  (** prepends the current module path to an id *)
-  let path = string_of_stack !module_stack in
-    if String.length path > 0 then
-      path ^ "." ^ id
-    else
-      id
-
 
 (* Coq modules *)
 
@@ -158,7 +131,7 @@ let find_external_library logicalpath =
   let rec aux = function
     | [] -> raise Not_found
     | (l,u)::rest ->
-        if String.length logicalpath > String.length l &
+        if String.length logicalpath > String.length l &&
           String.sub logicalpath 0 (String.length l + 1) = l ^"."
         then u
         else aux rest
@@ -207,10 +180,6 @@ let sort_entries el =
   List.sort (fun (c1,_) (c2,_) -> Alpha.compare_char c1 c2) !res
 
 let display_letter c = if c = '*' then "other" else String.make 1 c
-
-let index_size = List.fold_left (fun s (_,l) -> s + List.length l) 0
-
-let hashtbl_elements h = Hashtbl.fold (fun x y l -> (x,y)::l) h []
 
 let type_name = function
   | Library ->
@@ -319,7 +288,7 @@ let type_of_string = function
   | "mod" | "modtype" -> Module
   | "tac" -> TacticDefinition
   | "sec" -> Section
-  | s -> raise (Invalid_argument ("type_of_string:" ^ s))
+  | s -> invalid_arg ("type_of_string:" ^ s)
 
 let ill_formed_glob_file f =
   eprintf "Warning: ill-formed file %s (links will not be available)\n" f

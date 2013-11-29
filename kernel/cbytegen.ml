@@ -108,7 +108,7 @@ let empty_comp_env ()=
 (*i Creation functions for comp_env *)
 
 let rec add_param n sz l =
-  if n = 0 then l else add_param (n - 1) sz (n+sz::l)
+  if Int.equal n 0 then l else add_param (n - 1) sz (n+sz::l)
 
 let comp_env_fun arity =
   { nb_stack = arity;
@@ -179,16 +179,17 @@ let push_local sz r =
 
 
 (*i Compilation of variables *)
-let find_at el l =
+let find_at f l =
   let rec aux n = function
     | [] -> raise Not_found
-    | hd :: tl -> if hd = el then n else aux (n+1) tl
+    | hd :: tl -> if f hd then n else aux (n + 1) tl
   in aux 1 l
 
 let pos_named id r =
   let env = !(r.in_env) in
   let cid = FVnamed id in
-  try Kenvacc(r.offset + env.size - (find_at cid env.fv_rev))
+  let f = function FVnamed id' -> Id.equal id id' | _ -> false in
+  try Kenvacc(r.offset + env.size - (find_at f env.fv_rev))
   with Not_found ->
     let pos = env.size in
     r.in_env := { size = pos+1; fv_rev =  cid:: env.fv_rev};
@@ -206,7 +207,8 @@ let pos_rel i r sz =
       let i = i - r.nb_rec in
       let db = FVrel(i) in
       let env = !(r.in_env) in
-      try Kenvacc(r.offset + env.size - (find_at db env.fv_rev))
+      let f = function FVrel j -> Int.equal i j | _ -> false in
+      try Kenvacc(r.offset + env.size - (find_at f env.fv_rev))
       with Not_found ->
 	let pos = env.size in
 	r.in_env := { size = pos+1; fv_rev =  db:: env.fv_rev};
@@ -219,7 +221,7 @@ let pos_rel i r sz =
 (* non-terminating instruction (branch, raise, return, appterm)          *)
 (* in front of it.                                                       *)
 
-let rec discard_dead_code cont = cont
+let discard_dead_code cont = cont
 (*function
     [] -> []
   | (Klabel _ | Krestart ) :: _ as cont -> cont
@@ -280,14 +282,14 @@ let rec is_tailcall = function
 let rec add_pop n = function
   | Kpop m :: cont -> add_pop (n+m) cont
   | Kreturn m:: cont -> Kreturn (n+m) ::cont
-  | cont -> if n = 0 then cont else Kpop n :: cont
+  | cont -> if Int.equal n 0 then cont else Kpop n :: cont
 
 let add_grab arity lbl cont =
-  if arity = 1 then Klabel lbl :: cont
+  if Int.equal arity 1 then Klabel lbl :: cont
   else Krestart :: Klabel lbl :: Kgrab (arity - 1) :: cont
 
 let add_grabrec rec_arg arity lbl cont =
-  if arity = 1 then
+  if Int.equal arity 1 then
     Klabel lbl :: Kgrabrec 0 :: Krestart :: cont
   else
     Krestart :: Klabel lbl :: Kgrabrec rec_arg ::
@@ -331,7 +333,7 @@ let init_fun_code () = fun_code := []
 let code_construct tag nparams arity cont =
   let f_cont =
       add_pop nparams
-      (if arity = 0 then
+      (if Int.equal arity 0 then
 	[Kconst (Const_b0 tag); Kreturn 0]
        else [Kacc 0; Kpop 1; Kmakeblock(arity, tag); Kreturn 0])
     in
@@ -357,7 +359,7 @@ let rec str_const c =
 	    let oip = oib.mind_packets.(j) in
 	    let num,arity = oip.mind_reloc_tbl.(i-1) in
 	    let nparams = oib.mind_nparams in
-	    if nparams + arity = Array.length args then
+	    if Int.equal (nparams + arity) (Array.length args) then
               (* spiwack: *)
               (* 1/ tries to compile the constructor in an optimal way,
                     it is supposed to work only if the arguments are
@@ -397,7 +399,7 @@ let rec str_const c =
               with Not_found ->
 		(* 3/ if no special behavior is available, then the compiler
 		      falls back to the normal behavior *)
-		if arity = 0 then Bstrconst(Const_b0 num)
+		if Int.equal arity 0 then Bstrconst(Const_b0 num)
 		else
 		  let rargs = Array.sub args nparams arity in
 		  let b_args = Array.map str_const rargs in
@@ -435,7 +437,7 @@ let rec str_const c =
 	let oip = oib.mind_packets.(j) in
 	let num,arity = oip.mind_reloc_tbl.(i-1) in
 	let nparams = oib.mind_nparams in
-	if nparams + arity = 0 then Bstrconst(Const_b0 num)
+	if Int.equal (nparams + arity) 0 then Bstrconst(Const_b0 num)
 	else Bconstruct_app(num,nparams,arity,[||])
       end
   | _ -> Bconstr c
@@ -495,8 +497,8 @@ let rec get_allias env kn =
 
 let rec compile_constr reloc c sz cont =
   match kind_of_term c with
-  | Meta _ -> raise (Invalid_argument "Cbytegen.compile_constr : Meta")
-  | Evar _ -> raise (Invalid_argument "Cbytegen.compile_constr : Evar")
+  | Meta _ -> invalid_arg "Cbytegen.compile_constr : Meta"
+  | Evar _ -> invalid_arg "Cbytegen.compile_constr : Evar"
 
   | Cast(c,_,_) -> compile_constr reloc c sz cont
 
@@ -535,8 +537,8 @@ let rec compile_constr reloc c sz cont =
   | Fix ((rec_args,init),(_,type_bodies,rec_bodies)) ->
       let ndef = Array.length type_bodies in
       let rfv = ref empty_fv in
-      let lbl_types = Array.create ndef Label.no in
-      let lbl_bodies = Array.create ndef Label.no in
+      let lbl_types = Array.make ndef Label.no in
+      let lbl_bodies = Array.make ndef Label.no in
       (* Compilation des types *)
       let env_type = comp_env_fix_type rfv in
       for i = 0 to ndef - 1 do
@@ -564,8 +566,8 @@ let rec compile_constr reloc c sz cont =
 
   | CoFix(init,(_,type_bodies,rec_bodies)) ->
       let ndef = Array.length type_bodies in
-      let lbl_types = Array.create ndef Label.no in
-      let lbl_bodies = Array.create ndef Label.no in
+      let lbl_types = Array.make ndef Label.no in
+      let lbl_bodies = Array.make ndef Label.no in
       (* Compiling types *)
       let rfv = ref empty_fv in
       let env_type = comp_env_cofix_type ndef rfv in
@@ -598,8 +600,8 @@ let rec compile_constr reloc c sz cont =
       let mib = lookup_mind (fst ind) !global_env in
       let oib = mib.mind_packets.(snd ind) in
       let tbl = oib.mind_reloc_tbl in
-      let lbl_consts = Array.create oib.mind_nb_constant Label.no in
-      let lbl_blocks = Array.create (oib.mind_nb_args+1) Label.no in
+      let lbl_consts = Array.make oib.mind_nb_constant Label.no in
+      let lbl_blocks = Array.make (oib.mind_nb_args+1) Label.no in
       let branch1,cont = make_branch cont in
       (* Compiling return type *)
       let lbl_typ,fcode =
@@ -609,7 +611,7 @@ let rec compile_constr reloc c sz cont =
       let lbl_sw = Label.create () in
       let sz_b,branch,is_tailcall =
 	match branch1 with
-	| Kreturn k -> assert (k = sz); sz, branch1, true
+	| Kreturn k -> assert (Int.equal k sz); sz, branch1, true
 	| _ -> sz+3, Kjump, false
       in
       let annot = {ci = ci; rtbl = tbl; tailcall = is_tailcall} in
@@ -622,7 +624,7 @@ let rec compile_constr reloc c sz cont =
       (* Compiling regular constructor branches *)
       for i = 0 to Array.length tbl - 1 do
 	let tag, arity = tbl.(i) in
-	if arity = 0 then
+	if Int.equal arity 0 then
 	  let lbl_b,code_b =
 	    label_code(compile_constr reloc branchs.(i) sz_b (branch :: !c)) in
 	  lbl_consts.(tag) <- lbl_b;
@@ -632,7 +634,7 @@ let rec compile_constr reloc c sz cont =
 	  let nargs = List.length args in
 	  let lbl_b,code_b =
 	    label_code(
-	    if nargs = arity then
+	    if Int.equal nargs arity then
 	      Kpushfields arity ::
 	      compile_constr (push_param arity sz_b reloc)
 		body (sz_b+arity) (add_pop arity (branch :: !c))
@@ -669,7 +671,7 @@ and compile_str_cst reloc sc sz cont =
       let nargs = Array.length args in
       comp_args compile_str_cst reloc args sz (Kmakeblock(nargs,tag) :: cont)
   | Bconstruct_app(tag,nparams,arity,args) ->
-      if Array.length args = 0 then code_construct tag nparams arity cont
+      if Int.equal (Array.length args) 0 then code_construct tag nparams arity cont
       else
 	comp_app
 	  (fun _ _ _ cont -> code_construct tag nparams arity cont)
@@ -689,7 +691,7 @@ and compile_const =
     Retroknowledge.get_vm_compiling_info (!global_env).retroknowledge
                   (kind_of_term (mkConst kn)) reloc args sz cont
   with Not_found ->
-    if nargs = 0 then
+    if Int.equal nargs 0 then
       Kgetglobal (get_allias !global_env kn) :: cont
     else
       comp_app (fun _ _ _ cont ->
@@ -708,7 +710,7 @@ let compile env c =
   Format.print_string "fv = ";
   List.iter (fun v ->
     match v with
-    | FVnamed id -> Format.print_string ((string_of_id id)^"; ")
+    | FVnamed id -> Format.print_string ((Id.to_string id)^"; ")
     | FVrel i -> Format.print_string ((string_of_int i)^"; ")) fv;  Format
     .print_string "\n";
   Format.print_flush();  *)
@@ -717,7 +719,7 @@ let compile env c =
 let compile_constant_body env = function
   | Undef _ | OpaqueDef _ -> BCconstant
   | Def sb ->
-      let body = Declarations.force sb in
+      let body = Lazyconstr.force sb in
       match kind_of_term body with
 	| Const kn' ->
 	    (* we use the canonical name of the constant*)
@@ -760,7 +762,7 @@ let compile_structured_int31 fc args =
 let dynamic_int31_compilation fc reloc args sz cont =
   if not fc then raise Not_found else
     let nargs = Array.length args in
-      if nargs = 31 then
+      if Int.equal nargs 31 then
 	let (escape,labeled_cont) = make_branch cont in
 	let else_lbl = Label.create() in
 	  comp_args compile_str_cst reloc args sz
@@ -778,7 +780,7 @@ let dynamic_int31_compilation fc reloc args sz cont =
 	    fun_code := [Ksequence (add_grab 31 lbl f_cont,!fun_code)];
 	    Kclosure(lbl,0) :: cont
 	in
-	  if nargs = 0 then
+	  if Int.equal nargs 0 then
 	    code_construct cont
 	  else
 	    comp_app (fun _ _ _ cont -> code_construct cont)
@@ -844,7 +846,7 @@ let op_compilation n op =
   fun kn fc reloc args sz cont ->
   if not fc then raise Not_found else
   let nargs = Array.length args in
-  if nargs=n then (*if it is a fully applied addition*)
+  if Int.equal nargs n then (*if it is a fully applied addition*)
     let (escape, labeled_cont) = make_branch cont in
     let else_lbl = Label.create () in
       comp_args compile_constr reloc args sz
@@ -854,7 +856,7 @@ let op_compilation n op =
            (* works as comp_app with nargs = n and non-tailcall cont*)
            Kgetglobal (get_allias !global_env kn)::
            Kapply n::labeled_cont)))
-  else if nargs=0 then
+  else if Int.equal nargs 0 then
     code_construct kn cont
   else
     comp_app (fun _ _ _ cont -> code_construct kn cont)

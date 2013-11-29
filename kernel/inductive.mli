@@ -9,6 +9,7 @@
 open Names
 open Univ
 open Term
+open Context
 open Declarations
 open Environ
 
@@ -89,15 +90,15 @@ val check_cofix : env -> cofixpoint -> unit
     parameter instantiation. This is used by the Ocaml extraction,
     which cannot handle (yet?) Prop-polymorphism. *)
 
-exception SingletonInductiveBecomesProp of identifier
+exception SingletonInductiveBecomesProp of Id.t
 
 val type_of_inductive_knowing_parameters : ?polyprop:bool ->
-  env -> one_inductive_body -> types array -> types
+  env -> one_inductive_body -> types Lazy.t array -> types
 
 val max_inductive_sort : sorts array -> universe
 
 val instantiate_universes : env -> rel_context ->
-    polymorphic_arity -> types array -> rel_context * sorts
+    polymorphic_arity -> types Lazy.t array -> rel_context * sorts
 
 (** {6 Debug} *)
 

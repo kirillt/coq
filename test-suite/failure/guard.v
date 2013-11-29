@@ -5,12 +5,12 @@
 (*    //   *      This file is distributed under the terms of the       *)
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
-
+(*
 Fixpoint F (n:nat) : False := F (match F n with end).
-
+*)
 (* de Bruijn mix-up *)
 (* If accepted, Eval compute in f 0. loops *)
-Definition f :=
+Fail Definition f :=
   let f (f1 f2:nat->nat) := f1 in
   let _ := 0 in
   let _ := 0 in

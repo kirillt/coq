@@ -84,7 +84,7 @@ let finally f rst =
       rst () ; res
   with reraise ->
     (try rst ()
-    with any  -> raise reraise
+    with any -> raise reraise
     ); raise reraise
 
 
@@ -93,7 +93,7 @@ let read_key_elem inch =
     Some (Marshal.from_channel inch)
   with
     | End_of_file -> None
-    | e when e <> Sys.Break -> raise InvalidTableFormat
+    | e when Errors.noncritical e -> raise InvalidTableFormat
 
 (** In win32, it seems that we should unlock the exact zone
     that has been locked, and not the whole file *)
@@ -151,7 +151,7 @@ let open_in f =
 	    Table.iter 
 	      (fun k e -> Marshal.to_channel outch (k,e) [Marshal.No_sharing]) htbl;
 	    flush outch ; 
-	  with e when e <> Sys.Break -> () )
+	  with e when Errors.noncritical e -> () )
 	    ;
 	    unlock out ; 
 	    { outch = outch ;

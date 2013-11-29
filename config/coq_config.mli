@@ -36,6 +36,7 @@ val cflags : string     (* arguments passed to gcc *)
 
 val best : string       (* byte/opt *)
 val arch : string       (* architecture *)
+val arch_is_win32 : bool
 val osdeplibs : string  (* OS dependant link options for ocamlc *)
 val coqrunbyteflags : string (* -custom/-dllib -lcoqrun *)
 
@@ -49,7 +50,6 @@ val compile_date : string (* compile date *)
 val vo_magic_number : int
 val state_magic_number : int
 
-val theories_dirs : string list
 val plugins_dirs : string list
 
 val exec_extension : string (* "" under Unix, ".exe" under MS-windows *)
@@ -70,3 +70,4 @@ val wwwrefman : string
 val wwwstdlib : string
 val localwwwrefman : string
 
+val no_native_compiler : bool

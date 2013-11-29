@@ -101,15 +101,15 @@
 
 
 (*i*)
-open Pp
+open Errors
 open Util
 open Names
 open Term
 open Pattern
+open Patternops
 open Matching
 open Tacmach
-open Tactics
-open Tacexpr
+open Proofview.Notations
 (*i*)
 
 (*s First, we need to access some Coq constants
@@ -190,10 +190,10 @@ let decomp_term c = kind_of_term (strip_outer_cast c)
   type [typ] *)
 
 let coerce_meta_out id =
-  let s = string_of_id id in
+  let s = Id.to_string id in
   int_of_string (String.sub s 1 (String.length s - 1))
 let coerce_meta_in n =
-  id_of_string ("M" ^ string_of_int n)
+  Id.of_string ("M" ^ string_of_int n)
 
 let compute_lhs typ i nargsi =
   match kind_of_term typ with
@@ -208,8 +208,8 @@ let compute_lhs typ i nargsi =
 let compute_rhs bodyi index_of_f =
   let rec aux c =
     match kind_of_term c with
-      | App (j, args) when isRel j && destRel j = index_of_f (* recursive call *) ->
-          let i = destRel (array_last args) in
+      | App (j, args) when isRel j && Int.equal (destRel j) index_of_f (* recursive call *) ->
+          let i = destRel (Array.last args) in
 	  PMeta (Some (coerce_meta_in i))
       | App (f,args) ->
           PApp (snd (pattern_of_constr Evd.empty f), Array.map aux args)
@@ -220,17 +220,17 @@ let compute_rhs bodyi index_of_f =
 
 (*s Now the function [compute_ivs] itself *)
 
-let compute_ivs gl f cs =
-  let cst =
-    try destConst f
-    with e when Errors.noncritical e -> i_can't_do_that ()
-  in
+let compute_ivs f cs gl =
+  let cst = try destConst f with DestKO -> i_can't_do_that () in
   let body = Environ.constant_value (Global.env()) cst in
   match decomp_term body with
     | Fix(([| len |], 0), ([| name |], [| typ |], [| body2 |])) ->
         let (args3, body3) = decompose_lam body2 in
         let nargs3 = List.length args3 in
-        begin match decomp_term body3 with
+        let env = Proofview.Goal.env gl in
+        let sigma = Proofview.Goal.sigma gl in
+        let is_conv = Reductionops.is_conv env sigma in
+          begin match decomp_term body3 with
           | Case(_,p,c,lci) -> (* <p> Case c of c1 ... cn end *)
               let n_lhs_rhs = ref []
               and v_lhs = ref (None : constr option)
@@ -243,14 +243,13 @@ let compute_ivs gl f cs =
            (* REL nargsi+1 to REL nargsi + nargs3 are arguments of f *)
            (* REL 1 to REL nargsi are argsi (reverse order) *)
            (* First we test if the RHS is the RHS for constants *)
-                   if isRel bodyi && destRel bodyi = 1 then
+                   if isRel bodyi && Int.equal (destRel bodyi) 1 then
                      c_lhs := Some (compute_lhs (snd (List.hd args3))
                                       i nargsi)
            (* Then we test if the RHS is the RHS for variables *)
                    else begin match decompose_app bodyi with
                      | vmf, [_; _; a3; a4 ]
-                         when isRel a3 & isRel a4 &
-			   pf_conv_x gl vmf
+                         when isRel a3 && isRel a4 && is_conv vmf
                            (Lazy.force coq_varmap_find)->
                              v_lhs := Some (compute_lhs
                                               (snd (List.hd args3))
@@ -264,7 +263,7 @@ let compute_ivs gl f cs =
                    end)
                 lci;
 
-              if !c_lhs = None & !v_lhs = None then i_can't_do_that ();
+              if Option.is_empty !c_lhs && Option.is_empty !v_lhs then i_can't_do_that ();
 
 	      (* The Cases predicate is a lambda; we assume no dependency *)
 	      let p = match kind_of_term p with
@@ -299,10 +298,10 @@ binary search trees (see file \texttt{Quote.v}) *)
    and variables (open terms) *)
 
 let rec closed_under cset t =
-  (ConstrSet.mem t cset) or
+  (ConstrSet.mem t cset) ||
   (match (kind_of_term t) with
      | Cast(c,_,_) -> closed_under cset c
-     | App(f,l) -> closed_under cset f && array_for_all (closed_under cset) l
+     | App(f,l) -> closed_under cset f && Array.for_all (closed_under cset) l
      | _ -> false)
 
 (*s [btree_of_array [| c1; c2; c3; c4; c5 |]] builds the complete
@@ -342,8 +341,8 @@ let path_of_int n =
   (* returns the list of digits of n in reverse order with
      initial 1 removed *)
   let rec digits_of_int n =
-    if n=1 then []
-    else (n mod 2 = 1)::(digits_of_int (n lsr 1))
+    if Int.equal n 1 then []
+    else (Int.equal (n mod 2) 1)::(digits_of_int (n lsr 1))
   in
   List.fold_right
     (fun b c -> mkApp ((if b then Lazy.force coq_Right_idx
@@ -361,9 +360,9 @@ let path_of_int n =
 (* This function does not descend under binders (lambda and Cases) *)
 
 let rec subterm gl (t : constr) (t' : constr) =
-  (pf_conv_x gl t t') or
+  (pf_conv_x gl t t') ||
   (match (kind_of_term t) with
-     | App (f,args) -> array_exists (fun t -> subterm gl t t') args
+     | App (f,args) -> Array.exists (fun t -> subterm gl t t') args
      | Cast(t,_,_) -> (subterm gl t t')
      | _ -> false)
 
@@ -393,7 +392,7 @@ module Constrhash = Hashtbl.Make
   [ivs : inversion_scheme]\\
   [lc: constr list]\\
   [gl: goal sigma]\\ *)
-let quote_terms ivs lc gl =
+let quote_terms ivs lc =
   Coqlib.check_required_library ["Coq";"quote";"Quote"];
   let varhash  = (Constrhash.create 17 : constr Constrhash.t) in
   let varlist = ref ([] : constr list) in (* list of variables *)
@@ -403,7 +402,7 @@ let quote_terms ivs lc gl =
       match l with
         | (lhs, rhs)::tail ->
             begin try
-              let s1 = matches rhs c in
+              let s1 = Id.Map.bindings (matches rhs c) in
               let s2 = List.map (fun (i,c_i) -> (coerce_meta_out i,aux c_i)) s1
 	      in
               Termops.subst_meta s2 lhs
@@ -414,7 +413,7 @@ let quote_terms ivs lc gl =
                | None ->
                    begin match ivs.constant_lhs with
                      | Some c_lhs -> Termops.subst_meta [1, c] c_lhs
-                     | None -> anomaly "invalid inversion scheme for quote"
+                     | None -> anomaly (Pp.str "invalid inversion scheme for quote")
                    end
                | Some var_lhs ->
                    begin match ivs.constant_lhs with
@@ -440,36 +439,43 @@ let quote_terms ivs lc gl =
     auxl ivs.normal_lhs_rhs
   in
   let lp = List.map aux lc in
-  (lp, (btree_of_array (Array.of_list (List.rev !varlist))
-          ivs.return_type ))
+    (lp, (btree_of_array (Array.of_list (List.rev !varlist))
+            ivs.return_type ))
 
 (*s actually we could "quote" a list of terms instead of a single
   term. Ring for example needs that, but Ring doesn't use Quote
   yet. *)
 
-let quote f lid gl =
-  let f = pf_global gl f in
-  let cl = List.map (pf_global gl) lid in
-  let ivs = compute_ivs gl f cl in
-  let (p, vm) = match quote_terms ivs [(pf_concl gl)] gl with
-    | [p], vm -> (p,vm)
-    | _ -> assert false
-  in
-  match ivs.variable_lhs with
-    | None -> Tactics.convert_concl (mkApp (f, [| p |])) DEFAULTcast gl
-    | Some _ -> Tactics.convert_concl (mkApp (f, [| vm; p |])) DEFAULTcast gl
+let quote f lid =
+  Proofview.Goal.enter begin fun gl ->
+    let f = Tacmach.New.pf_global f gl in
+    let cl = List.map (fun id -> Tacmach.New.pf_global id gl) lid in
+    let ivs = compute_ivs f cl gl in
+    let concl = Proofview.Goal.concl gl in
+    let quoted_terms = quote_terms ivs [concl] in
+    let (p, vm) = match quoted_terms with
+      | [p], vm -> (p,vm)
+      | _ -> assert false
+    in
+    match ivs.variable_lhs with
+    | None -> Proofview.V82.tactic (Tactics.convert_concl (mkApp (f, [| p |])) DEFAULTcast)
+    | Some _ -> Proofview.V82.tactic (Tactics.convert_concl (mkApp (f, [| vm; p |])) DEFAULTcast)
+  end
 
-let gen_quote cont c f lid gl =
-  let f = pf_global gl f in
-  let cl = List.map (pf_global gl) lid in
-  let ivs = compute_ivs gl f cl in
-  let (p, vm) = match quote_terms ivs [c] gl with
+let gen_quote cont c f lid =
+  Proofview.Goal.enter begin fun gl ->
+  let f = Tacmach.New.pf_global f gl in
+  let cl = List.map (fun id -> Tacmach.New.pf_global id gl) lid in
+  let ivs = compute_ivs f cl gl in
+  let quoted_terms = quote_terms ivs [c] in
+  let (p, vm) = match quoted_terms with
     | [p], vm -> (p,vm)
     | _ -> assert false
   in
   match ivs.variable_lhs with
-    | None -> cont (mkApp (f, [| p |])) gl
-    | Some _ -> cont (mkApp (f, [| vm; p |])) gl
+    | None -> cont (mkApp (f, [| p |]))
+    | Some _ -> cont (mkApp (f, [| vm; p |]))
+  end
 
 (*i
 

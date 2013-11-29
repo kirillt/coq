@@ -23,8 +23,6 @@ Require Export BinPosDef.
     are now defined in [BinNums.v] *)
 
 Local Open Scope positive_scope.
-Local Unset Boolean Equality Schemes.
-Local Unset Case Analysis Schemes.
 
 (** Every definitions and early properties about positive numbers
     are placed in a module [Pos] for qualification purpose. *)
@@ -1839,6 +1837,8 @@ Proof.
 Qed.
 
 End Pos.
+
+Bind Scope positive_scope with Pos.t positive.
 
 (** Exportation of notations *)
 

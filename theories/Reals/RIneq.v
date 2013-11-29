@@ -43,7 +43,7 @@ Hint Immediate Rge_refl: rorders.
 
 Lemma Rlt_irrefl : forall r, ~ r < r.
 Proof.
-  generalize Rlt_asym. intuition eauto.
+  intros r H; eapply Rlt_asym; eauto.
 Qed.
 Hint Resolve Rlt_irrefl: real.
 
@@ -64,7 +64,9 @@ Qed.
 (**********)
 Lemma Rlt_dichotomy_converse : forall r1 r2, r1 < r2 \/ r1 > r2 -> r1 <> r2.
 Proof.
-  generalize Rlt_not_eq Rgt_not_eq. intuition eauto.
+  intuition.
+  - apply Rlt_not_eq in H1. eauto.
+  - apply Rgt_not_eq in H1. eauto.
 Qed.
 Hint Resolve Rlt_dichotomy_converse: real.
 
@@ -74,7 +76,7 @@ Hint Resolve Rlt_dichotomy_converse: real.
 Lemma Req_dec : forall r1 r2, r1 = r2 \/ r1 <> r2.
 Proof.
   intros; generalize (total_order_T r1 r2) Rlt_dichotomy_converse;
-    intuition eauto 3.
+    unfold not; intuition eauto 3.
 Qed.
 Hint Resolve Req_dec: real.
 
@@ -175,7 +177,7 @@ Proof. eauto using Rnot_gt_ge with rorders. Qed.
 Lemma Rlt_not_le : forall r1 r2, r2 < r1 -> ~ r1 <= r2.
 Proof.
   generalize Rlt_asym Rlt_dichotomy_converse; unfold Rle.
-  intuition eauto 3.
+  unfold not; intuition eauto 3.
 Qed.
 Hint Immediate Rlt_not_le: real.
 
@@ -407,7 +409,9 @@ Proof.
   rewrite Rplus_assoc; rewrite H; ring.
 Qed.
 
-Hint Resolve (f_equal (A:=R)): real.
+Definition f_equal_R := (f_equal (A:=R)).
+
+Hint Resolve f_equal_R : real.
 
 Lemma Rplus_eq_compat_l : forall r r1 r2, r1 = r2 -> r + r1 = r + r2.
 Proof.

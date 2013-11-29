@@ -6,25 +6,23 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
-(* arnaud: veiller à l'aspect tutorial des commentaires *)
-
+open Util
+open Compat
 open Pp
 open Tok
 open Decl_expr
 open Names
-open Term
-open Genarg
 open Pcoq
+open Vernacexpr
 
 open Pcoq.Constr
 open Pcoq.Tactic
-open Pcoq.Vernac_
 
 let pr_goal gs =
   let (g,sigma) = Goal.V82.nf_evar (Tacmach.project gs) (Evd.sig_it gs) in
-  let env = Goal.V82.unfiltered_env sigma g in
+  let env = Goal.V82.env sigma g in
   let preamb,thesis,penv,pc =
     (str "     *** Declarative Mode ***" ++ fnl ()++fnl ()),
     (str "thesis := "  ++ fnl ()),
@@ -37,7 +35,7 @@ let pr_goal gs =
 		       str "============================" ++ fnl ()  ++
 		       thesis ++ str " " ++  pc) ++ fnl ()
 
-(* arnaud: rebrancher ça 
+(* arnaud: rebrancher ça ?
 let pr_open_subgoals () =
   let p = Proof_global.give_me_the_proof () in
   let { Evd.it = goals ; sigma = sigma } = Proof.V82.subgoals p in
@@ -45,16 +43,14 @@ let pr_open_subgoals () =
   pr_subgoals close_cmd sigma goals
 *)
 
-let pr_proof_instr instr = 
-  Util.anomaly "Cannot print a proof_instr"
+let pr_raw_proof_instr _ _ _ instr =
+  Errors.anomaly (Pp.str "Cannot print a proof_instr")
     (* arnaud: Il nous faut quelque chose de type extr_genarg_printer si on veut aller
                      dans cette direction
        Ppdecl_proof.pr_proof_instr (Global.env()) instr
     *)
-let pr_raw_proof_instr instr =
-  Util.anomaly "Cannot print a raw proof_instr"
-let pr_glob_proof_instr instr =
-  Util.anomaly "Cannot print a non-interpreted proof_instr"
+let pr_proof_instr _ _ _ instr = Empty.abort instr
+let pr_glob_proof_instr _ _ _ instr = Empty.abort instr
 
 let interp_proof_instr _ { Evd.it = gl ; sigma = sigma }=
   Decl_interp.interp_proof_instr 
@@ -65,9 +61,9 @@ let interp_proof_instr _ { Evd.it = gl ; sigma = sigma }=
 let vernac_decl_proof () = 
   let pf = Proof_global.give_me_the_proof () in
   if Proof.is_done pf then 
-    Util.error "Nothing left to prove here."
+    Errors.error "Nothing left to prove here."
   else
-    Proof.transaction pf begin fun () ->
+    begin
       Decl_proof_instr.go_to_proof_mode () ;
       Proof_global.set_proof_mode "Declarative" ;
       Vernacentries.print_subgoals ()
@@ -75,23 +71,25 @@ let vernac_decl_proof () =
 
 (* spiwack: some bureaucracy is not performed here *)
 let vernac_return () =
-  Proof.transaction (Proof_global.give_me_the_proof ()) begin fun () ->
+  begin
     Decl_proof_instr.return_from_tactic_mode () ;
     Proof_global.set_proof_mode "Declarative" ;
     Vernacentries.print_subgoals ()
   end
 
 let vernac_proof_instr instr =
-  Proof.transaction (Proof_global.give_me_the_proof ()) begin fun () ->
+  begin
     Decl_proof_instr.proof_instr instr;
     Vernacentries.print_subgoals ()
   end
 
 (* We create a new parser entry [proof_mode]. The Declarative proof mode
     will replace the normal parser entry for tactics with this one. *)
-let proof_mode = Gram.entry_create "vernac:proof_command"
+let proof_mode : vernac_expr Gram.entry =
+  Gram.entry_create "vernac:proof_command"
 (* Auxiliary grammar entry. *)
-let proof_instr = Gram.entry_create "proofmode:instr"
+let proof_instr : raw_proof_instr Gram.entry =
+  Gram.entry_create "proofmode:instr"
 
 (* Before we can write an new toplevel command (see below) 
     which takes a [proof_instr] as argument, we need to declare
@@ -101,33 +99,20 @@ let proof_instr = Gram.entry_create "proofmode:instr"
     indirect through the [proof_instr] grammar entry. *)
 (* spiwack: proposal: doing that directly from argextend.ml4, maybe ? *)
 
-(* [Genarg.create_arg] creates a new embedding into Genarg. *)
-let (wit_proof_instr,globwit_proof_instr,rawwit_proof_instr) =
-  Genarg.create_arg None "proof_instr"
-let _ = Tacinterp.add_interp_genarg "proof_instr"
-  begin
-  begin fun e x -> (* declares the globalisation function *)
-    Genarg.in_gen globwit_proof_instr 
-      (Decl_interp.intern_proof_instr e (Genarg.out_gen rawwit_proof_instr x))
-  end,
-  begin fun ist gl x -> (* declares the interpretation function *)
-    Tacmach.project gl ,
-    Genarg.in_gen wit_proof_instr 
-      (interp_proof_instr ist gl (Genarg.out_gen globwit_proof_instr x))
-  end,
-  begin fun _ x -> x end (* declares the substitution function, irrelevant in our case *)
-   end
+(* Only declared at raw level, because only used in vernac commands. *)
+let wit_proof_instr : (raw_proof_instr, Empty.t, Empty.t) Genarg.genarg_type =
+  Genarg.make0 None "proof_instr"
 
-let _ = Pptactic.declare_extra_genarg_pprule
-  (rawwit_proof_instr, pr_raw_proof_instr)
-  (globwit_proof_instr, pr_glob_proof_instr)
-  (wit_proof_instr, pr_proof_instr)
+let _ = Pptactic.declare_extra_genarg_pprule wit_proof_instr
+  pr_raw_proof_instr pr_glob_proof_instr pr_proof_instr
+
+let classify_proof_instr _ = VtProofStep, VtLater
 
 (* We use the VERNAC EXTEND facility with a custom non-terminal
     to populate [proof_mode] with a new toplevel interpreter.
     The "-" indicates that the rule does not start with a distinguished
     string. *)
-VERNAC proof_mode EXTEND ProofInstr
+VERNAC proof_mode EXTEND ProofInstr CLASSIFIED BY classify_proof_instr
   [ - proof_instr(instr) ] -> [ vernac_proof_instr instr ]
 END
 
@@ -140,7 +125,7 @@ GEXTEND Gram
   GLOBAL: proof_mode ;
 
   proof_mode: LAST
-    [ [ c=G_vernac.subgoal_command -> c (Some 1) ] ]
+    [ [ c=G_vernac.subgoal_command -> c (Some (Vernacexpr.SelectNth 1)) ] ]
   ;
 END  
 
@@ -171,12 +156,11 @@ let _ =
 				       end
 				   }
 
-(* Two new vernacular commands *)
 VERNAC COMMAND EXTEND DeclProof
-  [ "proof" ] -> [ vernac_decl_proof () ]
+[ "proof" ] => [ VtProofMode "Declarative", VtNow ] -> [ vernac_decl_proof () ]
 END
 VERNAC COMMAND EXTEND  DeclReturn
-  [ "return" ] -> [ vernac_return () ]
+[ "return" ] => [ VtProofMode "Classic", VtNow ] -> [ vernac_return () ]
 END
 
 let none_is_empty = function
@@ -192,7 +176,7 @@ GLOBAL: proof_instr;
   statement :
     [[ i=ident ; ":" ; c=constr -> {st_label=Name i;st_it=c}
      | i=ident -> {st_label=Anonymous;
-		   st_it=Topconstr.CRef (Libnames.Ident (loc, i))}
+		   st_it=Constrexpr.CRef (Libnames.Ident (!@loc, i))}
      | c=constr -> {st_label=Anonymous;st_it=c}
      ]];
   constr_or_thesis :
@@ -205,7 +189,7 @@ GLOBAL: proof_instr;
     |
       [ i=ident ; ":" ; cot=constr_or_thesis -> {st_label=Name i;st_it=cot}
       | i=ident -> {st_label=Anonymous;
-		    st_it=This (Topconstr.CRef (Libnames.Ident (loc, i)))}
+		    st_it=This (Constrexpr.CRef (Libnames.Ident (!@loc, i)))}
       | c=constr -> {st_label=Anonymous;st_it=This c}
       ]
     ];
@@ -273,7 +257,7 @@ GLOBAL: proof_instr;
   ;
   (* examiner s'il est possible de faire R _ et _ R pour R une relation qcq*)
   loc_id: 
-    [[ id=ident -> fun x -> (loc,(id,x)) ]];
+    [[ id=ident -> fun x -> (!@loc,(id,x)) ]];
   hyp:
     [[ id=loc_id -> id None ;
      | id=loc_id ; ":" ; c=constr -> id (Some c)]]
@@ -405,5 +389,3 @@ GLOBAL: proof_instr;
     [[ e=emphasis;i=bare_proof_instr;"." -> {emph=e;instr=i}]]
   ;
 END;;
-
- 

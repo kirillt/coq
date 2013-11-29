@@ -6,11 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Pp
+open Errors
 open Util
 open Names
 open Namegen
-open Sign
 open Term
 open Termops
 open Environ
@@ -22,9 +21,8 @@ open Tacred
 open Proof_type
 open Logic
 open Refiner
-open Tacexpr
 
-let re_sig it gc = { it = it; sigma = gc }
+let re_sig it  gc = { it = it; sigma = gc; }
 
 (**************************************************************)
 (* Operations for handling terms under a local typing context *)
@@ -53,9 +51,9 @@ let pf_last_hyp gl = List.hd (pf_hyps gl)
 
 let pf_get_hyp gls id =
   try
-    Sign.lookup_named id (pf_hyps gls)
+    Context.lookup_named id (pf_hyps gls)
   with Not_found ->
-    error ("No such hypothesis: " ^ (string_of_id id))
+    error ("No such hypothesis: " ^ (Id.to_string id))
 
 let pf_get_hyp_typ gls id =
   let (_,_,ty)= (pf_get_hyp gls id) in
@@ -74,10 +72,10 @@ let pf_get_new_ids ids gls =
 
 let pf_global gls id = Constrintern.construct_reference (pf_hyps gls) id
 
-let pf_parse_const gls = compose (pf_global gls) id_of_string
+let pf_parse_const gls = compose (pf_global gls) Id.of_string
 
 let pf_reduction_of_red_expr gls re c =
-  (fst (reduction_of_red_expr re)) (pf_env gls) (project gls) c
+  (fst (reduction_of_red_expr (pf_env gls) re)) (pf_env gls) (project gls) c
 
 let pf_apply f gls = f (pf_env gls) (project gls)
 let pf_reduce = pf_apply
@@ -111,10 +109,6 @@ let pf_matches                  = pf_apply Matching.matches_conv
 (* Tactics handling a list of goals *)
 (************************************)
 
-type transformation_tactic = proof_tree -> goal list 
-
-type validation_list = proof_tree list -> proof_tree list
-
 type tactic_list = Refiner.tactic_list 
 
 let first_goal         = first_goal
@@ -134,48 +128,48 @@ let refiner = refiner
 
 (* This does not check that the variable name is not here *)
 let introduction_no_check id =
-  refiner (Prim (Intro id))
+  refiner (Intro id)
 
 let internal_cut_no_check replace id t gl =
-  refiner (Prim (Cut (true,replace,id,t))) gl
+  refiner (Cut (true,replace,id,t)) gl
 
 let internal_cut_rev_no_check replace id t gl =
-  refiner (Prim (Cut (false,replace,id,t))) gl
+  refiner (Cut (false,replace,id,t)) gl
 
 let refine_no_check c gl =
-  refiner (Prim (Refine c)) gl
+  refiner (Refine c) gl
 
 let convert_concl_no_check c sty gl =
-  refiner (Prim (Convert_concl (c,sty))) gl
+  refiner (Convert_concl (c,sty)) gl
 
 let convert_hyp_no_check d gl =
-  refiner (Prim (Convert_hyp d)) gl
+  refiner (Convert_hyp d) gl
 
 (* This does not check dependencies *)
 let thin_no_check ids gl =
-  if ids = [] then tclIDTAC gl else refiner (Prim (Thin ids)) gl
+  if List.is_empty ids then tclIDTAC gl else refiner (Thin ids) gl
 
 (* This does not check dependencies *)
 let thin_body_no_check ids gl =
-  if ids = [] then tclIDTAC gl else refiner (Prim (ThinBody ids)) gl
+  if List.is_empty ids then tclIDTAC gl else refiner (ThinBody ids) gl
 
 let move_hyp_no_check with_dep id1 id2 gl =
-  refiner (Prim (Move (with_dep,id1,id2))) gl
+  refiner (Move (with_dep,id1,id2)) gl
 
 let order_hyps idl gl =
-  refiner (Prim (Order idl)) gl
+  refiner (Order idl) gl
 
 let rec rename_hyp_no_check l gl = match l with
   | [] -> tclIDTAC gl
   | (id1,id2)::l ->
-      tclTHEN (refiner (Prim (Rename (id1,id2))))
+      tclTHEN (refiner (Rename (id1,id2)))
 	(rename_hyp_no_check l) gl
 
 let mutual_fix f n others j gl =
-  with_check (refiner (Prim (FixRule (f,n,others,j)))) gl
+  with_check (refiner (FixRule (f,n,others,j))) gl
 
 let mutual_cofix f others j gl =
-  with_check (refiner (Prim (Cofix (f,others,j)))) gl
+  with_check (refiner (Cofix (f,others,j))) gl
 
 (* Versions with consistency checks *)
 
@@ -193,8 +187,6 @@ let rename_hyp l       = with_check (rename_hyp_no_check l)
 (* Pretty-printers *)
 
 open Pp
-open Tacexpr
-open Glob_term
 
 let db_pr_goal sigma g =
   let env = Goal.V82.env sigma g in
@@ -209,5 +201,54 @@ let pr_gls gls =
 
 let pr_glls glls =
   hov 0 (pr_evar_map (Some 2) (sig_sig glls) ++ fnl () ++
-         prlist_with_sep pr_fnl (db_pr_goal (project glls)) (sig_it glls))
+         prlist_with_sep fnl (db_pr_goal (project glls)) (sig_it glls))
 
+(* Variants of [Tacmach] functions built with the new proof engine *)
+module New = struct
+  open Proofview.Notations
+
+  let pf_apply f gl =
+    f (Proofview.Goal.env gl) (Proofview.Goal.sigma gl)
+
+  let of_old f gl =
+    f { Evd.it = Proofview.Goal.goal gl ; sigma = Proofview.Goal.sigma gl }
+
+  let pf_global id gl =
+    let hyps = Proofview.Goal.hyps gl in
+    Constrintern.construct_reference hyps id
+
+
+  let pf_type_of gl t =
+    pf_apply type_of gl t
+
+
+  let pf_ids_of_hyps gl =
+    let hyps = Proofview.Goal.hyps gl in
+    ids_of_named_context hyps
+
+  let pf_get_new_id id gl =
+    let ids = pf_ids_of_hyps gl in
+    next_ident_away id ids
+
+  let pf_get_hyp id gl =
+    let hyps = Proofview.Goal.hyps gl in
+    let sign =
+      try Context.lookup_named id hyps
+      with Not_found -> Errors.error ("No such hypothesis: " ^ (string_of_id id))
+    in
+    sign
+
+  let pf_get_hyp_typ id gl =
+    let (_,_,ty) = pf_get_hyp id gl in
+    ty
+
+  let pf_hyps_types gl =
+    let env = Proofview.Goal.env gl in
+    let sign = Environ.named_context env in
+    List.map (fun (id,_,x) -> (id, x)) sign
+
+  let pf_last_hyp gl =
+    let hyps = Proofview.Goal.hyps gl in
+    List.hd hyps
+
+end

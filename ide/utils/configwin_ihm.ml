@@ -38,7 +38,7 @@ class type widget =
 let file_html_config = Filename.concat Configwin_messages.home ".configwin_html"
 
 let debug = false
-let dbg = if debug then prerr_endline else (fun _ -> ())
+let dbg s = if debug then Minilib.log s else ()
 
 (** Return the config group for the html config file,
    and the option for bindings. *)
@@ -1015,7 +1015,7 @@ class configuration_box (tt : GData.tooltips) conf_struct =
 
   let set_icon iter = function
   | None -> ()
-  | Some icon -> tree#set iter icon_col icon
+  | Some icon -> tree#set ~row:iter ~column:icon_col icon
   in
 
   (* Populate the tree *)
@@ -1036,9 +1036,9 @@ class configuration_box (tt : GData.tooltips) conf_struct =
           method apply () = List.iter (fun param -> param#apply) params
         end
       in
-      let () = tree#set new_iter label_col label in
+      let () = tree#set ~row:new_iter ~column:label_col label in
       let () = set_icon new_iter icon in
-      let () = tree#set new_iter box_col widget in
+      let () = tree#set ~row:new_iter ~column:box_col widget in
       ()
     | Section_list (label, icon, struct_list) ->
       let widget =
@@ -1049,9 +1049,9 @@ class configuration_box (tt : GData.tooltips) conf_struct =
           method box = box#coerce
         end
       in
-      let () = tree#set new_iter label_col label in
+      let () = tree#set ~row:new_iter ~column:label_col label in
       let () = set_icon new_iter icon in
-      let () = tree#set new_iter box_col widget in
+      let () = tree#set ~row:new_iter ~column:box_col widget in
       List.iter (make_tree (Some new_iter)) struct_list
   in
 

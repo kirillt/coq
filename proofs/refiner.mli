@@ -7,7 +7,7 @@
 (************************************************************************)
 
 open Term
-open Sign
+open Context
 open Evd
 open Proof_type
 open Tacexpr
@@ -25,18 +25,6 @@ val unpackage : 'a sigma -> evar_map ref * 'a
 val repackage : evar_map ref -> 'a -> 'a sigma
 val apply_sig_tac :
   evar_map ref -> (goal sigma -> goal list sigma) -> goal -> goal list
-
-(** {6 Hiding the implementation of tactics. } *)
-
-(** [abstract_tactic tac] hides the (partial) proof produced by [tac] under
-   a single proof node. The boolean tells if the default tactic is used. *)
-(* spiwack: currently here for compatibility, abstract_operation 
-    is a second projection *)
-val abstract_operation : compound_rule -> tactic -> tactic
-val abstract_tactic : ?dflt:bool -> atomic_tactic_expr -> tactic -> tactic
-val abstract_tactic_expr : ?dflt:bool -> tactic_expr -> tactic -> tactic
-val abstract_extended_tactic :
-  ?dflt:bool -> string -> typed_generic_argument list -> tactic -> tactic
 
 val refiner : rule -> tactic
 
@@ -133,9 +121,9 @@ val tclAT_LEAST_ONCE : tactic -> tactic
 val tclFAIL          : int -> Pp.std_ppcmds -> tactic
 val tclFAIL_lazy     : int -> Pp.std_ppcmds Lazy.t -> tactic
 val tclDO            : int -> tactic -> tactic
-val tclTIMEOUT       : int -> tactic -> tactic
 val tclWEAK_PROGRESS : tactic -> tactic
 val tclPROGRESS      : tactic -> tactic
+val tclSHOWHYPS      : tactic -> tactic
 val tclNOTSAMEGOAL   : tactic -> tactic
 
 (** [tclIFTHENELSE tac1 tac2 tac3 gls] first applies [tac1] to [gls] then,
@@ -162,6 +150,11 @@ val apply_tac_list     : tactic -> tactic_list
 val then_tactic_list   : tactic_list -> tactic_list -> tactic_list
 val tactic_list_tactic : tactic_list -> tactic
 val goal_goal_list     : 'a sigma -> 'a list sigma
+
+
+(* Check that holes in arguments have been resolved *)
+(* spiwack: used in [tclWITHHOLES] both newer and older copy. *)
+val check_evars : Environ.env -> evar_map -> evar_map -> evar_map -> unit
 
 (** [tclWITHHOLES solve_holes tac (sigma,c)] applies [tac] to [c] which
    may have unresolved holes; if [solve_holes] these holes must be

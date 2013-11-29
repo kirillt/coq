@@ -10,43 +10,33 @@ open Names
 open Term
 open Vernacinterp
 open Vernacexpr
-open Topconstr
+open Constrexpr
+open Misctypes
 
-val dump_global : Libnames.reference Genarg.or_by_notation -> unit
+val dump_global : Libnames.reference or_by_notation -> unit
 
 (** Vernacular entries *)
 
-val show_script : unit -> unit
+val show_script : (?proof:Proof_global.closed_proof -> unit -> unit) ref
 val show_prooftree : unit -> unit
 
 val show_node : unit -> unit
 
 (** This function can be used by any command that want to observe terms
-   in the context of the current goal, as for instance in pcoq *)
+   in the context of the current goal *)
 val get_current_context_of_args : int option -> Evd.evar_map * Environ.env
 
-type pcoq_hook = {
-  start_proof : unit -> unit;
-  solve : int -> unit;
-  abort : string -> unit;
-  search : searchable -> dir_path list * bool -> unit;
-  print_name : Libnames.reference Genarg.or_by_notation -> unit;
-  print_check : Environ.env -> Environ.unsafe_judgment -> unit;
-  print_eval : Reductionops.reduction_function -> Environ.env -> Evd.evar_map -> constr_expr ->
-    Environ.unsafe_judgment -> unit;
-  show_goal : goal_reference -> unit
-}
-
-val set_pcoq_hook : pcoq_hook -> unit
-
 (** The main interpretation function of vernacular expressions *)
-
-val interp : Vernacexpr.vernac_expr -> unit
+val interp : 
+  ?verbosely:bool ->
+  ?proof:Proof_global.closed_proof ->
+    Loc.t * Vernacexpr.vernac_expr -> unit
 
 (** Print subgoals when the verbose flag is on.
     Meant to be used inside vernac commands from plugins. *)
 
 val print_subgoals : unit -> unit
+val try_print_subgoals : unit -> unit
 
 (** The printing of goals via [print_subgoals] or during
     [interp] can be controlled by the following flag.
@@ -67,3 +57,6 @@ val qed_display_script : bool ref
     a known inductive type. *)
 
 val make_cases : string -> string list list
+
+val vernac_end_proof :
+  ?proof:Proof_global.closed_proof -> Vernacexpr.proof_end -> unit

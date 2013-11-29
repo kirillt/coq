@@ -6,27 +6,28 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Pp
 open Names
 open Term
+open Context
 open Termops
-open Sign
 open Environ
 open Libnames
+open Globnames
 open Nametab
 open Glob_term
 open Pattern
-open Topconstr
+open Constrexpr
+open Notation_term
 open Notation
-
-val is_same_type : constr_expr -> constr_expr -> bool
+open Misctypes
 
 (** Translation of pattern, cases pattern, glob_constr and term into syntax
    trees for printing *)
 
-val extern_cases_pattern : Idset.t -> cases_pattern -> cases_pattern_expr
-val extern_glob_constr : Idset.t -> glob_constr -> constr_expr
-val extern_glob_type : Idset.t -> glob_constr -> constr_expr
+val extern_cases_pattern : Id.Set.t -> cases_pattern -> cases_pattern_expr
+val extern_glob_constr : Id.Set.t -> glob_constr -> constr_expr
+val extern_glob_type : Id.Set.t -> glob_constr -> constr_expr
 val extern_constr_pattern : names_context -> constr_pattern -> constr_expr
 
 (** If [b=true] in [extern_constr b env c] then the variables in the first
@@ -34,7 +35,7 @@ val extern_constr_pattern : names_context -> constr_pattern -> constr_expr
 
 val extern_constr : bool -> env -> constr -> constr_expr
 val extern_constr_in_scope : bool -> scope_name -> env -> constr -> constr_expr
-val extern_reference : loc -> Idset.t -> global_reference -> reference
+val extern_reference : Loc.t -> Id.Set.t -> global_reference -> reference
 val extern_type : bool -> env -> types -> constr_expr
 val extern_sort : sorts -> glob_sort
 val extern_rel_context : constr option -> env ->
@@ -52,9 +53,9 @@ val print_projections : bool ref
 
 (** Customization of the global_reference printer *)
 val set_extern_reference :
-  (loc -> Idset.t -> global_reference -> reference) -> unit
+  (Loc.t -> Id.Set.t -> global_reference -> reference) -> unit
 val get_extern_reference :
-  unit -> (loc -> Idset.t -> global_reference -> reference)
+  unit -> (Loc.t -> Id.Set.t -> global_reference -> reference)
 
 val in_debugger : bool ref
 
@@ -71,8 +72,11 @@ val with_coercions : ('a -> 'b) -> 'a -> 'b
 (** This forces printing universe names of Type\{.\} *)
 val with_universes : ('a -> 'b) -> 'a -> 'b
 
-(** This suppresses printing of numeral and symbols *)
+(** This suppresses printing of primitive tokens and notations *)
 val without_symbols : ('a -> 'b) -> 'a -> 'b
+
+(** This suppresses printing of specific notations only *)
+val without_specific_symbols : interp_rule list -> ('a -> 'b) -> 'a -> 'b
 
 (** This prints metas as anonymous holes *)
 val with_meta_as_hole : ('a -> 'b) -> 'a -> 'b

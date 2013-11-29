@@ -15,7 +15,7 @@
    declaring new schemes *)
 
 open Pp
-open Flags
+open Errors
 open Util
 open Names
 open Declarations
@@ -26,13 +26,11 @@ open Decl_kinds
 open Indrec
 open Declare
 open Libnames
+open Globnames
 open Goptions
 open Nameops
 open Termops
-open Typeops
-open Inductiveops
 open Pretyping
-open Topconstr
 open Nametab
 open Smartlocate
 open Vernacexpr
@@ -52,6 +50,16 @@ let _ =
       optkey   = ["Elimination";"Schemes"];
       optread  = (fun () -> !elim_flag) ;
       optwrite = (fun b -> elim_flag := b) }
+
+let record_elim_flag = ref false
+let _ =
+  declare_bool_option
+    { optsync  = true;
+      optdepr  = false;
+      optname  = "automatic declaration of induction schemes for records";
+      optkey   = ["Record";"Elimination";"Schemes"];
+      optread  = (fun () -> !record_elim_flag) ;
+      optwrite = (fun b -> record_elim_flag := b) }
 
 let case_flag = ref false
 let _ =
@@ -112,7 +120,9 @@ let define id internal c t =
       { const_entry_body = c;
         const_entry_secctx = None;
         const_entry_type = t;
-        const_entry_opaque = false },
+        const_entry_opaque = false;
+	const_entry_inline_code = false
+      },
       Decl_kinds.IsDefinition Scheme) in
   definition_message id;
   kn
@@ -128,7 +138,7 @@ let alarm what internal msg =
   | KernelVerbose 
   | KernelSilent ->
     (if debug then
-      Flags.if_warn Pp.msg_warning
+      msg_warning
 	(hov 0 msg ++ fnl () ++ what ++ str " not defined."))
   | _ -> errorlabstrm "" msg
 
@@ -168,7 +178,7 @@ let beq_scheme_msg mind =
   (* TODO: mutual inductive case *)
   str "Boolean equality on " ++
     pr_enum (fun ind -> quote (Printer.pr_inductive (Global.env()) ind))
-    (list_tabulate (fun i -> (mind,i)) (Array.length mib.mind_packets))
+    (List.init (Array.length mib.mind_packets) (fun i -> (mind,i)))
 
 let declare_beq_scheme_with l kn =
   try_declare_scheme (beq_scheme_msg kn) declare_beq_scheme_gen UserVerbose l kn
@@ -185,12 +195,12 @@ let declare_beq_scheme = declare_beq_scheme_with []
 let declare_one_case_analysis_scheme ind =
   let (mib,mip) = Global.lookup_inductive ind in
   let kind = inductive_sort_family mip in
-  let dep = if kind = InProp then case_scheme_kind_from_prop else case_dep_scheme_kind_from_type in
+  let dep = if kind == InProp then case_scheme_kind_from_prop else case_dep_scheme_kind_from_type in
   let kelim = elim_sorts (mib,mip) in
     (* in case the inductive has a type elimination, generates only one
        induction scheme, the other ones share the same code with the
        apropriate type *)
-  if List.mem InType kelim then
+  if Sorts.List.mem InType kelim then
     ignore (define_individual_scheme dep KernelVerbose None ind)
 
 (* Induction/recursion schemes *)
@@ -208,11 +218,11 @@ let kinds_from_type =
 let declare_one_induction_scheme ind =
   let (mib,mip) = Global.lookup_inductive ind in
   let kind = inductive_sort_family mip in
-  let from_prop = kind = InProp in
+  let from_prop = kind == InProp in
   let kelim = elim_sorts (mib,mip) in
   let elims =
-    list_map_filter (fun (sort,kind) ->
-      if List.mem sort kelim then Some kind else None)
+    List.map_filter (fun (sort,kind) ->
+      if Sorts.List.mem sort kelim then Some kind else None)
       (if from_prop then kinds_from_prop else kinds_from_type) in
   List.iter (fun kind -> ignore (define_individual_scheme kind KernelVerbose None ind))
     elims
@@ -271,7 +281,7 @@ let declare_congr_scheme ind =
     then
       ignore (define_individual_scheme congr_scheme_kind KernelVerbose None ind)
     else
-      warning "Cannot build congruence scheme because eq is not found"
+      msg_warning (strbrk "Cannot build congruence scheme because eq is not found")
   end
 
 let declare_sym_scheme ind =
@@ -323,7 +333,7 @@ requested
               | InType -> recs ^ "t_nodep")
         ) in
         let newid = add_suffix (basename_of_global (IndRef ind)) suffix in
-        let newref = (dummy_loc,newid) in
+        let newref = (Loc.ghost,newid) in
           ((newref,isdep,ind,z)::l1),l2
       in
 	match t with
@@ -342,10 +352,11 @@ let do_mutual_induction_scheme lnamedepindsort =
       lnamedepindsort
   in
   let listdecl = Indrec.build_mutual_induction_scheme env0 sigma lrecspec in
-  let rec declare decl fi lrecref =
+  let declare decl fi lrecref =
     let decltype = Retyping.get_type_of env0 Evd.empty decl in
     let decltype = refresh_universes decltype in
-    let cst = define fi UserVerbose decl (Some decltype) in
+    let proof_output = Future.from_val (decl,Declareops.no_seff) in
+    let cst = define fi UserVerbose proof_output (Some decltype) in
     ConstRef cst :: lrecref
   in
   let _ = List.fold_right2 declare listdecl lrecnames [] in
@@ -354,25 +365,25 @@ let do_mutual_induction_scheme lnamedepindsort =
 let get_common_underlying_mutual_inductive = function
   | [] -> assert false
   | (id,(mind,i as ind))::l as all ->
-      match List.filter (fun (_,(mind',_)) -> mind <> mind') l with
+      match List.filter (fun (_,(mind',_)) -> not (eq_mind mind mind')) l with
       | (_,ind')::_ ->
 	  raise (RecursionSchemeError (NotMutualInScheme (ind,ind')))
       | [] ->
-	  if not (list_distinct (List.map snd (List.map snd all))) then
-	    error "A type occurs twice";
+	  if not (List.distinct_f Int.compare (List.map snd (List.map snd all)))
+          then error "A type occurs twice";
 	  mind,
-	  list_map_filter
+	  List.map_filter
 	    (function (Some id,(_,i)) -> Some (i,snd id) | (None,_) -> None) all
 
 let do_scheme l =
   let ischeme,escheme = split_scheme l in
 (* we want 1 kind of scheme at a time so we check if the user
 tried to declare different schemes at once *)
-    if (ischeme <> []) && (escheme <> [])
+    if not (List.is_empty ischeme) && not (List.is_empty escheme)
     then
       error "Do not declare equality and induction scheme at the same time."
     else (
-      if ischeme <> [] then do_mutual_induction_scheme ischeme
+      if not (List.is_empty ischeme) then do_mutual_induction_scheme ischeme
       else
 	let mind,l = get_common_underlying_mutual_inductive escheme in
 	declare_beq_scheme_with l mind;
@@ -385,13 +396,13 @@ tried to declare different schemes at once *)
 
 let list_split_rev_at index l =
   let rec aux i acc = function
-      hd :: tl when i = index -> acc, tl
+      hd :: tl when Int.equal i index -> acc, tl
     | hd :: tl -> aux (succ i) (hd :: acc) tl
-    | [] -> failwith "list_split_when: Invalid argument"
+    | [] -> failwith "List.split_when: Invalid argument"
   in aux 0 [] l
 
 let fold_left' f = function
-    [] -> raise (Invalid_argument "fold_left'")
+    [] -> invalid_arg "fold_left'"
   | hd :: tl -> List.fold_left f hd tl
 
 let build_combined_scheme env schemes =
@@ -439,19 +450,21 @@ let do_combined_scheme name schemes =
                 with Not_found -> error ((string_of_qualid (snd qualid))^" is not declared."))
       schemes
   in
-  let body,typ = build_combined_scheme (Global.env ()) csts in
-  ignore (define (snd name) UserVerbose body (Some typ));
+  let env = Global.env () in
+  let body,typ = build_combined_scheme env csts in
+  let proof_output = Future.from_val (body,Declareops.no_seff) in
+  ignore (define (snd name) UserVerbose proof_output (Some typ));
   fixpoint_message None [snd name]
 
 (**********************************************************************)
 
 let map_inductive_block f kn n = for i=0 to n-1 do f (kn,i) done
 
-let mutual_inductive_size kn = Array.length (Global.lookup_mind kn).mind_packets
-
 let declare_default_schemes kn =
-  let n = mutual_inductive_size kn in
-  if !elim_flag then declare_induction_schemes kn;
+  let mib = Global.lookup_mind kn in
+  let n = Array.length mib.mind_packets in
+  if !elim_flag && (not mib.mind_record || !record_elim_flag) then
+    declare_induction_schemes kn;
   if !case_flag then map_inductive_block declare_one_case_analysis_scheme kn n;
   if is_eq_flag() then try_declare_beq_scheme kn;
   if !eq_dec_flag then try_declare_eq_decidability kn;

@@ -8,6 +8,7 @@
 
 open Names
 open Libnames
+open Globnames
 open Nametab
 open Term
 open Pattern
@@ -53,11 +54,17 @@ val check_required_library : string list -> unit
 (** {6 Global references } *)
 
 (** Modules *)
-val logic_module : dir_path
-val logic_type_module : dir_path
+val prelude_module : DirPath.t
+
+val logic_module : DirPath.t
+val logic_module_name : string list
+
+val logic_type_module : DirPath.t
+
+val jmeq_module : DirPath.t
+val jmeq_module_name : string list
 
 val datatypes_module_name : string list
-val logic_module_name : string list
 
 (** Natural numbers *)
 val nat_path : full_path
@@ -148,6 +155,7 @@ val build_coq_sumbool : constr delayed
 (** Connectives 
    The False proposition *)
 val build_coq_False : constr delayed
+val build_coq_proof_admitted : constr delayed
 
 (** The True proposition and its unique proof *)
 val build_coq_True : constr delayed

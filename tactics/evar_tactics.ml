@@ -6,16 +6,15 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Term
 open Util
+open Names
+open Errors
 open Evar_refiner
 open Tacmach
 open Tacexpr
 open Refiner
-open Proof_type
 open Evd
-open Sign
-open Termops
+open Locus
 
 (* The instantiate tactic *)
 
@@ -43,15 +42,21 @@ let instantiate n (ist,rawc) ido gl =
     if n <= 0 then error "Incorrect existential variable index.";
     let evk,_ = List.nth evl (n-1) in
     let evi = Evd.find sigma evk in
-    let ltac_vars = Tacinterp.extract_ltac_constr_values ist (Evd.evar_env evi) in
-    let sigma' = w_refine (evk,evi) (ltac_vars,rawc) sigma in
+    let filtered = Evd.evar_filtered_env evi in
+    let constrvars = Tacinterp.extract_ltac_constr_values ist filtered in
+    let sigma' = w_refine (evk,evi) ((constrvars, ist.Geninterp.lfun),rawc) sigma in
       tclTHEN
         (tclEVARS sigma')
         tclNORMEVAR
         gl
 
-let let_evar name typ gls =
-  let src = (dummy_loc,GoalEvar) in
-  let sigma',evar = Evarutil.new_evar gls.sigma (pf_env gls) ~src typ in
-  Refiner.tclTHEN (Refiner.tclEVARS sigma')
-    (Tactics.letin_tac None name evar None nowhere) gls
+open Proofview.Notations
+let let_evar name typ =
+  let src = (Loc.ghost,Evar_kinds.GoalEvar) in
+  Proofview.Goal.enter begin fun gl ->
+    let sigma = Proofview.Goal.sigma gl in
+    let env = Proofview.Goal.env gl in
+    let sigma',evar = Evarutil.new_evar sigma env ~src typ in
+    Tacticals.New.tclTHEN (Proofview.V82.tactic (Refiner.tclEVARS sigma'))
+      (Tactics.letin_tac None name evar None Locusops.nowhere)
+  end

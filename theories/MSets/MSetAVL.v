@@ -38,7 +38,6 @@ Unset Strict Implicit.
 (* for nicer extraction, we create inductive principles
    only when needed *)
 Local Unset Elimination Schemes.
-Local Unset Case Analysis Schemes.
 
 (** * Ops : the pure functions *)
 
@@ -307,7 +306,7 @@ Include MSetGenTree.Props X I.
 Local Hint Immediate MX.eq_sym.
 Local Hint Unfold In lt_tree gt_tree Ok.
 Local Hint Constructors InT bst.
-Local Hint Resolve MX.eq_refl MX.eq_trans MX.lt_trans @ok.
+Local Hint Resolve MX.eq_refl MX.eq_trans MX.lt_trans ok.
 Local Hint Resolve lt_leaf gt_leaf lt_tree_node gt_tree_node.
 Local Hint Resolve lt_tree_not_in lt_tree_trans gt_tree_not_in gt_tree_trans.
 Local Hint Resolve elements_spec2.

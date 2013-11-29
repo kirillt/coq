@@ -9,16 +9,13 @@
 open Pp
 open Compat
 open Tok
+open Errors
 open Util
-open Names
 open Extend
-open Libnames
-open Glob_term
-open Topconstr
 open Genarg
+open Stdarg
+open Constrarg
 open Tacexpr
-open Extrawit
-open Ppextend
 
 (** The parser of Coq *)
 
@@ -32,6 +29,7 @@ let warning_verbose = ref true
 IFDEF CAMLP5 THEN
 open Gramext
 ELSE
+open PcamlSig.Grammar
 open G
 END
 
@@ -111,7 +109,6 @@ let weaken_entry x = Gramobj.weaken_entry x
 
 module type Gramtypes =
 sig
-  open Decl_kinds
   val inGramObj : 'a raw_abstract_argument_type -> 'a G.entry -> typed_entry
   val outGramObj : 'a raw_abstract_argument_type -> typed_entry -> 'a G.entry
 end
@@ -120,8 +117,8 @@ module Gramtypes : Gramtypes =
 struct
   let inGramObj rawwit = in_typed_entry (unquote rawwit)
   let outGramObj (a:'a raw_abstract_argument_type) o =
-    if type_of_typed_entry o <> unquote a
-      then anomaly "outGramObj: wrong type";
+    if not (argument_type_eq (type_of_typed_entry o) (unquote a))
+      then anomaly ~label:"outGramObj" (str "wrong type");
     (* downcast from grammar_object *)
     Obj.magic (object_of_typed_entry o)
 end
@@ -166,11 +163,11 @@ let grammar_delete e reinit (pos,rls) =
     (fun (n,ass,lev) ->
       List.iter (fun (pil,_) -> G.delete_rule e pil) (List.rev lev))
     (List.rev rls);
-  if reinit <> None then
+  if reinit != None then
     let lev = match pos with Some (Level n) -> n | _ -> assert false in
-    let pos =
-      if lev = "200" then First
-      else After (string_of_int (int_of_string lev + 1)) in
+    let pos = match lev with
+    | "200" -> First
+    | _ -> After (string_of_int (int_of_string lev + 1)) in
     maybe_uncurry (G.extend e) (Some pos, [Some lev,reinit,[]])
 
 (** The apparent parser of Coq; encapsulate G to keep track
@@ -213,9 +210,9 @@ let grammar_extend e reinit ext =
 let rec remove_grammars n =
   if n>0 then
     (match !camlp4_state with
-       | [] -> anomaly "Pcoq.remove_grammars: too many rules to remove"
+       | [] -> anomaly ~label:"Pcoq.remove_grammars" (Pp.str "too many rules to remove")
        | ByGrammar(g,reinit,ext)::t ->
-           grammar_delete g reinit ext;
+           grammar_delete g (Option.map of_coq_assoc reinit) ext;
            camlp4_state := t;
            remove_grammars (n-1)
        | ByEXTEND (undo,redo)::t ->
@@ -270,7 +267,7 @@ let get_univ s =
   try
     Hashtbl.find univ_tab s
   with Not_found ->
-    anomaly ("Unknown grammar universe: "^s)
+    anomaly (Pp.str ("Unknown grammar universe: "^s))
 
 let get_entry (u, utab) s = Hashtbl.find utab s
 
@@ -283,14 +280,14 @@ let new_entry etyp (u, utab) s =
 let create_entry (u, utab) s etyp =
   try
     let e = Hashtbl.find utab s in
-    if type_of_typed_entry e <> etyp then
+    if not (argument_type_eq (type_of_typed_entry e) etyp) then
       failwith ("Entry " ^ u ^ ":" ^ s ^ " already exists with another type");
     e
   with Not_found ->
     new_entry etyp (u, utab) s
 
 let create_constr_entry s =
-  outGramObj rawwit_constr (create_entry uconstr s ConstrArgType)
+  outGramObj (rawwit wit_constr) (create_entry uconstr s ConstrArgType)
 
 let create_generic_entry s wit =
   outGramObj wit (create_entry utactic s (unquote wit))
@@ -310,22 +307,22 @@ module Prim =
 
     (* Entries that can be refered via the string -> Gram.entry table *)
     (* Typically for tactic or vernac extensions *)
-    let preident = gec_gen rawwit_pre_ident "preident"
-    let ident = gec_gen rawwit_ident "ident"
-    let natural = gec_gen rawwit_int "natural"
-    let integer = gec_gen rawwit_int "integer"
+    let preident = gec_gen (rawwit wit_pre_ident) "preident"
+    let ident = gec_gen (rawwit wit_ident) "ident"
+    let natural = gec_gen (rawwit wit_int) "natural"
+    let integer = gec_gen (rawwit wit_int) "integer"
     let bigint = Gram.entry_create "Prim.bigint"
-    let string = gec_gen rawwit_string "string"
-    let reference = make_gen_entry uprim rawwit_ref "reference"
+    let string = gec_gen (rawwit wit_string) "string"
+    let reference = make_gen_entry uprim (rawwit wit_ref) "reference"
     let by_notation = Gram.entry_create "by_notation"
     let smart_global = Gram.entry_create "smart_global"
 
     (* parsed like ident but interpreted as a term *)
-    let var = gec_gen rawwit_var "var"
+    let var = gec_gen (rawwit wit_var) "var"
 
     let name = Gram.entry_create "Prim.name"
     let identref = Gram.entry_create "Prim.identref"
-    let pattern_ident = gec_gen rawwit_pattern_ident "pattern_ident"
+    let pattern_ident = gec_gen (rawwit wit_pattern_ident) "pattern_ident"
     let pattern_identref = Gram.entry_create "pattern_identref"
 
     (* A synonym of ident - maybe ident will be located one day *)
@@ -342,7 +339,7 @@ module Prim =
 
 module Constr =
   struct
-    let gec_constr = make_gen_entry uconstr rawwit_constr
+    let gec_constr = make_gen_entry uconstr (rawwit wit_constr)
 
     (* Entries that can be refered via the string -> Gram.entry table *)
     let constr = gec_constr "constr"
@@ -350,9 +347,9 @@ module Constr =
     let constr_eoi = eoi_entry constr
     let lconstr = gec_constr "lconstr"
     let binder_constr = create_constr_entry "binder_constr"
-    let ident = make_gen_entry uconstr rawwit_ident "ident"
-    let global = make_gen_entry uconstr rawwit_ref "global"
-    let sort = make_gen_entry uconstr rawwit_sort "sort"
+    let ident = make_gen_entry uconstr (rawwit wit_ident) "ident"
+    let global = make_gen_entry uconstr (rawwit wit_ref) "global"
+    let sort = make_gen_entry uconstr (rawwit wit_sort) "sort"
     let pattern = Gram.entry_create "constr:pattern"
     let constr_pattern = gec_constr "constr_pattern"
     let lconstr_pattern = gec_constr "lconstr_pattern"
@@ -380,30 +377,33 @@ module Tactic =
     (* Entries that can be refered via the string -> Gram.entry table *)
     (* Typically for tactic user extensions *)
     let open_constr =
-      make_gen_entry utactic (rawwit_open_constr_gen false) "open_constr"
+      make_gen_entry utactic (rawwit (wit_open_constr_gen false)) "open_constr"
     let casted_open_constr =
-      make_gen_entry utactic (rawwit_open_constr_gen true) "casted_open_constr"
+      make_gen_entry utactic (rawwit (wit_open_constr_gen true)) "casted_open_constr"
     let constr_with_bindings =
-      make_gen_entry utactic rawwit_constr_with_bindings "constr_with_bindings"
+      make_gen_entry utactic (rawwit wit_constr_with_bindings) "constr_with_bindings"
     let bindings =
-      make_gen_entry utactic rawwit_bindings "bindings"
-    let constr_may_eval = make_gen_entry utactic rawwit_constr_may_eval "constr_may_eval"
+      make_gen_entry utactic (rawwit wit_bindings) "bindings"
+    let constr_may_eval = make_gen_entry utactic (rawwit wit_constr_may_eval) "constr_may_eval"
     let quantified_hypothesis =
-      make_gen_entry utactic rawwit_quant_hyp "quantified_hypothesis"
-    let int_or_var = make_gen_entry utactic rawwit_int_or_var "int_or_var"
-    let red_expr = make_gen_entry utactic rawwit_red_expr "red_expr"
+      make_gen_entry utactic (rawwit wit_quant_hyp) "quantified_hypothesis"
+    let int_or_var = make_gen_entry utactic (rawwit wit_int_or_var) "int_or_var"
+    let red_expr = make_gen_entry utactic (rawwit wit_red_expr) "red_expr"
     let simple_intropattern =
-      make_gen_entry utactic rawwit_intro_pattern "simple_intropattern"
+      make_gen_entry utactic (rawwit wit_intro_pattern) "simple_intropattern"
 
     (* Main entries for ltac *)
     let tactic_arg = Gram.entry_create "tactic:tactic_arg"
     let tactic_expr = Gram.entry_create "tactic:tactic_expr"
     let binder_tactic = Gram.entry_create "tactic:binder_tactic"
 
-    let tactic = make_gen_entry utactic (rawwit_tactic tactic_main_level) "tactic"
+    let tactic = make_gen_entry utactic (rawwit wit_tactic) "tactic"
 
     (* Main entry for quotations *)
     let tactic_eoi = eoi_entry tactic
+
+    (* For Ltac definition *)
+    let tacdef_body = Gram.entry_create "tactic:tacdef_body"
 
   end
 
@@ -424,7 +424,7 @@ module Vernac_ =
 
     GEXTEND Gram
     main_entry:
-      [ [ a = vernac -> Some (loc,a) | EOI -> None ] ]
+      [ [ a = vernac -> Some (!@loc, a) | EOI -> None ] ]
     ;
     END
 
@@ -448,24 +448,23 @@ let main_entry = Vernac_.main_entry
 let constr_level = string_of_int
 
 let default_levels =
-  [200,RightA,false;
-   100,RightA,false;
-   99,RightA,true;
-   90,RightA,false;
-   10,RightA,false;
-   9,RightA,false;
-   8,RightA,true;
-   1,LeftA,false;
-   0,RightA,false]
+  [200,Extend.RightA,false;
+   100,Extend.RightA,false;
+   99,Extend.RightA,true;
+   10,Extend.RightA,false;
+   9,Extend.RightA,false;
+   8,Extend.RightA,true;
+   1,Extend.LeftA,false;
+   0,Extend.RightA,false]
 
 let default_pattern_levels =
-  [200,RightA,true;
-   100,RightA,false;
-   99,RightA,true;
-   10,LeftA,false;
-   9,RightA,false;
-   1,LeftA,false;
-   0,RightA,false]
+  [200,Extend.RightA,true;
+   100,Extend.RightA,false;
+   99,Extend.RightA,true;
+   10,Extend.LeftA,false;
+   9,Extend.RightA,false;
+   1,Extend.LeftA,false;
+   0,Extend.RightA,false]
 
 let level_stack =
   ref [(default_levels, default_pattern_levels)]
@@ -473,22 +472,21 @@ let level_stack =
 (* At a same level, LeftA takes precedence over RightA and NoneA *)
 (* In case, several associativity exists for a level, we make two levels, *)
 (* first LeftA, then RightA and NoneA together *)
-open Ppextend
 
 let admissible_assoc = function
-  | LeftA, Some (RightA | NonA) -> false
-  | RightA, Some LeftA -> false
+  | Extend.LeftA, Some (Extend.RightA | Extend.NonA) -> false
+  | Extend.RightA, Some Extend.LeftA -> false
   | _ -> true
 
 let create_assoc = function
-  | None -> RightA
+  | None -> Extend.RightA
   | Some a -> a
 
 let error_level_assoc p current expected =
   let pr_assoc = function
-    | LeftA -> str "left"
-    | RightA -> str "right"
-    | NonA -> str "non" in
+    | Extend.LeftA -> str "left"
+    | Extend.RightA -> str "right"
+    | Extend.NonA -> str "non" in
   errorlabstrm ""
     (str "Level " ++ int p ++ str " is already declared " ++
      pr_assoc current ++ str " associative while it is now expected to be " ++
@@ -505,7 +503,7 @@ let find_position_gen forpat ensure assoc lev =
       let init = ref None in
       let rec add_level q = function
         | (p,_,_ as pa)::l when p > n -> pa :: add_level (Some p) l
-        | (p,a,reinit)::l when p = n ->
+        | (p,a,reinit)::l when Int.equal p n ->
             if reinit then
 	      let a' = create_assoc assoc in (init := Some a'; (p,a',false)::l)
 	    else if admissible_assoc (a,assoc) then
@@ -520,35 +518,43 @@ let find_position_gen forpat ensure assoc lev =
 	  else (add_level None ccurrent, pcurrent) in
         level_stack := updated:: !level_stack;
 	let assoc = create_assoc assoc in
-        if !init = None then
+        begin match !init with
+        | None ->
 	  (* Create the entry *)
-	  (if !after = None then Some First
-	   else Some (After (constr_level (Option.get !after)))),
-	   Some assoc, Some (constr_level n), None
-        else
+          let ext = match !after with
+          | None -> Some Extend.First
+          | _ ->
+            Some (Extend.After (constr_level (Option.get !after)))
+          in
+	  ext, Some assoc, Some (constr_level n), None
+        | _ ->
 	  (* The reinit flag has been updated *)
-	   Some (Level (constr_level n)), None, None, !init
+	   Some (Extend.Level (constr_level n)), None, None, !init
+        end
       with
 	  (* Nothing has changed *)
           Exit ->
             level_stack := current :: !level_stack;
 	    (* Just inherit the existing associativity and name (None) *)
-	    Some (Level (constr_level n)), None, None, None
+	    Some (Extend.Level (constr_level n)), None, None, None
 
 let remove_levels n =
-  level_stack := list_skipn n !level_stack
+  level_stack := List.skipn n !level_stack
 
 let rec list_mem_assoc_triple x = function
   | [] -> false
-  | (a,b,c) :: l -> a = x or list_mem_assoc_triple x l
+  | (a,b,c) :: l -> Int.equal a x || list_mem_assoc_triple x l
 
 let register_empty_levels forpat levels =
-  map_succeed (fun n ->
-    let levels = (if forpat then snd else fst) (List.hd !level_stack) in
-    if not (list_mem_assoc_triple n levels) then
-      find_position_gen forpat true None (Some n)
-    else
-      failwith "") levels
+  let filter n =
+    try
+      let levels = (if forpat then snd else fst) (List.hd !level_stack) in
+      if not (list_mem_assoc_triple n levels) then
+        Some (find_position_gen forpat true None (Some n))
+      else None
+    with Failure _ -> None
+  in
+  List.map_filter filter levels
 
 let find_position forpat assoc level =
   find_position_gen forpat false assoc level
@@ -562,8 +568,14 @@ let synchronize_level_positions () =
 
 (* Camlp4 levels do not treat NonA: use RightA with a NEXT on the left *)
 let camlp4_assoc = function
-  | Some NonA | Some RightA -> RightA
-  | None | Some LeftA -> LeftA
+  | Some Extend.NonA | Some Extend.RightA -> Extend.RightA
+  | None | Some Extend.LeftA -> Extend.LeftA
+
+let assoc_eq al ar = match al, ar with
+| Extend.NonA, Extend.NonA
+| Extend.RightA, Extend.RightA
+| Extend.LeftA, Extend.LeftA -> true
+| _, _ -> false
 
 (* [adjust_level assoc from prod] where [assoc] and [from] are the name
    and associativity of the level where to add the rule; the meaning of
@@ -578,27 +590,30 @@ let adjust_level assoc from = function
   | (NumLevel n,BorderProd (_,None)) -> Some (Some (n,true))
 (* Compute production name on the right side *)
   (* If NonA or LeftA on the right-hand side, set to NEXT *)
-  | (NumLevel n,BorderProd (Right,Some (NonA|LeftA))) ->
+  | (NumLevel n,BorderProd (Right,Some (Extend.NonA|Extend.LeftA))) ->
       Some None
   (* If RightA on the right-hand side, set to the explicit (current) level *)
-  | (NumLevel n,BorderProd (Right,Some RightA)) ->
+  | (NumLevel n,BorderProd (Right,Some Extend.RightA)) ->
       Some (Some (n,true))
 (* Compute production name on the left side *)
   (* If NonA on the left-hand side, adopt the current assoc ?? *)
-  | (NumLevel n,BorderProd (Left,Some NonA)) -> None
+  | (NumLevel n,BorderProd (Left,Some Extend.NonA)) -> None
   (* If the expected assoc is the current one, set to SELF *)
-  | (NumLevel n,BorderProd (Left,Some a)) when a = camlp4_assoc assoc ->
+  | (NumLevel n,BorderProd (Left,Some a)) when assoc_eq a (camlp4_assoc assoc) ->
       None
   (* Otherwise, force the level, n or n-1, according to expected assoc *)
   | (NumLevel n,BorderProd (Left,Some a)) ->
-      if a = LeftA then Some (Some (n,true)) else Some None
+    begin match a with
+    | Extend.LeftA -> Some (Some (n, true))
+    | _ -> Some None
+    end
   (* None means NEXT *)
   | (NextLevel,_) -> Some None
 (* Compute production name elsewhere *)
   | (NumLevel n,InternalProd) ->
       match from with
-	| ETConstr (p,()) when p = n+1 -> Some None
-	| ETConstr (p,()) -> Some (Some (n,n=p))
+	| ETConstr (p,()) when Int.equal p (n + 1) -> Some None
+	| ETConstr (p,()) -> Some (Some (n, Int.equal n p))
 	| _ -> Some (Some (n,false))
 
 let compute_entry allow_create adjust forpat = function
@@ -607,15 +622,16 @@ let compute_entry allow_create adjust forpat = function
        else weaken_entry Constr.operconstr),
       adjust (n,q), false
   | ETName -> weaken_entry Prim.name, None, false
-  | ETBinder true -> anomaly "Should occur only as part of BinderList"
+  | ETBinder true -> anomaly (Pp.str "Should occur only as part of BinderList")
   | ETBinder false -> weaken_entry Constr.binder, None, false
   | ETBinderList (true,tkl) ->
-      assert (tkl=[]); weaken_entry Constr.open_binders, None, false
-  | ETBinderList (false,_) -> anomaly "List of entries cannot be registered."
+    let () = match tkl with [] -> () | _ -> assert false in
+    weaken_entry Constr.open_binders, None, false
+  | ETBinderList (false,_) -> anomaly (Pp.str "List of entries cannot be registered.")
   | ETBigint -> weaken_entry Prim.bigint, None, false
   | ETReference -> weaken_entry Constr.global, None, false
   | ETPattern -> weaken_entry Constr.pattern, None, false
-  | ETConstrList _ -> anomaly "List of entries cannot be registered."
+  | ETConstrList _ -> anomaly (Pp.str "List of entries cannot be registered.")
   | ETOther (u,n) ->
       let u = get_univ u in
       let e =
@@ -643,10 +659,11 @@ let is_self from e =
   match from, e with
       ETConstr(n,()), ETConstr(NumLevel n',
         BorderProd(Right, _ (* Some(NonA|LeftA) *))) -> false
-    | ETConstr(n,()), ETConstr(NumLevel n',BorderProd(Left,_)) -> n=n'
+    | ETConstr(n,()), ETConstr(NumLevel n',BorderProd(Left,_)) -> Int.equal n n'
     | (ETName,ETName | ETReference, ETReference | ETBigint,ETBigint
       | ETPattern, ETPattern) -> true
-    | ETOther(s1,s2), ETOther(s1',s2') -> s1=s1' & s2=s2'
+    | ETOther(s1,s2), ETOther(s1',s2') ->
+      String.equal s1 s1' && String.equal s2 s2'
     | _ -> false
 
 let is_binder_level from e =
@@ -726,44 +743,75 @@ let level_of_snterml = function
 (**********************************************************************)
 (* Interpret entry names of the form "ne_constr_list" as entry keys   *)
 
+let coincide s pat off =
+  let len = String.length pat in
+  let break = ref true in
+  let i = ref 0 in
+  while !break && !i < len do
+    let c = Char.code s.[off + !i] in
+    let d = Char.code pat.[!i] in
+    break := Int.equal c d;
+    incr i
+  done;
+  !break
+
+let tactic_level s =
+  if Int.equal (String.length s) 7 && coincide s "tactic" 0 then
+    let c = s.[6] in if '5' >= c && c >= '0' then Some (Char.code c - 48)
+    else None
+  else None
+
+let type_of_entry u s =
+  type_of_typed_entry (get_entry u s)
+
 let rec interp_entry_name static up_level s sep =
   let l = String.length s in
-  if l > 8 & String.sub s 0 3 = "ne_" & String.sub s (l-5) 5 = "_list" then
+  if l > 8 && coincide s "ne_" 0 && coincide s "_list" (l - 5) then
     let t, g = interp_entry_name static up_level (String.sub s 3 (l-8)) "" in
-    List1ArgType t, Alist1 g
-  else if l > 12 & String.sub s 0 3 = "ne_" &
-                   String.sub s (l-9) 9 = "_list_sep" then
+    ListArgType t, Alist1 g
+  else if l > 12 && coincide s "ne_" 0 &&
+                   coincide s "_list_sep" (l-9) then
     let t, g = interp_entry_name static up_level (String.sub s 3 (l-12)) "" in
-    List1ArgType t, Alist1sep (g,sep)
-  else if l > 5 & String.sub s (l-5) 5 = "_list" then
+    ListArgType t, Alist1sep (g,sep)
+  else if l > 5 && coincide s "_list" (l-5) then
     let t, g = interp_entry_name static up_level (String.sub s 0 (l-5)) "" in
-    List0ArgType t, Alist0 g
-  else if l > 9 & String.sub s (l-9) 9 = "_list_sep" then
+    ListArgType t, Alist0 g
+  else if l > 9 && coincide s "_list_sep" (l-9) then
     let t, g = interp_entry_name static up_level (String.sub s 0 (l-9)) "" in
-    List0ArgType t, Alist0sep (g,sep)
-  else if l > 4 & String.sub s (l-4) 4 = "_opt" then
+    ListArgType t, Alist0sep (g,sep)
+  else if l > 4 && coincide s "_opt" (l-4) then
     let t, g = interp_entry_name static up_level (String.sub s 0 (l-4)) "" in
     OptArgType t, Aopt g
-  else if l > 5 & String.sub s (l-5) 5 = "_mods" then
+  else if l > 5 && coincide s "_mods" (l-5) then
     let t, g = interp_entry_name static up_level (String.sub s 0 (l-1)) "" in
-    List0ArgType t, Amodifiers g
+    ListArgType t, Amodifiers g
   else
-    let s = if s = "hyp" then "var" else s in
+    let s = match s with "hyp" -> "var" | _ -> s in
+    let check_lvl n = match up_level with
+    | None -> false
+    | Some m -> Int.equal m n && not (Int.equal m 5)
+    in
     let t, se =
-      match Extrawit.tactic_genarg_level s with
-	| Some n when Some n = up_level & up_level <> Some 5 -> None, Aself
-	| Some n when Some (n+1) = up_level & up_level <> Some 5 -> None, Anext
-	| Some n -> None, Atactic n
-	| None ->
-      try Some (get_entry uprim s), Aentry ("prim",s) with Not_found ->
-      try Some (get_entry uconstr s), Aentry ("constr",s) with Not_found ->
-      try Some (get_entry utactic s), Aentry ("tactic",s) with Not_found ->
+      match tactic_level s with
+      | Some n ->
+        (** Quite ad-hoc *)
+        let t = unquote (rawwit wit_tactic) in
+        let se =
+          if check_lvl n then Aself
+          else if check_lvl (n + 1) then Anext
+          else Atactic n
+        in
+        (Some t, se)
+      | None ->
+      try Some (type_of_entry uprim s), Aentry ("prim",s) with Not_found ->
+      try Some (type_of_entry uconstr s), Aentry ("constr",s) with Not_found ->
+      try Some (type_of_entry utactic s), Aentry ("tactic",s) with Not_found ->
 	if static then
 	  error ("Unknown entry "^s^".")
 	else
 	  None, Aentry ("",s) in
     let t =
       match t with
-	| Some t -> type_of_typed_entry t
+	| Some t -> t
 	| None -> ExtraArgType s in
     t, se

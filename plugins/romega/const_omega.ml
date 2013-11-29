@@ -19,27 +19,27 @@ let meaningful_submodule = [ "Z"; "N"; "Pos" ]
 
 let string_of_global r =
   let dp = Nametab.dirpath_of_global r in
-  let prefix = match Names.repr_dirpath dp with
+  let prefix = match Names.DirPath.repr dp with
     | [] -> ""
     | m::_ ->
-      let s = Names.string_of_id m in
-      if List.mem s meaningful_submodule then s^"." else ""
+      let s = Names.Id.to_string m in
+      if Util.String.List.mem s meaningful_submodule then s^"." else ""
   in
-  prefix^(Names.string_of_id (Nametab.basename_of_global r))
+  prefix^(Names.Id.to_string (Nametab.basename_of_global r))
 
 let destructurate t =
   let c, args = Term.decompose_app t in
   match Term.kind_of_term c, args with
     | Term.Const sp, args ->
-	Kapp (string_of_global (Libnames.ConstRef sp), args)
+	Kapp (string_of_global (Globnames.ConstRef sp), args)
     | Term.Construct csp , args ->
-	Kapp (string_of_global (Libnames.ConstructRef csp), args)
+	Kapp (string_of_global (Globnames.ConstructRef csp), args)
     | Term.Ind isp, args ->
-	Kapp (string_of_global (Libnames.IndRef isp), args)
-    | Term.Var id,[] -> Kvar(Names.string_of_id id)
+	Kapp (string_of_global (Globnames.IndRef isp), args)
+    | Term.Var id,[] -> Kvar(Names.Id.to_string id)
     | Term.Prod (Names.Anonymous,typ,body), [] -> Kimp(typ,body)
     | Term.Prod (Names.Name _,_,_),[] ->
-	Util.error "Omega: Not a quantifier-free goal"
+	Errors.error "Omega: Not a quantifier-free goal"
     | _ -> Kufo
 
 exception Destruct
@@ -48,9 +48,9 @@ let dest_const_apply t =
   let f,args = Term.decompose_app t in
   let ref =
   match Term.kind_of_term f with
-    | Term.Const sp      -> Libnames.ConstRef sp
-    | Term.Construct csp -> Libnames.ConstructRef csp
-    | Term.Ind isp       -> Libnames.IndRef isp
+    | Term.Const sp      -> Globnames.ConstRef sp
+    | Term.Construct csp -> Globnames.ConstructRef csp
+    | Term.Ind isp       -> Globnames.IndRef isp
     | _ -> raise Destruct
   in  Nametab.basename_of_global ref, args
 
@@ -71,7 +71,6 @@ let z_constant = Coqlib.gen_constant_in_modules "Omega" z_module
 let bin_constant = Coqlib.gen_constant_in_modules "Omega" bin_module
 
 (* Logic *)
-let coq_eq = lazy(init_constant  "eq")
 let coq_refl_equal = lazy(init_constant  "eq_refl")
 let coq_and = lazy(init_constant "and")
 let coq_not = lazy(init_constant "not")
@@ -297,13 +296,13 @@ let coq_Zneg = lazy (bin_constant "Zneg")
 let recognize t =
   let rec loop t =
     let f,l = dest_const_apply t in
-    match Names.string_of_id f,l with
+    match Names.Id.to_string f,l with
        "xI",[t] -> Bigint.add Bigint.one (Bigint.mult Bigint.two (loop t))
      | "xO",[t] -> Bigint.mult Bigint.two (loop t)
      | "xH",[] -> Bigint.one
      | _ -> failwith "not a number" in
   let f,l = dest_const_apply t in
-    match Names.string_of_id f,l with
+    match Names.Id.to_string f,l with
         "Zpos",[t] -> loop t
       | "Zneg",[t] -> Bigint.neg (loop t)
       | "Z0",[] -> Bigint.zero
@@ -353,7 +352,7 @@ let parse_rel gl t =
 
 let is_scalar t =
   let rec aux t = match destructurate t with
-    | Kapp(("Z.add"|"Z.sub"|"Z.mul"),[t1;t2]) -> aux t1 & aux t2
+    | Kapp(("Z.add"|"Z.sub"|"Z.mul"),[t1;t2]) -> aux t1 && aux t2
     | Kapp(("Z.opp"|"Z.succ"|"Z.pred"),[t]) -> aux t
     | Kapp(("Zpos"|"Zneg"|"Z0"),_) -> let _ = recognize t in true
     | _ -> false in

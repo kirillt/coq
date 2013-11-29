@@ -1,62 +1,101 @@
-Changes from V8.4pl1 to V8.4pl2
-===============================
+Changes from V8.4
+=================
 
-Bug fixes
+Vernacular commands
 
-- Solved bugs :
-  #2466 #2629 #2668 #2750 #2839 #2869 #2954 #2955 #2959 #2962 #2966 #2967
-  #2969 #2970 #2975 #2976 #2977 #2978 #2981 #2983 #2995 #3000 #3004 #3008 
-- Partially fixed bugs : #2830 #2949
-- Coqtop should now react more reliably when receiving interrupt signals:
-  all the "try...with" constructs have been protected against undue
-  handling of the Sys.Break exception.
+- The command "Record foo ..." does not generate induction principles
+  (foo_rect, foo_rec, foo_ind) anymore by default (feature wish #2693).
+  A flag "Set/Unset Record Elimination Schemes" allows to change this.
+  The tactic "induction" on a record is now actually doing "destruct".
+- The "Open Scope" command can now be given also a delimiter (e.g. Z).
+- The "Definition" command now allows the "Local" modifier.
+- The "Let" command can now define local (co)fixpoints.
+- Command "Search" has been renamed into "SearchHead". The command
+  name "Search" now behaves like former "SearchAbout". The latter name
+  is deprecated.
 
-Coqide
+Specification Language
 
-- The Windows-specific code handling the interrupt button of Coqide
-  had to be reworked (cf. bug #2869). Now, in Win32 this button does
-  not target a specific coqtop client, but instead sends a Ctrl-C to
-  any process sharing its console with Coqide. To avoid awkward
-  effects, it is recommended to launch Coqide via its icon, its menu,
-  or in a dedicated console window.
+- The syntax "x -> y" is now declared at level 99. In particular, it has
+  now a lower priority than "<->": "A -> B <-> C" is now "A -> (B <-> C)"
+  (possible source of incompatibilities)
+- Slight changes in unification error messages.
 
-Extraction
+Tactics
 
-- The option Extraction AccessOpaque is now set by default,
-  restoring compatibility of older versions of Coq (cf bug #2952).
+- Tactics btauto, a reflexive boolean tautology solver.
+- Tactic "tauto" was exceptionally able to destruct other connectives
+  than the binary connectives "and", "or", "prod", "sum", "iff". This
+  non-uniform behavior has been fixed (bug #2680) and tauto is
+  slightly weaker (possible source of incompatibilities). On the
+  opposite side, new tactic "dtauto" is able to destruct any
+  record-like inductive types, superseding the old version of "tauto".
+- Similarly, "intuition" has been made more uniform and, where it now
+  fails, "dintuition" can be used. (possible source of incompatibilities)
+- Tactic notations can now be defined locally to a module (use "Local" prefix).
+- Tactic "red" now reduces head beta-iota redexes (potential source of
+  rare incompatibilities).
+- Tactic "hnf" now reduces inner beta-iota redexes
+  (potential source of rare incompatibilities).
+- Tactic "intro H" now reduces beta-iota redexes if these hide a product
+  (potential source of rare incompatibilities).
+- In Ltac matching on patterns of the form "_ pat1 ... patn" now
+  behaves like if matching on "?X pat1 ... patn", i.e. accepting "_"
+  to be instantiated by an applicative term (experimental at this
+  stage, potential source of incompatibilities).
+- "change ... in ..." and "simpl ... in ..." now consider nested
+  occurrences (possible source of incompatibilities since this alters
+  the numbering of occurrences).
+- Now "appcontext" and "context" behave the same. The old buggy behaviour of
+  "context" can be retrieved at parse time by setting the
+  "Tactic Compat Context" flag. (possible source of incompatibilities).
+- New introduction pattern [= x1 .. xn] applies "injection as [x1 .. xn]"
+  on the fly if next hypothesis to introduce is an injectible equality
+  (idea borrowed from Georges Gonthier). Introduction pattern [=] applies
+  "discriminate" if a discriminable equality.
+- Tactic "injection c as ipats" now clears c if c refers to an
+  hypothesis and moves the resulting equations in the hypotheses
+  independently of the number of ipats, which has itself to be less
+  than the number of new hypotheses (possible source of incompatibilities;
+  former behavior obtainable by "Unset Injection L2R Pattern Order").
+- New tactic "rewrite_strat" for generalized rewriting with user-defined 
+  strategies, subsumming autorewrite.
 
-Changes from V8.4 to V8.4pl1
-============================
+Program
 
-Bug fixes
+- "Solve Obligations using" changed to "Solve Obligations with",
+  consistent with "Proof with".
+- Program Lemma, Definition now respect automatic introduction.
+- Add/document "Set Hide Obligations" (to hide obligations in the final
+  term inside an implicit argument) and "Set Shrink Obligations" (to
+  minimize dependencies of obligations defined by tactics).
 
-- Solved bugs :
-  #2851 #2863 #2865 #2893 #2895 #2892 #2905 #2906 #2907 #2917 #2921
-  #2930 #2941 #2878
-- Partially fixed bug : #2904
-- Various fixes concerning coq_makefile
+Notations
 
-Optimizations
+- "Bind Scope" can no longer bind "Funclass" and "Sortclass".
+- A notation can be given a (compat "8.x") annotation, making
+  it behave like a (only parsing), but flags may active warning
+  or error when this notation is used.
+- More systematic insertion of spaces as a default for printing
+  notations ("format" still available to override the default).
 
-- "Union by rank" optimization for universes contributed by J.H. Jourdan
-  and G. Sherrer (see union-find-and-coq-universes on gagallium blog).
+Internal Infrastructure
 
-Libraries
-
-- Internal organisation of some modular libraries have slightly changed
-  due to bug #2904 (GenericMinMax, OrdersTac)
-- No more constant "int" in ZArith/Int.v to avoid name clash with OCaml
-  (cf bug #2878).
-
-Coqide
-
-- Improved shutdown of coqtop processes spawned by coqide
-  (in particular added a missing close_on_exec primitive before forking).
-- On windows, launching coqide with the -debug option now produces
-  a log file in the user's temporary directory. The location of this
-  log file is displayed in the "About" message.
-
-
+- Many reorganisations in the ocaml source files. For instance,
+  many internal a.s.t. of Coq are now placed in mli files in
+  a new directory intf/, for instance constrexpr.mli or glob_term.mli.
+  More details in dev/doc/changes.
+- The file states/initial.coq does not exist anymore. Instead, coqtop
+  initially does a "Require" of Prelude.vo (or nothing when given
+  the options -noinit or -nois).
+- The format of vo files has slightly changed : cf final comments in
+  checker/cic.mli
+- The build system does not produce anymore programs named coqtop.opt
+  and a symbolic link to coqtop. Instead, coqtop is now directly
+  an executable compiled with the best OCaml compiler available.
+  The bytecode program coqtop.byte is still produced. Same for other
+  utilities.
+ 
 Changes from V8.4beta2 to V8.4
 ==============================
 
@@ -177,7 +216,7 @@ Tactics
   Proof General no older than mid-July 2011 is currently required.
 - Support for tactical "info" is suspended.
 - Support for command "Show Script" is suspended.
-- New tactics constr_eq, is_evar and has_evar for use in Ltac.
+- New tactics constr_eq, is_evar and has_evar for use in Ltac (DOC TODO).
 - Removed the two-argument variant of "decide equality".
 - New experimental tactical "timeout <n> <tac>". Since <n> is a time
   in second for the moment, this feature should rather be avoided
@@ -241,7 +280,7 @@ Vernacular commands
 - New command "Show Goal ident" to display the statement of a goal, even
   a closed one (available from Proof General).
 - Command "Proof" accept a new modifier "using" to force generalization
-  over a given list of section variables at section ending.
+  over a given list of section variables at section ending (DOC TODO).
 - New command "Arguments" generalizing "Implicit Arguments" and
   "Arguments Scope" and that also allows to rename the parameters of a
   definition and to tune the behavior of the tactic "simpl".
@@ -258,7 +297,7 @@ Module System
   are lower or equal than XX will be inlined.
   The level of a parameter can be fixed by "Parameter Inline(30) foo".
   When levels aren't given, the default value is 100. One can also use
-  the flag "Set Inline Level ..." to set a level.
+  the flag "Set Inline Level ..." to set a level (DOC TODO).
 - Print Assumptions should now handle correctly opaque modules (#2168).
 - Print Module (Type) now tries to print more details, such as types and
   bodies of the module elements. Note that Print Module Type could be
@@ -345,9 +384,10 @@ Extraction
 - The pretty-printer for Haskell now produces layout-independant code
 - A new command "Separate Extraction cst1 cst2 ..." that mixes a
   minimal extracted environment a la "Recursive Extraction" and the
-  production of several files (one per coq source) a la "Extraction Library".
+  production of several files (one per coq source) a la "Extraction Library"
+  (DOC TODO).
 - New option "Set/Unset Extraction KeepSingleton" for preventing the
-  extraction to optimize singleton container types.
+  extraction to optimize singleton container types (DOC TODO).
 - The extraction now identifies and properly rejects a particular case of
   universe polymorphism it cannot handle yet (the pair (I,I) being Prop).
 - Support of anonymous fields in record (#2555).
@@ -359,7 +399,8 @@ CoqIDE
   (cf button "Restart Coq", ex-"Go to Start"). For allowing such
   interrupts, the Windows version of coqide now requires Windows >= XP
   SP1.
-- The communication between CoqIDE and Coqtop is now done via a dialect of XML.
+- The communication between CoqIDE and Coqtop is now done via a dialect
+  of XML (DOC TODO).
 - The backtrack engine of CoqIDE has been reworked, it now uses the
   "Backtrack" command similarly to Proof General.
 - The Coqide parsing of sentences has be reworked and now supports
@@ -2465,5 +2506,3 @@ New user contributions
 
 - Correctness proof of Stalmarck tautology checker algorithm
   [Stalmarck] (Laurent Théry, Pierre Letouzey, Sophia-Antipolis)
-
- LocalWords:  recommended

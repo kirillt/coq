@@ -1,9 +1,9 @@
 open Names
 open Pp
-
 open Libnames
-
-let mk_prefix pre id = id_of_string (pre^(string_of_id id))
+open Globnames
+open Refiner
+let mk_prefix pre id = Id.of_string (pre^(Id.to_string id))
 let mk_rel_id = mk_prefix "R_"
 let mk_correct_id id = Nameops.add_suffix (mk_rel_id id) "_correct"
 let mk_complete_id id = Nameops.add_suffix (mk_rel_id id) "_complete"
@@ -12,10 +12,7 @@ let mk_equation_id id = Nameops.add_suffix id "_equation"
 let msgnl m =
   ()
 
-let invalid_argument s = raise (Invalid_argument s)
-
-
-let fresh_id avoid s = Namegen.next_ident_away_in_goal (id_of_string s) avoid
+let fresh_id avoid s = Namegen.next_ident_away_in_goal (Id.of_string s) avoid
 
 let fresh_name avoid s = Name (fresh_id avoid s)
 
@@ -29,7 +26,7 @@ let array_get_start a =
       (Array.length a - 1)
       (fun i -> a.(i))
   with Invalid_argument "index out of bounds" ->
-    invalid_argument "array_get_start"
+    invalid_arg "array_get_start"
 
 let id_of_name = function
     Name id -> id
@@ -51,10 +48,8 @@ let locate_constant ref =
 
 
 let locate_with_msg msg f x =
-  try
-    f x
-  with
-    | Not_found -> raise (Util.UserError("", msg))
+  try f x
+  with Not_found -> raise (Errors.UserError("", msg))
 
 
 let filter_map filter f =
@@ -78,7 +73,7 @@ let chop_rlambda_n  =
 	  | Glob_term.GLambda(_,name,k,t,b) -> chop_lambda_n ((name,t,false)::acc) (n-1) b
 	  | Glob_term.GLetIn(_,name,v,b) -> chop_lambda_n ((name,v,true)::acc) (n-1) b
 	  | _ ->
-	      raise (Util.UserError("chop_rlambda_n",
+	      raise (Errors.UserError("chop_rlambda_n",
 				    str "chop_rlambda_n: Not enough Lambdas"))
   in
   chop_lambda_n []
@@ -90,7 +85,7 @@ let chop_rprod_n  =
       else
 	match rt with
 	  | Glob_term.GProd(_,name,k,t,b) -> chop_prod_n ((name,t)::acc) (n-1) b
-	  | _ -> raise (Util.UserError("chop_rprod_n",str "chop_rprod_n: Not enough products"))
+	  | _ -> raise (Errors.UserError("chop_rprod_n",str "chop_rprod_n: Not enough products"))
   in
   chop_prod_n []
 
@@ -111,34 +106,27 @@ let list_add_set_eq eq_fun x l =
 
 let const_of_id id =
   let _,princ_ref =
-    qualid_of_reference (Libnames.Ident (Util.dummy_loc,id))
+    qualid_of_reference (Libnames.Ident (Loc.ghost,id))
   in
   try Nametab.locate_constant princ_ref
-  with Not_found -> Util.error ("cannot find "^ string_of_id id)
+  with Not_found -> Errors.error ("cannot find "^ Id.to_string id)
 
 let def_of_const t =
    match (Term.kind_of_term t) with
     Term.Const sp ->
-      (try (match Declarations.body_of_constant (Global.lookup_constant sp) with
-             | Some c -> Declarations.force c
+      (try (match Declareops.body_of_constant (Global.lookup_constant sp) with
+             | Some c -> c
 	     | _ -> assert false)
-       with e when Errors.noncritical e -> assert false)
+       with Not_found -> assert false)
     |_ -> assert false
 
 let coq_constant s =
   Coqlib.gen_constant_in_modules "RecursiveDefinition"
     Coqlib.init_modules s;;
 
-let constant sl s =
-  constr_of_global
-    (Nametab.locate (make_qualid(Names.make_dirpath
-			   (List.map id_of_string (List.rev sl)))
-	       (id_of_string s)));;
-
 let find_reference sl s =
-    (Nametab.locate (make_qualid(Names.make_dirpath
-			   (List.map id_of_string (List.rev sl)))
-	       (id_of_string s)));;
+  let dp = Names.DirPath.make (List.rev_map Id.of_string sl) in
+  Nametab.locate (make_qualid dp (Id.of_string s))
 
 let eq = lazy(coq_constant "eq")
 let refl_equal = lazy(coq_constant "eq_refl")
@@ -147,35 +135,32 @@ let refl_equal = lazy(coq_constant "eq_refl")
 (* Copy of the standart save mechanism but without the much too  *)
 (* slow reduction function                                       *)
 (*****************************************************************)
-open Declarations
 open Entries
 open Decl_kinds
 open Declare
-let definition_message id =
-  Flags.if_verbose message ((string_of_id id) ^ " is defined")
 
+let definition_message = Declare.definition_message
+
+let get_locality = function
+| Discharge -> true
+| Local -> true
+| Global -> false
 
 let save with_clean id const (locality,kind) hook =
-  let {const_entry_body = pft;
-       const_entry_secctx = _;
-       const_entry_type = tpo;
-       const_entry_opaque = opacity } = const in
   let l,r = match locality with
-    | Local when Lib.sections_are_opened () ->
-        let k = logical_kind_of_goal_kind kind in
-	let c = SectionLocalDef (pft, tpo, opacity) in
+    | Discharge when Lib.sections_are_opened () ->
+        let k = Kindops.logical_kind_of_goal_kind kind in
+	let c = SectionLocalDef const in
 	let _ = declare_variable id (Lib.cwd(), c, k) in
 	(Local, VarRef id)
-    | Local ->
-        let k = logical_kind_of_goal_kind kind in
-        let kn = declare_constant id (DefinitionEntry const, k) in
-	(Global, ConstRef kn)
-    | Global ->
-        let k = logical_kind_of_goal_kind kind in
-        let kn = declare_constant id (DefinitionEntry const, k) in
-	(Global, ConstRef kn) in
+    | Discharge | Local | Global ->
+        let local = get_locality locality in
+        let k = Kindops.logical_kind_of_goal_kind kind in
+        let kn = declare_constant id ~local (DefinitionEntry const, k) in
+	(locality, ConstRef kn)
+  in
   if with_clean then  Pfedit.delete_current_proof ();
-  hook l r;
+  Ephemeron.iter_opt hook (fun f -> f l r);
   definition_message id
 
 
@@ -248,8 +233,9 @@ type function_info =
 (* let function_table = ref ([] : function_db) *)
 
 
-let from_function = ref Cmap.empty
-let from_graph = ref Indmap.empty
+let from_function = Summary.ref Cmap.empty ~name:"functions_db_fn"
+let from_graph = Summary.ref Indmap.empty ~name:"functions_db_gr"
+
 (*
 let rec do_cache_info finfo = function
   | [] -> raise Not_found
@@ -277,7 +263,6 @@ let cache_Function (_,finfos) =
 
 
 let load_Function _  = cache_Function
-let open_Function _ = cache_Function
 let subst_Function (subst,finfos) =
   let do_subst_con c = fst (Mod_subst.subst_con subst c)
   and do_subst_ind (kn,i) = (Mod_subst.subst_ind subst kn,i)
@@ -346,22 +331,29 @@ let discharge_Function (_,finfos) =
 	 }
 
 open Term
+
+let pr_ocst c =
+  Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) c (mt ())
+
 let pr_info f_info =
-  str "function_constant := " ++ Printer.pr_lconstr (mkConst f_info.function_constant)++ fnl () ++
-    str "function_constant_type := " ++
-    (try Printer.pr_lconstr (Global.type_of_global (ConstRef f_info.function_constant))
-     with e when Errors.noncritical e -> mt ()) ++ fnl () ++
-    str "equation_lemma := " ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.equation_lemma (mt ()) ) ++ fnl () ++
-    str "completeness_lemma :=" ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.completeness_lemma (mt ()) ) ++ fnl () ++
-    str "correctness_lemma := " ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.correctness_lemma (mt ()) ) ++ fnl () ++
-    str "rect_lemma := " ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.rect_lemma (mt ()) ) ++ fnl () ++
-    str "rec_lemma := " ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.rec_lemma (mt ()) ) ++ fnl () ++
-    str "prop_lemma := " ++ (Option.fold_right (fun v acc -> Printer.pr_lconstr (mkConst v)) f_info.prop_lemma (mt ()) ) ++ fnl () ++
-    str "graph_ind := " ++ Printer.pr_lconstr (mkInd f_info.graph_ind) ++ fnl ()
+  str "function_constant := " ++
+  Printer.pr_lconstr (mkConst f_info.function_constant)++ fnl () ++
+  str "function_constant_type := " ++
+  (try
+     Printer.pr_lconstr
+       (Global.type_of_global (ConstRef f_info.function_constant))
+   with e when Errors.noncritical e -> mt ()) ++ fnl () ++
+  str "equation_lemma := " ++ pr_ocst f_info.equation_lemma ++ fnl () ++
+  str "completeness_lemma :=" ++ pr_ocst f_info.completeness_lemma ++ fnl () ++
+  str "correctness_lemma := " ++ pr_ocst f_info.correctness_lemma ++ fnl () ++
+  str "rect_lemma := " ++ pr_ocst f_info.rect_lemma ++ fnl () ++
+  str "rec_lemma := " ++ pr_ocst f_info.rec_lemma ++ fnl () ++
+  str "prop_lemma := " ++ pr_ocst f_info.prop_lemma ++ fnl () ++
+  str "graph_ind := " ++ Printer.pr_lconstr (mkInd f_info.graph_ind) ++ fnl ()
 
 let pr_table tb =
   let l = Cmap.fold (fun k v acc -> v::acc) tb [] in
-  Util.prlist_with_sep fnl pr_info l
+  Pp.prlist_with_sep fnl pr_info l
 
 let in_Function : function_info -> Libobject.obj =
   Libobject.declare_object
@@ -375,29 +367,9 @@ let in_Function : function_info -> Libobject.obj =
     }
 
 
-
-(* Synchronisation with reset *)
-let freeze () =
-  !from_function,!from_graph
-let unfreeze (functions,graphs) =
-(*   Pp.msgnl (str "unfreezing function_table : " ++ pr_table l); *)
-  from_function := functions;
-  from_graph := graphs
-
-let init () =
-(*   Pp.msgnl (str "reseting function_table");  *)
-  from_function := Cmap.empty;
-  from_graph := Indmap.empty
-
-let _ =
-  Summary.declare_summary "functions_db_sum"
-    { Summary.freeze_function = freeze;
-      Summary.unfreeze_function = unfreeze;
-      Summary.init_function = init }
-
 let find_or_none id =
   try Some
-    (match Nametab.locate (qualid_of_ident id) with ConstRef c -> c | _ -> Util.anomaly "Not a constant"
+    (match Nametab.locate (qualid_of_ident id) with ConstRef c -> c | _ -> Errors.anomaly (Pp.str "Not a constant")
     )
   with Not_found -> None
 
@@ -416,7 +388,7 @@ let update_Function finfo =
 
 
 let add_Function is_general f =
-  let f_id = id_of_label (con_label f) in
+  let f_id = Label.to_id (con_label f) in
   let equation_lemma = find_or_none (mk_equation_id f_id)
   and correctness_lemma = find_or_none (mk_correct_id f_id)
   and completeness_lemma = find_or_none (mk_complete_id f_id)
@@ -425,7 +397,7 @@ let add_Function is_general f =
   and prop_lemma = find_or_none (Nameops.add_suffix f_id "_ind")
   and graph_ind =
     match Nametab.locate (qualid_of_ident (mk_rel_id f_id))
-    with | IndRef ind -> ind | _ -> Util.anomaly "Not an inductive"
+    with | IndRef ind -> ind | _ -> Errors.anomaly (Pp.str "Not an inductive")
   in
   let finfos =
     { function_constant = f;
@@ -475,8 +447,7 @@ let function_debug_sig =
 let _ = declare_bool_option function_debug_sig
 
 
-let do_observe () =
-  !function_debug = true
+let do_observe () = !function_debug 
 
 
 
@@ -499,25 +470,37 @@ exception Building_graph of exn
 exception Defining_principle of exn
 exception ToShow of exn
 
-let init_constant dir s =
-  try
-    Coqlib.gen_constant "Function" dir s
-  with e when Errors.noncritical e -> raise (ToShow e)
-
 let jmeq () =
   try
-    (Coqlib.check_required_library ["Coq";"Logic";"JMeq"];
-     init_constant ["Logic";"JMeq"] "JMeq")
-  with e when Errors.noncritical e -> raise (ToShow e)
-
-let jmeq_rec () =
-  try
-    Coqlib.check_required_library ["Coq";"Logic";"JMeq"];
-	  init_constant ["Logic";"JMeq"] "JMeq_rec"
+    Coqlib.check_required_library Coqlib.jmeq_module_name;
+    Coqlib.gen_constant "Function" ["Logic";"JMeq"] "JMeq"
   with e when Errors.noncritical e -> raise (ToShow e)
 
 let jmeq_refl () =
   try
-    Coqlib.check_required_library ["Coq";"Logic";"JMeq"];
-    init_constant ["Logic";"JMeq"] "JMeq_refl"
+    Coqlib.check_required_library Coqlib.jmeq_module_name;
+    Coqlib.gen_constant "Function" ["Logic";"JMeq"] "JMeq_refl"
   with e when Errors.noncritical e -> raise (ToShow e)
+
+let h_intros l =
+  tclMAP (fun x -> Proofview.V82.of_tactic (Tactics.Simple.intro x)) l
+
+let h_id = Id.of_string "h"
+let hrec_id = Id.of_string "hrec"
+let well_founded = function () -> (coq_constant "well_founded")
+let acc_rel = function () -> (coq_constant "Acc")
+let acc_inv_id = function () -> (coq_constant "Acc_inv")
+let well_founded_ltof = function () ->  (Coqlib.coq_constant "" ["Arith";"Wf_nat"] "well_founded_ltof")
+let ltof_ref = function  () -> (find_reference ["Coq";"Arith";"Wf_nat"] "ltof")
+
+let evaluable_of_global_reference r = (* Tacred.evaluable_of_global_reference (Global.env ()) *)
+  match r with
+      ConstRef sp -> EvalConstRef sp
+    | VarRef id -> EvalVarRef id
+    | _ -> assert false;;
+
+let list_rewrite (rev:bool) (eqs: (constr*bool) list) =
+  tclREPEAT
+    (List.fold_right
+       (fun (eq,b) i -> tclORELSE (Proofview.V82.of_tactic ((if b then Equality.rewriteLR else Equality.rewriteRL) eq)) i)
+       (if rev then (List.rev eqs) else eqs) (tclFAIL 0 (mt())));;

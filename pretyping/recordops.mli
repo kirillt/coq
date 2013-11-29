@@ -9,9 +9,8 @@
 open Names
 open Nametab
 open Term
-open Libnames
+open Globnames
 open Libobject
-open Library
 
 (** Operations concerning records and canonical structures *)
 
@@ -22,11 +21,11 @@ open Library
 type struc_typ = {
   s_CONST : constructor;
   s_EXPECTEDPARAM : int;
-  s_PROJKIND : (name * bool) list;
+  s_PROJKIND : (Name.t * bool) list;
   s_PROJ : constant option list }
 
 type struc_tuple =
-    inductive * constructor * (name * bool) list * constant option list
+    inductive * constructor * (Name.t * bool) list * constant option list
 
 val declare_structure : struc_tuple -> unit
 
@@ -45,15 +44,6 @@ val find_projection_nparams : global_reference -> int
 
 (** raise [Not_found] if not a projection *)
 val find_projection : global_reference -> struc_typ
-
-(** we keep an index (dnet) of record's arguments + fields
-   (=methods). Here is how to declare them: *)
-val declare_method :
-  global_reference -> Evd.evar -> Evd.evar_map -> unit
-  (** and here is how to search for methods matched by a given term: *)
-val methods_matching : constr ->
-  ((global_reference*Evd.evar*Evd.evar_map) *
-     (constr*existential_key)*Termops.subst) list
 
 (** {6 Canonical structures } *)
 (** A canonical structure declares "canonical" conversion hints between 
@@ -80,6 +70,6 @@ val pr_cs_pattern : cs_pattern -> Pp.std_ppcmds
 val lookup_canonical_conversion : (global_reference * cs_pattern) -> obj_typ
 val declare_canonical_structure : global_reference -> unit
 val is_open_canonical_projection :
-  Environ.env -> Evd.evar_map -> (constr * constr list) -> bool
+  Environ.env -> Evd.evar_map -> (constr * constr Reductionops.stack) -> bool
 val canonical_projections : unit ->
   ((global_reference * cs_pattern) * obj_typ) list

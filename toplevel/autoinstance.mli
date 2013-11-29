@@ -7,11 +7,11 @@
 (************************************************************************)
 
 open Term
-open Libnames
+open Globnames
 open Typeclasses
 open Names
 open Evd
-open Sign
+open Context
 
 (** {6 Automatic detection of (some) record instances } *)
 

@@ -2,13 +2,12 @@
 (*                                                                      *)
 (* Micromega: A reflexive tactic using the Positivstellensatz           *)
 (*                                                                      *)
-(*  Frédéric Besson (Irisa/Inria) 2006-2008                             *)
+(*  FrÃ©dÃ©ric Besson (Irisa/Inria) 2006-2008                             *)
 (*                                                                      *)
 (************************************************************************)
 
 Require Import ZArith.
 Require Import Psatz.
-Require Import Ring_normalize.
 Open Scope Z_scope.
 Require Import ZMicromega.
 Require Import VarMap.
@@ -23,7 +22,7 @@ Proof.
 Qed.
 
 
-(* From Laurent Théry *)
+(* From Laurent ThÃ©ry *)
 
 Lemma some_pol : forall x, 4 * x ^ 2 + 3 * x + 2 >= 0.
 Proof.

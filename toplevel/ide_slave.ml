@@ -7,12 +7,10 @@
 (************************************************************************)
 
 open Vernacexpr
-open Names
-open Compat
+open Errors
 open Util
 open Pp
 open Printer
-open Namegen
 
 (** Ide_slave : an implementation of [Interface], i.e. mainly an interp
     function and a rewind function. This specialized loop is triggered
@@ -53,8 +51,14 @@ let init_stdout,read_stdout =
              let r = Buffer.contents out_buff in
              Buffer.clear out_buff; r)
 
+let pr_with_pid s = Printf.eprintf "[pid %d] %s\n%!" (Unix.getpid ()) s
+
 let pr_debug s =
-  if !Flags.debug then Printf.eprintf "[pid %d] %s\n%!" (Unix.getpid ()) s
+  if !Flags.debug then pr_with_pid s
+let pr_debug_call q =
+  if !Flags.debug then pr_with_pid ("<-- " ^ Serialize.pr_call q)
+let pr_debug_answer q r =
+  if !Flags.debug then pr_with_pid ("--> " ^ Serialize.pr_full_value q r)
 
 (** Categories of commands *)
 
@@ -70,12 +74,12 @@ let coqide_known_option table = List.mem table [
   ["Printing";"Universes"]]
 
 let is_known_option cmd = match cmd with
-  | VernacSetOption (_,o,BoolValue true)
-  | VernacUnsetOption (_,o) -> coqide_known_option o
+  | VernacSetOption (o,BoolValue true)
+  | VernacUnsetOption o -> coqide_known_option o
   | _ -> false
 
 let is_debug cmd = match cmd with
-  | VernacSetOption (_,["Ltac";"Debug"], _) -> true
+  | VernacSetOption (["Ltac";"Debug"], _) -> true
   | _ -> false
 
 let is_query cmd = match cmd with
@@ -96,35 +100,34 @@ let is_undo cmd = match cmd with
 (** Check whether a command is forbidden by CoqIDE *)
 
 let coqide_cmd_checks (loc,ast) =
-  let user_error s =
-    raise (Loc.Exc_located (loc, Util.UserError ("CoqIde", str s)))
-  in
+  let user_error s = Errors.user_err_loc (loc, "CoqIde", str s) in
   if is_debug ast then
     user_error "Debug mode not available within CoqIDE";
   if is_known_option ast then
-    user_error "Use CoqIDE display menu instead";
-  if is_navigation_vernac ast then
-    user_error "Use CoqIDE navigation instead";
-  if is_undo ast then
-    msgerrnl (str "Warning: rather use CoqIDE navigation instead");
+    msg_warning (strbrk"This will not work. Use CoqIDE display menu instead");
+  if Vernac.is_navigation_vernac ast || is_undo ast then
+    msg_warning (strbrk "Rather use CoqIDE navigation instead");
   if is_query ast then
-    msgerrnl (str "Warning: query commands should not be inserted in scripts")
+    msg_warning (strbrk "Query commands should not be inserted in scripts")
 
 (** Interpretation (cf. [Ide_intf.interp]) *)
 
-let interp (raw,verbosely,s) =
-  let pa = Pcoq.Gram.parsable (Stream.of_string s) in
-  let loc_ast = Vernac.parse_sentence (pa,None) in
-  if not raw then coqide_cmd_checks loc_ast;
-  Flags.make_silent (not verbosely);
-  Vernac.eval_expr ~preserving:raw loc_ast;
-  Flags.make_silent true;
-  read_stdout ()
+let add ((s,eid),(sid,verbose)) =
+  let newid, rc = Stm.add ~ontop:sid verbose ~check:coqide_cmd_checks eid s in
+  let rc = match rc with `NewTip -> CSig.Inl () | `Unfocus id -> CSig.Inr id in
+  newid, (rc, read_stdout ())
+
+let edit_at id =
+  match Stm.edit_at id with
+  | `NewTip -> CSig.Inl ()
+  | `Focus { Stm.start; stop; tip} -> CSig.Inr (start, (stop, tip))
+
+let query (s,id) = Stm.query ~at:id s; read_stdout ()
 
 (** Goal display *)
 
 let hyp_next_tac sigma env (id,_,ast) =
-  let id_s = Names.string_of_id id in
+  let id_s = Names.Id.to_string id in
   let type_s = string_of_ppcmds (pr_ltype_env env ast) in
   [
     ("clear "^id_s),("clear "^id_s^".");
@@ -178,16 +181,19 @@ let process_goal sigma g =
     let norm_constr = Reductionops.nf_evar sigma (Goal.V82.concl sigma g) in
     string_of_ppcmds (pr_goal_concl_style_env env norm_constr) in
   let process_hyp h_env d acc =
-    let d = Term.map_named_declaration (Reductionops.nf_evar sigma) d in
+    let d = Context.map_named_declaration (Reductionops.nf_evar sigma) d in
     (string_of_ppcmds (pr_var_decl h_env d)) :: acc in
   let hyps =
     List.rev (Environ.fold_named_context process_hyp env ~init: []) in
   { Interface.goal_hyp = hyps; Interface.goal_ccl = ccl; Interface.goal_id = id; }
 
 let goals () =
+  Stm.finish ();
+  let s = read_stdout () in
+  if not (String.is_empty s) then msg_info (str s);
   try
     let pfts = Proof_global.give_me_the_proof () in
-    let (goals, zipper, sigma) = Proof.proof pfts in
+    let (goals, zipper, shelf, given_up, sigma) = Proof.proof pfts in
     let fg = List.map (process_goal sigma) goals in
     let map_zip (lg, rg) =
       let lg = List.map (process_goal sigma) lg in
@@ -195,14 +201,22 @@ let goals () =
       (lg, rg)
     in
     let bg = List.map map_zip zipper in
-    Some { Interface.fg_goals = fg; Interface.bg_goals = bg; }
+    let shelf = List.map (process_goal sigma) shelf in
+    let given_up = List.map (process_goal sigma) given_up in
+    Some { Interface.fg_goals = fg;
+           Interface.bg_goals = bg;
+           shelved_goals = shelf;
+           given_up_goals = given_up; }
   with Proof_global.NoCurrentProof -> None
 
 let evars () =
   try
+    Stm.finish ();
+    let s = read_stdout () in
+    if not (String.is_empty s) then msg_info (str s);
     let pfts = Proof_global.give_me_the_proof () in
     let { Evd.it = all_goals ; sigma = sigma } = Proof.V82.subgoals pfts in
-    let exl = Evarutil.non_instantiated sigma in
+    let exl = Evar.Map.bindings (Evarutil.non_instantiated sigma) in
     let map_evar ev = { Interface.evar_info = string_of_ppcmds (pr_evar ev); } in
     let el = List.map map_evar exl in
     Some el
@@ -222,121 +236,40 @@ let hints () =
       Some (hint_hyps, hint_goal)
   with Proof_global.NoCurrentProof -> None
 
+
 (** Other API calls *)
 
 let inloadpath dir =
-  Library.is_in_load_paths (System.physical_path_of_string dir)
+  Loadpath.is_in_load_paths (CUnix.physical_path_of_string dir)
 
-let status () =
-  (** We remove the initial part of the current [dir_path]
+let status force =
+  (** We remove the initial part of the current [DirPath.t]
       (usually Top in an interactive session, cf "coqtop -top"),
       and display the other parts (opened sections and modules) *)
+  Stm.finish ();
+  if force then Stm.join ();
+  let s = read_stdout () in
+  if not (String.is_empty s) then msg_info (str s);
   let path =
-    let l = Names.repr_dirpath (Lib.cwd ()) in
-    List.rev_map Names.string_of_id l
+    let l = Names.DirPath.repr (Lib.cwd ()) in
+    List.rev_map Names.Id.to_string l
   in
   let proof =
-    try Some (Names.string_of_id (Proof_global.get_current_proof_name ()))
+    try Some (Names.Id.to_string (Proof_global.get_current_proof_name ()))
     with Proof_global.NoCurrentProof -> None
   in
   let allproofs =
     let l = Proof_global.get_all_proof_names () in
-    List.map Names.string_of_id l
+    List.map Names.Id.to_string l
   in
   {
     Interface.status_path = path;
     Interface.status_proofname = proof;
     Interface.status_allproofs = allproofs;
-    Interface.status_statenum = Lib.current_command_label ();
-    Interface.status_proofnum = Pfedit.current_proof_depth ();
+    Interface.status_proofnum = Stm.current_proof_depth ();
   }
 
-(** This should be elsewhere... *)
-let search flags =
-  let env = Global.env () in
-  let rec extract_flags name tpe subtpe mods blacklist = function
-  | [] -> (name, tpe, subtpe, mods, blacklist)
-  | (Interface.Name_Pattern s, b) :: l ->
-    let regexp =
-      try Str.regexp s
-      with e when Errors.noncritical e ->
-        Util.error ("Invalid regexp: " ^ s)
-    in
-    extract_flags ((regexp, b) :: name) tpe subtpe mods blacklist l
-  | (Interface.Type_Pattern s, b) :: l ->
-    let constr = Pcoq.parse_string Pcoq.Constr.lconstr_pattern s in
-    let (_, pat) = Constrintern.intern_constr_pattern Evd.empty env constr in
-    extract_flags name ((pat, b) :: tpe) subtpe mods blacklist l
-  | (Interface.SubType_Pattern s, b) :: l ->
-    let constr = Pcoq.parse_string Pcoq.Constr.lconstr_pattern s in
-    let (_, pat) = Constrintern.intern_constr_pattern Evd.empty env constr in
-    extract_flags name tpe ((pat, b) :: subtpe) mods blacklist l
-  | (Interface.In_Module m, b) :: l ->
-    let path = String.concat "." m in
-    let m = Pcoq.parse_string Pcoq.Constr.global path in
-    let (_, qid) = Libnames.qualid_of_reference m in
-    let id =
-      try Nametab.full_name_module qid
-      with Not_found ->
-        Util.error ("Module " ^ path ^ " not found.")
-    in
-    extract_flags name tpe subtpe ((id, b) :: mods) blacklist l
-  | (Interface.Include_Blacklist, b) :: l ->
-    extract_flags name tpe subtpe mods b l
-  in
-  let (name, tpe, subtpe, mods, blacklist) =
-    extract_flags [] [] [] [] false flags
-  in
-  let filter_function ref env constr =
-    let id = Names.string_of_id (Nametab.basename_of_global ref) in
-    let path = Libnames.dirpath (Nametab.path_of_global ref) in
-    let toggle x b = if x then b else not b in
-    let match_name (regexp, flag) =
-      toggle (Str.string_match regexp id 0) flag
-    in
-    let match_type (pat, flag) =
-      toggle (Matching.is_matching pat constr) flag
-    in
-    let match_subtype (pat, flag) =
-      toggle (Matching.is_matching_appsubterm ~closed:false pat constr) flag
-    in
-    let match_module (mdl, flag) =
-      toggle (Libnames.is_dirpath_prefix_of mdl path) flag
-    in
-    let in_blacklist =
-      blacklist || (Search.filter_blacklist ref env constr)
-    in
-    List.for_all match_name name &&
-    List.for_all match_type tpe &&
-    List.for_all match_subtype subtpe &&
-    List.for_all match_module mods && in_blacklist
-  in
-  let ans = ref [] in
-  let print_function ref env constr =
-     let fullpath = repr_dirpath (Nametab.dirpath_of_global ref) in
-     let qualid = Nametab.shortest_qualid_of_global Idset.empty ref in
-     let (shortpath, basename) = Libnames.repr_qualid qualid in
-     let shortpath = repr_dirpath shortpath in
-     (* [shortpath] is a suffix of [fullpath] and we're looking for the missing
-        prefix *)
-     let rec prefix full short accu = match full, short with
-     | _, [] ->
-       let full = List.rev_map string_of_id full in
-       (full, accu)
-     | _ :: full, m :: short ->
-       prefix full short (string_of_id m :: accu)
-     | _ -> assert false
-     in
-     let (prefix, qualid) = prefix fullpath shortpath [string_of_id basename] in
-     let answer = {
-       Interface.coq_object_prefix = prefix;
-       Interface.coq_object_qualid = qualid;
-       Interface.coq_object_object = string_of_ppcmds (pr_lconstr_env env constr);
-     } in
-    ans := answer :: !ans;
-  in
-  let () = Search.gen_filtered_search filter_function print_function in
-  !ans
+let search flags = Search.interface_search flags
 
 let get_options () =
   let table = Goptions.get_tables () in
@@ -351,116 +284,156 @@ let set_options options =
   in
   List.iter iter options
 
+let mkcases s = Vernacentries.make_cases s
+
 let about () = {
   Interface.coqtop_version = Coq_config.version;
-  Interface.protocol_version = Ide_intf.protocol_version;
+  Interface.protocol_version = Serialize.protocol_version;
   Interface.release_date = Coq_config.date;
   Interface.compile_date = Coq_config.compile_date;
 }
 
+let handle_exn e =
+  let dummy = Stateid.dummy in
+  let loc_of e = match Loc.get_loc e with
+    | Some loc when not (Loc.is_ghost loc) -> Some (Loc.unloc loc)
+    | _ -> None in
+  let mk_msg e = read_stdout ()^"\n"^string_of_ppcmds (Errors.print e) in
+  match e with
+  | Errors.Drop -> dummy, None, "Drop is not allowed by coqide!"
+  | Errors.Quit -> dummy, None, "Quit is not allowed by coqide!"
+  | e ->
+      match Stateid.get e with
+      | Some (valid, _) -> valid, loc_of e, mk_msg e
+      | None -> dummy, loc_of e, mk_msg e
+
+let init =
+  let initialized = ref false in
+  fun () ->
+   if !initialized then anomaly (str "Already initialized")
+   else (initialized := true; Stm.get_current_state ())
+
+(* Retrocompatibility stuff *)
+let interp ((_raw, verbose), s) =
+  let vernac_parse s =
+    let pa = Pcoq.Gram.parsable (Stream.of_string s) in
+    Flags.with_option Flags.we_are_parsing (fun () ->
+      match Pcoq.Gram.entry_parse Pcoq.main_entry pa with
+      | None -> raise (Invalid_argument "vernac_parse")
+      | Some ast -> ast)
+    () in
+  Stm.interp verbose (vernac_parse s);
+  Stm.get_current_state (), CSig.Inl (read_stdout ())
+
+(** When receiving the Quit call, we don't directly do an [exit 0],
+    but rather set this reference, in order to send a final answer
+    before exiting. *)
+
+let quit = ref false
+
 (** Grouping all call handlers together + error handling *)
 
-exception Quit
-
-let eval_call c =
-  let rec handle_exn e =
-    catch_break := false;
-    let pr_exn e = (read_stdout ())^("\n"^(string_of_ppcmds (Errors.print e))) in
-    match e with
-      | Quit ->
-        (* Here we do send an acknowledgement message to prove everything went 
-          OK. *)
-        let dummy = Interface.Good () in
-        let xml_answer = Ide_intf.of_answer Ide_intf.quit dummy in
-        let () = Xml_utils.print_xml !orig_stdout xml_answer in
-        let () = flush !orig_stdout in
-        let () = pr_debug "Exiting gracefully." in
-        exit 0
-      | Vernacexpr.Drop -> None, "Drop is not allowed by coqide!"
-      | Vernacexpr.Quit -> None, "Quit is not allowed by coqide!"
-      | Vernac.DuringCommandInterp (_,inner) -> handle_exn inner
-      | Error_in_file (_,_,inner) -> None, pr_exn inner
-      | Loc.Exc_located (loc, inner) when loc = dummy_loc -> None, pr_exn inner
-      | Loc.Exc_located (loc, inner) -> Some (Util.unloc loc), pr_exn inner
-      | e -> None, pr_exn e
-  in
+let eval_call xml_oc log c =
   let interruptible f x =
     catch_break := true;
     Util.check_for_interrupt ();
     let r = f x in
     catch_break := false;
+    let out = read_stdout () in
+    if not (String.is_empty out) then log (str out);
     r
   in
   let handler = {
-    Ide_intf.interp = interruptible interp;
-    Ide_intf.rewind = interruptible Backtrack.back;
-    Ide_intf.goals = interruptible goals;
-    Ide_intf.evars = interruptible evars;
-    Ide_intf.hints = interruptible hints;
-    Ide_intf.status = interruptible status;
-    Ide_intf.search = interruptible search;
-    Ide_intf.inloadpath = interruptible inloadpath;
-    Ide_intf.get_options = interruptible get_options;
-    Ide_intf.set_options = interruptible set_options;
-    Ide_intf.mkcases = interruptible Vernacentries.make_cases;
-    Ide_intf.quit = (fun () -> raise Quit);
-    Ide_intf.about = interruptible about;
-    Ide_intf.handle_exn = handle_exn; }
+    Interface.add = interruptible add;
+    Interface.edit_at = interruptible edit_at;
+    Interface.query = interruptible query;
+    Interface.goals = interruptible goals;
+    Interface.evars = interruptible evars;
+    Interface.hints = interruptible hints;
+    Interface.status = interruptible status;
+    Interface.search = interruptible search;
+    Interface.inloadpath = interruptible inloadpath;
+    Interface.get_options = interruptible get_options;
+    Interface.set_options = interruptible set_options;
+    Interface.mkcases = interruptible Vernacentries.make_cases;
+    Interface.quit = (fun () -> quit := true);
+    Interface.init = interruptible init;
+    Interface.about = interruptible about;
+    Interface.interp = interruptible interp;
+    Interface.handle_exn = handle_exn; }
   in
-  (* If the messages of last command are still there, we remove them *)
-  ignore (read_stdout ());
-  Ide_intf.abstract_eval_call handler c
+  Serialize.abstract_eval_call handler c
 
+(** Message dispatching.
+    Since coqtop -ideslave -coq-slaves on starts 1 thread per slave, and each
+    thread forwards feedback messages from the slave to the GUI on the same
+    xml channel, we need mutual exclusion.  The mutex should be per-channel, but
+    here we only use 1 channel. *)
+let print_xml =
+  let m = Mutex.create () in
+  fun oc xml ->
+    Mutex.lock m;
+    try Xml_printer.print oc xml; Mutex.unlock m
+    with e -> let e = Errors.push e in Mutex.unlock m; raise e
+  
+
+let slave_logger xml_oc level message =
+  (* convert the message into XML *)
+  let msg = string_of_ppcmds (hov 0 message) in
+  let message = {
+    Interface.message_level = level;
+    Interface.message_content = msg;
+  } in
+  let () = pr_debug (Printf.sprintf "-> %S" msg) in
+  let xml = Serialize.of_message message in
+  print_xml xml_oc xml
+
+let slave_feeder xml_oc msg =
+  let xml = Serialize.of_feedback msg in
+  print_xml xml_oc xml
 
 (** The main loop *)
 
 (** Exceptions during eval_call should be converted into [Interface.Fail]
-    messages by [handle_exn] above. Otherwise, we die badly, after having
-    tried to send a last message to the ide: trying to recover from errors
-    with the current protocol would most probably bring desynchronisation
-    between coqtop and ide. With marshalling, reading an answer to
-    a different request could hang the ide... *)
-
-let fail err =
-  Ide_intf.of_value (fun _ -> assert false) (Interface.Fail (None, err))
+    messages by [handle_exn] above. Otherwise, we die badly, without
+    trying to answer malformed requests. *)
 
 let loop () =
-  let p = Xml_parser.make () in
-  let () = Xml_parser.check_eof p false in
   init_signal_handler ();
   catch_break := false;
+  let xml_oc = Xml_printer.make (Xml_printer.TChannel !orig_stdout) in
+  let xml_ic = Xml_parser.make (Xml_parser.SChannel stdin) in
+  let () = Xml_parser.check_eof xml_ic false in
+  set_logger (slave_logger xml_oc);
+  set_feeder (slave_feeder xml_oc);
   (* We'll handle goal fetching and display in our own way *)
   Vernacentries.enable_goal_printing := false;
   Vernacentries.qed_display_script := false;
-  try
-    while true do
-      let xml_answer =
-        try
-          let xml_query = Xml_parser.parse p (Xml_parser.SChannel stdin) in
-          let q = Ide_intf.to_call xml_query in
-          let () = pr_debug ("<-- " ^ Ide_intf.pr_call q) in
-          let r = eval_call q in
-          let () = pr_debug ("--> " ^ Ide_intf.pr_full_value q r) in
-          Ide_intf.of_answer q r
-        with
-	| Xml_parser.Error (Xml_parser.Empty, _) ->
-	  pr_debug ("End of input, exiting");
-	  exit 0
-        | Xml_parser.Error (err, loc) ->
-          let msg = "Syntax error in query: " ^ Xml_parser.error_msg err in
-          fail msg
-        | Ide_intf.Marshal_error ->
-          fail "Incorrect query."
-      in
-      Xml_utils.print_xml !orig_stdout xml_answer;
+  Flags.make_term_color false;
+  while not !quit do
+    try
+      let xml_query = Xml_parser.parse xml_ic in
+(*       pr_with_pid (Xml_printer.to_string_fmt xml_query); *)
+      let q = Serialize.to_call xml_query in
+      let () = pr_debug_call q in
+      let r = eval_call xml_oc (slave_logger xml_oc Interface.Notice) q in
+      let () = pr_debug_answer q r in
+(*       pr_with_pid (Xml_printer.to_string_fmt (Serialize.of_answer q r)); *)
+      print_xml xml_oc (Serialize.of_answer q r);
       flush !orig_stdout
-    done
-  with any ->
-    let msg = Printexc.to_string any in
-    let r = "Fatal exception in coqtop:\n" ^ msg in
-    pr_debug ("==> " ^ r);
-    (try
-      Xml_utils.print_xml !orig_stdout (fail r);
-      flush !orig_stdout
-    with any -> ());
-    exit 1
+    with
+      | Xml_parser.Error (Xml_parser.Empty, _) ->
+	pr_debug "End of input, exiting gracefully.";
+	exit 0
+      | Xml_parser.Error (err, loc) ->
+        pr_debug ("Syntax error in query: " ^ Xml_parser.error_msg err);
+	exit 1
+      | Serialize.Marshal_error ->
+        pr_debug "Incorrect query.";
+	exit 1
+      | any ->
+	pr_debug ("Fatal exception in coqtop:\n" ^ Printexc.to_string any);
+	exit 1
+  done;
+  pr_debug "Exiting gracefully.";
+  exit 0

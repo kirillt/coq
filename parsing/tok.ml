@@ -19,6 +19,18 @@ type t =
   | LEFTQMARK
   | EOI
 
+let equal t1 t2 = match t1, t2 with
+| KEYWORD s1, KEYWORD s2 -> CString.equal s1 s2
+| METAIDENT s1, METAIDENT s2 -> CString.equal s1 s2
+| PATTERNIDENT s1, PATTERNIDENT s2 -> CString.equal s1 s2
+| IDENT s1, IDENT s2 -> CString.equal s1 s2
+| FIELD s1, FIELD s2 -> CString.equal s1 s2
+| INT s1, INT s2 -> CString.equal s1 s2
+| STRING s1, STRING s2 -> CString.equal s1 s2
+| LEFTQMARK, LEFTQMARK -> true
+| EOI, EOI -> true
+| _ -> false
+
 let extract_string = function
   | KEYWORD s -> s
   | IDENT s -> s
@@ -45,7 +57,9 @@ let match_keyword kwd = function
   | KEYWORD kwd' when kwd = kwd' -> true
   | _ -> false
 
-let print ppf tok = Format.fprintf ppf "%s" (to_string tok)
+(* Needed to fix Camlp4 signature.
+ Cannot use Pp because of silly Tox -> Compat -> Pp dependency *)
+let print ppf tok = Format.pp_print_string ppf (to_string tok)
 
 (** For camlp5, conversion from/to [Plexing.pattern],
     and a match function analoguous to [Plexing.default_match] *)
@@ -87,4 +101,4 @@ let match_pattern =
     | "EOI", "" -> (function EOI -> "" | _ -> err ())
     | pat ->
 	let tok = of_pattern pat in
-	function tok' -> if tok = tok' then snd pat else err ()
+	function tok' -> if equal tok tok' then snd pat else err ()

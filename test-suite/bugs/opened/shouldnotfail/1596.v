@@ -100,6 +100,16 @@ Definition t := (X.t * Y.t)%type.
     left;trivial.
   Defined.
 
+  Definition eq_dec : forall (x y: t), { eq x y } + { ~ eq x y}.
+  Proof.
+    intros [xa xb] [ya yb]; simpl.
+    destruct (X.eq_dec xa ya).
+    destruct (Y.eq_dec xb yb).
+    + left; now split.
+    + right. now intros [eqa eqb].
+    + right. now intros [eqa eqb].
+  Defined.
+
   Hint Immediate eq_sym.
   Hint Resolve eq_refl eq_trans lt_not_eq lt_trans.
 End OrderedPair.
@@ -156,6 +166,14 @@ GT;simpl;trivial;fail).
       apply EQ;trivial.
       rewrite e;trivial.
       apply GT;trivial.
+    Defined.
+
+    Definition eq_dec : forall (x y: t), { eq x y } + { ~ eq x y}.
+    Proof.
+    intros [i] [j]. unfold eq.
+    destruct (eq_nat_dec i j).
+    + left. now f_equal.
+    + right. intros meq; now inversion meq.
     Defined.
 
     Hint Immediate eq_sym.
@@ -236,7 +254,8 @@ n).
     elim (Bool_elim_bool (H.mem (MessageSpi.MNam n,n0) h));intros.
     apply SynInc;apply H.mem_2;trivial.
 
-    rewrite H in H0. (* !! impossible here !! *)
-    discriminate H0.
-  Qed.
+    Fail rewrite H in H0. (* !! impossible here !! *)
+Abort.
+(*    discriminate H0.
+  Qed.*)
 End B.

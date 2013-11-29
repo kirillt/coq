@@ -9,45 +9,36 @@
 (** This module registers tables for some non-logical informations
      associated declarations *)
 
+open Util
 open Names
-open Term
-open Sign
+open Context
 open Decl_kinds
 open Libnames
 
 (** Datas associated to section variables and local definitions *)
 
 type variable_data =
-    dir_path * bool (* opacity *) * Univ.constraints * logical_kind
+    DirPath.t * bool (* opacity *) * Univ.constraints * logical_kind
 
-let vartab = ref (Idmap.empty : variable_data Idmap.t)
+let vartab =
+  Summary.ref (Id.Map.empty : variable_data Id.Map.t) ~name:"VARIABLE"
 
-let _ = Summary.declare_summary "VARIABLE"
-  { Summary.freeze_function = (fun () -> !vartab);
-    Summary.unfreeze_function = (fun ft -> vartab := ft);
-    Summary.init_function = (fun () -> vartab := Idmap.empty) }
+let add_variable_data id o = vartab := Id.Map.add id o !vartab
 
-let add_variable_data id o = vartab := Idmap.add id o !vartab
-
-let variable_path id = let (p,_,_,_) = Idmap.find id !vartab in p
-let variable_opacity id = let (_,opaq,_,_) = Idmap.find id !vartab in opaq
-let variable_kind id = let (_,_,_,k) = Idmap.find id !vartab in k
-let variable_constraints id = let (_,_,cst,_) = Idmap.find id !vartab in cst
+let variable_path id = let (p,_,_,_) = Id.Map.find id !vartab in p
+let variable_opacity id = let (_,opaq,_,_) = Id.Map.find id !vartab in opaq
+let variable_kind id = let (_,_,_,k) = Id.Map.find id !vartab in k
+let variable_constraints id = let (_,_,cst,_) = Id.Map.find id !vartab in cst
 
 let variable_secpath id =
   let dir = drop_dirpath_prefix (Lib.library_dp()) (variable_path id) in
   make_qualid dir id
 
-let variable_exists id = Idmap.mem id !vartab
+let variable_exists id = Id.Map.mem id !vartab
 
 (** Datas associated to global parameters and constants *)
 
-let csttab = ref (Cmap.empty : logical_kind Cmap.t)
-
-let _ = Summary.declare_summary "CONSTANT"
-	  { Summary.freeze_function = (fun () -> !csttab);
-	    Summary.unfreeze_function = (fun ft -> csttab := ft);
-	    Summary.init_function = (fun () -> csttab := Cmap.empty) }
+let csttab = Summary.ref (Cmap.empty : logical_kind Cmap.t) ~name:"CONSTANT"
 
 let add_constant_kind kn k = csttab := Cmap.add kn k !csttab
 
@@ -65,7 +56,7 @@ let initialize_named_context_for_proof () =
 let last_section_hyps dir =
   fold_named_context
     (fun (id,_,_) sec_ids ->
-      try if dir=variable_path id then id::sec_ids else sec_ids
+      try if DirPath.equal dir (variable_path id) then id::sec_ids else sec_ids
       with Not_found -> sec_ids)
     (Environ.named_context (Global.env()))
     ~init:[]

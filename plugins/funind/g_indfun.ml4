@@ -5,31 +5,33 @@
 (*    //   *      This file is distributed under the terms of the       *)
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
+open Compat
 open Util
 open Term
+open Vars
 open Names
 open Pp
-open Topconstr
+open Constrexpr
 open Indfun_common
 open Indfun
 open Genarg
-open Pcoq
 open Tacticals
-open Constr
+open Misctypes
+open Miscops
 
 let pr_binding prc = function
-  | loc, Glob_term.NamedHyp id, c -> hov 1 (Ppconstr.pr_id id ++ str " := " ++ cut () ++ prc c)
-  | loc, Glob_term.AnonHyp n, c -> hov 1 (int n ++ str " := " ++ cut () ++ prc c)
+  | loc, NamedHyp id, c -> hov 1 (Ppconstr.pr_id id ++ str " := " ++ cut () ++ prc c)
+  | loc, AnonHyp n, c -> hov 1 (int n ++ str " := " ++ cut () ++ prc c)
 
 let pr_bindings prc prlc = function
-  | Glob_term.ImplicitBindings l ->
+  | ImplicitBindings l ->
       brk (1,1) ++ str "with" ++ brk (1,1) ++
-      Util.prlist_with_sep spc prc l
-  | Glob_term.ExplicitBindings l ->
+      pr_sequence prc l
+  | ExplicitBindings l ->
       brk (1,1) ++ str "with" ++ brk (1,1) ++
-        Util.prlist_with_sep spc (fun b -> str"(" ++ pr_binding prlc b ++ str")") l
-  | Glob_term.NoBindings -> mt ()
+        pr_sequence (fun b -> str"(" ++ pr_binding prlc b ++ str")") l
+  | NoBindings -> mt ()
 
 let pr_with_bindings prc prlc (c,bl) =
   prc c ++ hv 0 (pr_bindings prc prlc bl)
@@ -69,7 +71,7 @@ END
 TACTIC EXTEND newfuninv
    [ "functional" "inversion"  quantified_hypothesis(hyp) reference_opt(fname) ] ->
      [
-       Invfun.invfun hyp fname
+       Proofview.V82.tactic (Invfun.invfun hyp fname)
      ]
 END
 
@@ -80,7 +82,7 @@ let pr_intro_as_pat prc _ _ pat =
     | None -> mt ()
 
 
-ARGUMENT EXTEND with_names TYPED AS intro_pattern_opt PRINTED BY pr_intro_as_pat
+ARGUMENT EXTEND with_names TYPED AS simple_intropattern_opt PRINTED BY pr_intro_as_pat
 |   [ "as"  simple_intropattern(ipat) ] -> [ Some ipat ]
 | []  ->[ None ]
 END
@@ -96,7 +98,7 @@ TACTIC EXTEND newfunind
 	 | [c] -> c
 	 | c::cl -> applist(c,cl)
        in
-       Extratactics.onSomeWithHoles (fun x -> functional_induction true c x pat) princl ]
+       Extratactics.onSomeWithHoles (fun x -> Proofview.V82.tactic (functional_induction true c x pat)) princl ]
 END
 (***** debug only ***)
 TACTIC EXTEND snewfunind
@@ -107,11 +109,11 @@ TACTIC EXTEND snewfunind
 	 | [c] -> c
 	 | c::cl -> applist(c,cl)
        in
-       Extratactics.onSomeWithHoles (fun x -> functional_induction false c x pat) princl ]
+       Extratactics.onSomeWithHoles (fun x -> Proofview.V82.tactic (functional_induction false c x pat)) princl ]
 END
 
 
-let pr_constr_coma_sequence prc _ _ = Util.prlist_with_sep Util.pr_comma prc
+let pr_constr_coma_sequence prc _ _ = prlist_with_sep pr_comma prc
 
 ARGUMENT EXTEND constr_coma_sequence'
   TYPED AS constr_list
@@ -137,7 +139,7 @@ module FunctionGram =
 struct
   let gec s = Gram.entry_create ("Function."^s)
 		(* types *)
-  let function_rec_definition_loc : (Vernacexpr.fixpoint_expr * Vernacexpr.decl_notation list) located Gram.entry = gec "function_rec_definition_loc"
+  let function_rec_definition_loc : (Vernacexpr.fixpoint_expr * Vernacexpr.decl_notation list) Loc.located Gram.entry = gec "function_rec_definition_loc"
 end
 open FunctionGram
 
@@ -145,22 +147,29 @@ GEXTEND Gram
   GLOBAL: function_rec_definition_loc ;
 
   function_rec_definition_loc:
-    [ [ g = Vernac.rec_definition -> loc, g ]]
+    [ [ g = Vernac.rec_definition -> !@loc, g ]]
     ;
 
   END
-type 'a function_rec_definition_loc_argtype = ((Vernacexpr.fixpoint_expr * Vernacexpr.decl_notation list) located, 'a) Genarg.abstract_argument_type
+type function_rec_definition_loc_argtype = (Vernacexpr.fixpoint_expr * Vernacexpr.decl_notation list) Loc.located
 
-let (wit_function_rec_definition_loc : Genarg.tlevel function_rec_definition_loc_argtype),
-  (globwit_function_rec_definition_loc : Genarg.glevel function_rec_definition_loc_argtype),
-  (rawwit_function_rec_definition_loc : Genarg.rlevel function_rec_definition_loc_argtype) =
+let (wit_function_rec_definition_loc : function_rec_definition_loc_argtype Genarg.uniform_genarg_type) =
   Genarg.create_arg None "function_rec_definition_loc"
-VERNAC COMMAND EXTEND Function
-   ["Function" ne_function_rec_definition_loc_list_sep(recsl,"with")] ->
-	[
-	  do_generate_principle false (List.map snd recsl);
 
-	]
+(* TASSI: n'importe quoi ! *)
+VERNAC COMMAND EXTEND Function
+   ["Function" ne_function_rec_definition_loc_list_sep(recsl,"with")]
+    => [ let hard = List.exists (function
+           | _,((_,(_,(CMeasureRec _|CWfRec _)),_,_,_),_) -> true
+           | _,((_,(_,CStructRec),_,_,_),_) -> false) recsl in
+         match
+           Vernac_classifier.classify_vernac
+             (Vernacexpr.VernacFixpoint(None, List.map snd recsl))
+         with
+         | Vernacexpr.VtSideff ids, _ when hard ->
+             Vernacexpr.VtStartProof ("Classic", ids), Vernacexpr.VtLater
+         | x -> x ]
+    -> [ do_generate_principle false (List.map snd recsl) ]
 END
 
 let pr_fun_scheme_arg (princ_name,fun_name,s) =
@@ -180,18 +189,20 @@ let warning_error names e =
     | Building_graph e ->
 	Pp.msg_warning
 	  (str "Cannot define graph(s) for " ++
-	     h 1 (prlist_with_sep (fun _ -> str","++spc ()) Libnames.pr_reference names) ++
+	     h 1 (pr_enum Libnames.pr_reference names) ++
 	     if do_observe () then (spc () ++ Errors.print e) else mt ())
     | Defining_principle e ->
 	Pp.msg_warning
 	  (str "Cannot define principle(s) for "++
-	     h 1 (prlist_with_sep (fun _ -> str","++spc ()) Libnames.pr_reference names) ++
+	     h 1 (pr_enum Libnames.pr_reference names) ++
 	     if do_observe () then Errors.print e else mt ())
     | _ -> raise e
 
 
 VERNAC COMMAND EXTEND NewFunctionalScheme
-   ["Functional" "Scheme" ne_fun_scheme_arg_list_sep(fas,"with") ] ->
+   ["Functional" "Scheme" ne_fun_scheme_arg_list_sep(fas,"with") ]
+   => [ Vernacexpr.VtSideff(List.map pi1 fas), Vernacexpr.VtLater ]
+   ->
     [
       begin
 	try
@@ -207,8 +218,8 @@ VERNAC COMMAND EXTEND NewFunctionalScheme
 		    ;
 		    try Functional_principles_types.build_scheme fas
 		    with Functional_principles_types.No_graph_found ->
-		      Util.error ("Cannot generate induction principle(s)")
-    		      | e when Errors.noncritical e ->
+		      Errors.error ("Cannot generate induction principle(s)")
+		      | e when Errors.noncritical e ->
 			  let names = List.map (fun (_,na,_) -> na) fas in
 			  warning_error names e
 
@@ -225,14 +236,13 @@ END
 (***** debug only ***)
 
 VERNAC COMMAND EXTEND NewFunctionalCase
-   ["Functional" "Case" fun_scheme_arg(fas) ] ->
-    [
-      Functional_principles_types.build_case_scheme fas
-    ]
+  ["Functional" "Case" fun_scheme_arg(fas) ]
+  => [ Vernacexpr.VtSideff[pi1 fas], Vernacexpr.VtLater ]
+  -> [ Functional_principles_types.build_case_scheme fas ]
 END
 
 (***** debug only ***)
-VERNAC COMMAND EXTEND GenerateGraph
+VERNAC COMMAND EXTEND GenerateGraph CLASSIFIED AS QUERY
 ["Generate" "graph" "for" reference(c)] -> [ make_graph (Nametab.global c) ]
 END
 
@@ -273,7 +283,7 @@ let constr_head_match u t=
   if isApp u
   then
     let uhd,args= destApp u in
-    uhd=t
+    Constr.equal uhd t
   else false
 
 (** [hdMatchSub inu t] returns the list of occurrences of [t] in
@@ -296,8 +306,8 @@ let rec hdMatchSub inu (test: constr -> bool) : fapp_info list =
   else
     let f,args = decompose_app inu in
     let freeset = Termops.free_rels inu in
-    let max_rel = try Util.Intset.max_elt freeset with Not_found -> -1 in
-    {fname = f; largs = args; free = Util.Intset.is_empty freeset;
+    let max_rel = try Int.Set.max_elt freeset with Not_found -> -1 in
+    {fname = f; largs = args; free = Int.Set.is_empty freeset;
     max_rel = max_rel; onlyvars = List.for_all isVar args }
     ::subres
 
@@ -308,10 +318,10 @@ let mkEq typ c1 c2 =
 let poseq_unsafe idunsafe cstr gl =
   let typ = Tacmach.pf_type_of gl cstr in
   tclTHEN
-    (Tactics.letin_tac None (Name idunsafe) cstr None allHypsAndConcl)
+    (Proofview.V82.of_tactic (Tactics.letin_tac None (Name idunsafe) cstr None Locusops.allHypsAndConcl))
     (tclTHENFIRST
-      (Tactics.assert_tac Anonymous (mkEq typ (mkVar idunsafe) cstr))
-      Tactics.reflexivity)
+      (Proofview.V82.of_tactic (Tactics.assert_tac Anonymous (mkEq typ (mkVar idunsafe) cstr)))
+      (Proofview.V82.of_tactic Tactics.reflexivity))
     gl
 
 
@@ -357,7 +367,7 @@ let poseq_list_ids lcstr gl =
 let find_fapp (test:constr -> bool) g : fapp_info list =
   let pre_res = hdMatchSub (Tacmach.pf_concl g) test in
   let res =
-    List.fold_right (fun x acc -> if List.mem x acc then acc else x::acc) pre_res [] in
+    List.fold_right (List.add_set Pervasives.(=)) pre_res [] in
   (prlistconstr (List.map (fun x -> applist (x.fname,x.largs)) res);
   res)
 
@@ -367,7 +377,7 @@ let find_fapp (test:constr -> bool) g : fapp_info list =
     an occurence of function [id] in the conclusion of goal [g]. If
     [id]=[None] then calls to any function are selected. In any case
     [heuristic] is used to select the most pertinent occurrence. *)
-let finduction (oid:identifier option) (heuristic: fapp_info list -> fapp_info list)
+let finduction (oid:Id.t option) (heuristic: fapp_info list -> fapp_info list)
     (nexttac:Proof_type.tactic) g =
   let test = match oid with
     | Some id ->
@@ -377,7 +387,7 @@ let finduction (oid:identifier option) (heuristic: fapp_info list -> fapp_info l
   let info_list = find_fapp test g in
   let ordered_info_list = heuristic info_list in
   prlistconstr (List.map (fun x -> applist (x.fname,x.largs)) ordered_info_list);
-  if List.length ordered_info_list = 0 then Util.error "function not found in goal\n";
+  if List.is_empty ordered_info_list then Errors.error "function not found in goal\n";
   let taclist: Proof_type.tactic list =
     List.map
       (fun info ->
@@ -419,10 +429,10 @@ TACTIC EXTEND finduction
     ["finduction" ident(id) natural_opt(oi)] ->
       [
 	match oi with
-	  | Some(n) when n<=0 -> Util.error "numerical argument must be > 0"
+	  | Some(n) when n<=0 -> Errors.error "numerical argument must be > 0"
 	  | _ ->
 	      let heuristic = chose_heuristic oi in
-	      finduction (Some id) heuristic tclIDTAC
+	      Proofview.V82.tactic (finduction (Some id) heuristic tclIDTAC)
       ]
 END
 
@@ -432,13 +442,13 @@ TACTIC EXTEND fauto
     [ "fauto" tactic(tac)] ->
       [
 	let heuristic = chose_heuristic None in
-	finduction None heuristic (Tacinterp.eval_tactic tac)
+	Proofview.V82.tactic (finduction None heuristic (Proofview.V82.of_tactic (Tacinterp.eval_tactic tac)))
       ]
   |
     [ "fauto" ] ->
       [
 	let heuristic = chose_heuristic None in
-	finduction None heuristic tclIDTAC
+	Proofview.V82.tactic (finduction None heuristic tclIDTAC)
       ]
 
 END
@@ -446,31 +456,31 @@ END
 
 TACTIC EXTEND poseq
   [ "poseq" ident(x) constr(c) ] ->
-      [ poseq x c ]
+      [ Proofview.V82.tactic (poseq x c) ]
 END
 
-VERNAC COMMAND EXTEND Showindinfo
+VERNAC COMMAND EXTEND Showindinfo CLASSIFIED AS QUERY
   [ "showindinfo" ident(x) ] -> [ Merge.showind x ]
 END
 
-VERNAC COMMAND EXTEND MergeFunind
+VERNAC COMMAND EXTEND MergeFunind CLASSIFIED AS SIDEFF
   [ "Mergeschemes" "(" ident(id1) ne_ident_list(cl1) ")"
       "with" "(" ident(id2) ne_ident_list(cl2)  ")" "using" ident(id) ] ->
      [
        let f1 = Constrintern.interp_constr Evd.empty (Global.env())
-	 (CRef (Libnames.Ident (Util.dummy_loc,id1))) in
+	 (CRef (Libnames.Ident (Loc.ghost,id1))) in
        let f2 = Constrintern.interp_constr Evd.empty (Global.env())
-	 (CRef (Libnames.Ident (Util.dummy_loc,id2))) in
+	 (CRef (Libnames.Ident (Loc.ghost,id2))) in
        let f1type = Typing.type_of (Global.env()) Evd.empty f1 in
        let f2type = Typing.type_of (Global.env()) Evd.empty f2 in
        let ar1 = List.length (fst (decompose_prod f1type)) in
        let ar2 = List.length (fst (decompose_prod f2type)) in
        let _ =
-	 if ar1 <> List.length cl1 then
-	   Util.error ("not the right number of arguments for " ^ string_of_id id1) in
+	 if not (Int.equal ar1 (List.length cl1)) then
+	   Errors.error ("not the right number of arguments for " ^ Id.to_string id1) in
        let _ =
-	 if ar2 <> List.length cl2 then
-	   Util.error ("not the right number of arguments for " ^ string_of_id id2) in
+	 if not (Int.equal ar2 (List.length cl2)) then
+	   Errors.error ("not the right number of arguments for " ^ Id.to_string id2) in
        Merge.merge id1 id2 (Array.of_list cl1) (Array.of_list cl2)  id
      ]
 END

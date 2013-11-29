@@ -8,20 +8,23 @@
 
 (* Merging of induction principles. *)
 
-open Libnames
+open Globnames
 open Tactics
 open Indfun_common
+open Errors
 open Util
-open Topconstr
+open Constrexpr
 open Vernacexpr
 open Pp
 open Names
 open Term
+open Vars
+open Context
 open Termops
 open Declarations
-open Environ
 open Glob_term
 open Glob_termops
+open Decl_kinds
 
 (** {1 Utilities}  *)
 
@@ -48,33 +51,33 @@ let rec substitterm prof t by_t in_u =
 
 let lift_ldecl n ldecl = List.map (fun (x,y) -> x,lift n y) ldecl
 
-let understand = Pretyping.Default.understand Evd.empty (Global.env())
+let understand = Pretyping.understand Evd.empty (Global.env())
 
 (** Operations on names and identifiers *)
 let id_of_name = function
-    Anonymous -> id_of_string "H"
+    Anonymous -> Id.of_string "H"
   | Name id   -> id;;
-let name_of_string str = Name (id_of_string str)
-let string_of_name nme = string_of_id (id_of_name nme)
+let name_of_string str = Name (Id.of_string str)
+let string_of_name nme = Id.to_string (id_of_name nme)
 
 (** [isVarf f x] returns [true] if term [x] is of the form [(Var f)]. *)
 let isVarf f x =
     match x with
-      | GVar (_,x) -> Pervasives.compare x f = 0
+      | GVar (_,x) -> Id.equal x f
       | _ -> false
 
 (** [ident_global_exist id] returns true if identifier [id] is linked
     in global environment. *)
 let ident_global_exist id =
   try
-    let ans = CRef (Libnames.Ident (dummy_loc,id)) in
+    let ans = CRef (Libnames.Ident (Loc.ghost,id)) in
     let _ = ignore (Constrintern.intern_constr Evd.empty (Global.env()) ans) in
     true
   with e when Errors.noncritical e -> false
 
 (** [next_ident_fresh id] returns a fresh identifier (ie not linked in
     global env) with base [id]. *)
-let next_ident_fresh (id:identifier) =
+let next_ident_fresh (id:Id.t) =
     let res = ref id in
     while ident_global_exist !res do res := Nameops.lift_subscript !res done;
     !res
@@ -128,7 +131,7 @@ let prNamedRLDecl s lc =
     prstr "\n";
   end
 
-let showind (id:identifier) =
+let showind (id:Id.t) =
   let cstrid = Constrintern.global_reference id in
   let ind1,cstrlist = Inductiveops.find_inductive (Global.env()) Evd.empty cstrid in
   let mib1,ib1 = Inductive.lookup_mind_specif (Global.env()) ind1 in
@@ -152,23 +155,15 @@ exception Found of int
 (* Array scanning *)
 
 let array_prfx (arr: 'a array) (pred: int -> 'a -> bool): int =
-  try
-    for i=0 to Array.length arr - 1 do if pred i (arr.(i)) then raise (Found i) done;
-    Array.length arr (* all elt are positive *)
-  with Found i -> i
+match Array.findi pred arr with
+| None -> Array.length arr (* all elt are positive *)
+| Some i -> i
 
-let array_fold_lefti (f: int -> 'a -> 'b -> 'a) (acc:'a) (arr:'b array): 'a =
-  let i = ref 0 in
-  Array.fold_left
-    (fun acc x ->
-      let res = f !i acc x in i := !i + 1; res)
-    acc arr
-
-(* Like list_chop but except that [i] is the size of the suffix of [l]. *)
+(* Like List.chop but except that [i] is the size of the suffix of [l]. *)
 let list_chop_end i l =
   let size_prefix = List.length l -i in
   if size_prefix < 0 then failwith "list_chop_end"
-  else list_chop size_prefix l
+  else List.chop size_prefix l
 
 let list_fold_lefti (f: int -> 'a -> 'b -> 'a) (acc:'a) (arr:'b list): 'a =
   let i = ref 0 in
@@ -234,7 +229,7 @@ let linkmonad f lnkvar =
 let linklift lnkvar i = linkmonad (fun x -> x+i) lnkvar
 
 (* This map is used to deal with debruijn linked indices. *)
-module Link = Map.Make (struct type t = int let compare = Pervasives.compare end)
+module Link = Map.Make (Int)
 
 let pr_links l =
   Printf.printf "links:\n";
@@ -254,7 +249,7 @@ type 'a merged_arg =
 
 type merge_infos =
     {
-      ident:identifier; (** new inductive name *)
+      ident:Id.t; (** new inductive name *)
       mib1: mutual_inductive_body;
       oib1: one_inductive_body;
       mib2: mutual_inductive_body;
@@ -357,8 +352,8 @@ let filter_shift_stable_right (lnk:int merged_arg array) (l:'a list): 'a list =
 
 (** {1 Utilities for merging} *)
 
-let ind1name = id_of_string "__ind1"
-let ind2name = id_of_string "__ind2"
+let ind1name = Id.of_string "__ind1"
+let ind2name = Id.of_string "__ind2"
 
 (** Performs verifications on two graphs before merging: they must not
     be co-inductive, and for the moment they must not be mutual
@@ -366,8 +361,8 @@ let ind2name = id_of_string "__ind2"
 let verify_inds mib1 mib2 =
   if not mib1.mind_finite then error "First argument is coinductive";
   if not mib2.mind_finite then error "Second argument is coinductive";
-  if mib1.mind_ntypes <> 1 then error "First argument is mutual";
-  if mib2.mind_ntypes <> 1 then error "Second argument is mutual";
+  if not (Int.equal mib1.mind_ntypes 1) then error "First argument is mutual";
+  if not (Int.equal mib2.mind_ntypes 1) then error "Second argument is mutual";
   ()
 
 (*
@@ -381,11 +376,11 @@ let build_raw_params prms_decl avoid =
   let _ = prNamedRConstr "RAWDUMMY" dummy_glob_constr in
   let res,_ = glob_decompose_prod dummy_glob_constr in
   let comblist = List.combine prms_decl res in
-  comblist, res , (avoid @ (Idset.elements (ids_of_glob_constr dummy_glob_constr)))
+  comblist, res , (avoid @ (Id.Set.elements (ids_of_glob_constr dummy_glob_constr)))
 *)
 
 let ids_of_rawlist avoid rawl =
-    List.fold_left Idset.union avoid (List.map ids_of_glob_constr rawl)
+    List.fold_left Id.Set.union avoid (List.map ids_of_glob_constr rawl)
 
 
 
@@ -463,7 +458,7 @@ let shift_linked_params mib1 mib2 (lnk1:linked_var array) (lnk2:linked_var array
       ([],[],[],[]) arity_ctxt in
 (*  let arity_ctxt2 =
     build_raw_params oib2.mind_arity_ctxt
-      (Idset.elements (ids_of_glob_constr oib1.mind_arity_ctxt)) in*)
+      (Id.Set.elements (ids_of_glob_constr oib1.mind_arity_ctxt)) in*)
   let recprms1,otherprms1,args1,funresprms1 = bldprms (List.rev oib1.mind_arity_ctxt) mlnk1 in
   let _ = prstr "\n\n\n" in
   let recprms2,otherprms2,args2,funresprms2 = bldprms (List.rev oib2.mind_arity_ctxt) mlnk2 in
@@ -514,16 +509,16 @@ let rec merge_app c1 c2 id1 id2 shift filter_shift_stable =
     | GApp(_,f1, arr1), GApp(_,f2,arr2) when isVarf id1 f1 && isVarf id2 f2 ->
         let _ = prstr "\nICI1!\n";Pp.flush_all() in
         let args = filter_shift_stable lnk (arr1 @ arr2) in
-        GApp (dummy_loc,GVar (dummy_loc,shift.ident) , args)
+        GApp (Loc.ghost,GVar (Loc.ghost,shift.ident) , args)
     | GApp(_,f1, arr1), GApp(_,f2,arr2)  -> raise NoMerge
     | GLetIn(_,nme,bdy,trm) , _ ->
         let _ = prstr "\nICI2!\n";Pp.flush_all() in
         let newtrm = merge_app trm c2 id1 id2 shift filter_shift_stable in
-        GLetIn(dummy_loc,nme,bdy,newtrm)
+        GLetIn(Loc.ghost,nme,bdy,newtrm)
     | _, GLetIn(_,nme,bdy,trm) ->
         let _ = prstr "\nICI3!\n";Pp.flush_all() in
         let newtrm = merge_app c1 trm id1 id2 shift filter_shift_stable in
-        GLetIn(dummy_loc,nme,bdy,newtrm)
+        GLetIn(Loc.ghost,nme,bdy,newtrm)
     | _ -> let _ = prstr "\nICI4!\n";Pp.flush_all() in
            raise NoMerge
 
@@ -532,16 +527,16 @@ let rec merge_app_unsafe c1 c2 shift filter_shift_stable =
   match c1 , c2 with
     | GApp(_,f1, arr1), GApp(_,f2,arr2) ->
         let args = filter_shift_stable lnk (arr1 @ arr2) in
-        GApp (dummy_loc,GVar(dummy_loc,shift.ident) , args)
+        GApp (Loc.ghost,GVar(Loc.ghost,shift.ident) , args)
           (* FIXME: what if the function appears in the body of the let? *)
     | GLetIn(_,nme,bdy,trm) , _ ->
         let _ = prstr "\nICI2 '!\n";Pp.flush_all() in
         let newtrm = merge_app_unsafe trm c2 shift filter_shift_stable in
-        GLetIn(dummy_loc,nme,bdy,newtrm)
+        GLetIn(Loc.ghost,nme,bdy,newtrm)
     | _, GLetIn(_,nme,bdy,trm) ->
         let _ = prstr "\nICI3 '!\n";Pp.flush_all() in
         let newtrm = merge_app_unsafe c1 trm shift filter_shift_stable in
-        GLetIn(dummy_loc,nme,bdy,newtrm)
+        GLetIn(Loc.ghost,nme,bdy,newtrm)
     | _ -> let _ = prstr "\nICI4 '!\n";Pp.flush_all() in raise NoMerge
 
 
@@ -550,8 +545,8 @@ let rec merge_app_unsafe c1 c2 shift filter_shift_stable =
    calls of branch 1 with all rec calls of branch 2. *)
 (* TODO: reecrire cette heuristique (jusqu'a merge_types) *)
 let rec merge_rec_hyps shift accrec
-    (ltyp:(Names.name * glob_constr option * glob_constr option) list)
-    filter_shift_stable : (Names.name * glob_constr option * glob_constr option) list =
+    (ltyp:(Name.t * glob_constr option * glob_constr option) list)
+    filter_shift_stable : (Name.t * glob_constr option * glob_constr option) list =
   let mergeonehyp t reldecl =
     match reldecl with
       | (nme,x,Some (GApp(_,i,args) as ind))
@@ -567,11 +562,11 @@ let rec merge_rec_hyps shift accrec
     | e::lt -> e :: merge_rec_hyps shift accrec lt filter_shift_stable
 
 
-let rec build_suppl_reccall (accrec:(name * glob_constr) list) concl2 shift =
+let build_suppl_reccall (accrec:(Name.t * glob_constr) list) concl2 shift =
   List.map (fun (nm,tp) -> (nm,merge_app_unsafe tp concl2 shift)) accrec
 
 
-let find_app (nme:identifier) ltyp =
+let find_app (nme:Id.t) ltyp =
   try
     ignore
       (List.map
@@ -591,9 +586,9 @@ let prnt_prod_or_letin nm letbdy typ =
 
 
 let rec merge_types shift accrec1
-    (ltyp1:(name * glob_constr option * glob_constr option) list)
-    (concl1:glob_constr) (ltyp2:(name * glob_constr option * glob_constr option) list) concl2
-    : (name * glob_constr option * glob_constr option) list * glob_constr =
+    (ltyp1:(Name.t * glob_constr option * glob_constr option) list)
+    (concl1:glob_constr) (ltyp2:(Name.t * glob_constr option * glob_constr option) list) concl2
+    : (Name.t * glob_constr option * glob_constr option) list * glob_constr =
   let _ = prstr "MERGE_TYPES\n" in
   let _ = prstr "ltyp 1 : " in
   let _ = List.iter (fun (nm,lbdy,tp) -> prnt_prod_or_letin nm lbdy tp) ltyp1 in
@@ -603,7 +598,7 @@ let rec merge_types shift accrec1
   let res =
     match ltyp1 with
       | [] ->
-          let isrec1 = (accrec1<>[]) in
+          let isrec1 = not (List.is_empty accrec1) in
           let isrec2 = find_app ind2name ltyp2 in
           let rechyps =
             if isrec1 && isrec2
@@ -657,22 +652,22 @@ let rec merge_types shift accrec1
     linked args [allargs2] to target args of [allargs1] as specified
     in [shift]. [allargs1] and [allargs2] are in reverse order.  Also
     returns the list of unlinked vars of [allargs2]. *)
-let build_link_map_aux (allargs1:identifier array) (allargs2:identifier array)
+let build_link_map_aux (allargs1:Id.t array) (allargs2:Id.t array)
     (lnk:int merged_arg array) =
-  array_fold_lefti
+  Array.fold_left_i
     (fun i acc e ->
-      if i = Array.length lnk - 1 then acc (* functional arg, not in allargs *)
+      if Int.equal i (Array.length lnk - 1) then acc (* functional arg, not in allargs *)
       else
         match e with
-          | Prm_linked j | Arg_linked j -> Idmap.add allargs2.(i) allargs1.(j) acc
+          | Prm_linked j | Arg_linked j -> Id.Map.add allargs2.(i) allargs1.(j) acc
           | _ -> acc)
-    Idmap.empty lnk
+    Id.Map.empty lnk
 
 let build_link_map allargs1 allargs2 lnk =
   let allargs1 =
-    Array.of_list (List.rev (List.map (fun (x,_,_) -> id_of_name x) allargs1)) in
+    Array.of_list (List.rev_map (fun (x,_,_) -> id_of_name x) allargs1) in
   let allargs2 =
-    Array.of_list (List.rev (List.map (fun (x,_,_) -> id_of_name x) allargs2)) in
+    Array.of_list (List.rev_map (fun (x,_,_) -> id_of_name x) allargs2) in
   build_link_map_aux allargs1 allargs2 lnk
 
 
@@ -749,18 +744,18 @@ let fresh_cstror_suffix , cstror_suffix_init =
 (** [merge_constructor_id id1 id2 shift] returns the identifier of the
     new constructor from the id of the two merged constructor and
     the merging info. *)
-let merge_constructor_id id1 id2 shift:identifier =
-  let id = string_of_id shift.ident ^ "_" ^ fresh_cstror_suffix () in
-  next_ident_fresh (id_of_string id)
+let merge_constructor_id id1 id2 shift:Id.t =
+  let id = Id.to_string shift.ident ^ "_" ^ fresh_cstror_suffix () in
+  next_ident_fresh (Id.of_string id)
 
 
 
 (** [merge_constructors lnk shift avoid] merges the two list of
     constructor [(name*type)]. These are translated to glob_constr
     first, each of them having distinct var names. *)
-let rec merge_constructors (shift:merge_infos) (avoid:Idset.t)
-    (typcstr1:(identifier * glob_constr) list)
-    (typcstr2:(identifier * glob_constr) list) : (identifier * glob_constr) list =
+let merge_constructors (shift:merge_infos) (avoid:Id.Set.t)
+    (typcstr1:(Id.t * glob_constr) list)
+    (typcstr2:(Id.t * glob_constr) list) : (Id.t * glob_constr) list =
   List.flatten
     (List.map
         (fun (id1,rawtyp1) ->
@@ -776,20 +771,20 @@ let rec merge_constructors (shift:merge_infos) (avoid:Idset.t)
 (** [merge_inductive_body lnk shift avoid oib1 oib2] merges two
     inductive bodies [oib1] and [oib2], linking with [lnk], params
     info in [shift], avoiding identifiers in [avoid]. *)
-let rec merge_inductive_body (shift:merge_infos) avoid (oib1:one_inductive_body)
+let merge_inductive_body (shift:merge_infos) avoid (oib1:one_inductive_body)
     (oib2:one_inductive_body) =
   (* building glob_constr type of constructors *)
   let mkrawcor nme avoid typ =
     (* first replace rel 1 by a varname *)
     let substindtyp = substitterm 0 (mkRel 1) (mkVar nme) typ in
-    Detyping.detype false (Idset.elements avoid) [] substindtyp in
+    Detyping.detype false (Id.Set.elements avoid) [] substindtyp in
   let lcstr1: glob_constr list =
     Array.to_list (Array.map (mkrawcor ind1name avoid) oib1.mind_user_lc) in
   (* add  to avoid all indentifiers of lcstr1 *)
-  let avoid2 = Idset.union avoid (ids_of_rawlist avoid lcstr1) in
+  let avoid2 = Id.Set.union avoid (ids_of_rawlist avoid lcstr1) in
   let lcstr2 =
     Array.to_list (Array.map (mkrawcor ind2name avoid2) oib2.mind_user_lc) in
-  let avoid3 = Idset.union avoid (ids_of_rawlist avoid lcstr2) in
+  let avoid3 = Id.Set.union avoid (ids_of_rawlist avoid lcstr2) in
 
   let params1 =
     try fst (glob_decompose_prod_n shift.nrecprms1 (List.hd lcstr1))
@@ -810,14 +805,14 @@ let rec merge_inductive_body (shift:merge_infos) avoid (oib1:one_inductive_body)
     [lnk]. [shift] information on parameters of the new inductive.
     For the moment, inductives are supposed to be non mutual.
 *)
-let rec merge_mutual_inductive_body
+let merge_mutual_inductive_body
     (mib1:mutual_inductive_body) (mib2:mutual_inductive_body) (shift:merge_infos) =
   (* Mutual not treated, we take first ind body of each. *)
-  merge_inductive_body shift Idset.empty mib1.mind_packets.(0) mib2.mind_packets.(0)
+  merge_inductive_body shift Id.Set.empty mib1.mind_packets.(0) mib2.mind_packets.(0)
 
 
 let glob_constr_to_constr_expr x = (* build a constr_expr from a glob_constr *)
-  Flags.with_option Flags.raw_print (Constrextern.extern_glob_type Idset.empty) x
+  Flags.with_option Flags.raw_print (Constrextern.extern_glob_type Id.Set.empty) x
 
 let merge_rec_params_and_arity prms1 prms2 shift (concl:constr) =
   let params = prms2 @ prms1 in
@@ -828,7 +823,7 @@ let merge_rec_params_and_arity prms1 prms2 shift (concl:constr) =
         let _ = prNamedRConstr (string_of_name nme) tp in
         let _ = prstr "  ;  " in
         let typ = glob_constr_to_constr_expr tp in
-        LocalRawAssum ([(dummy_loc,nme)], Topconstr.default_binder_kind, typ) :: acc)
+        LocalRawAssum ([(Loc.ghost,nme)], Constrexpr_ops.default_binder_kind, typ) :: acc)
       [] params in
   let concl = Constrextern.extern_constr false (Global.env()) concl in
   let arity,_ =
@@ -836,7 +831,7 @@ let merge_rec_params_and_arity prms1 prms2 shift (concl:constr) =
       (fun (acc,env) (nm,_,c) ->
         let typ = Constrextern.extern_constr false env c in
         let newenv = Environ.push_rel (nm,None,c) env in
-        CProdN (dummy_loc, [[(dummy_loc,nm)],Topconstr.default_binder_kind,typ] , acc) , newenv)
+        CProdN (Loc.ghost, [[(Loc.ghost,nm)],Constrexpr_ops.default_binder_kind,typ] , acc) , newenv)
       (concl,Global.env())
       (shift.funresprms2 @ shift.funresprms1
         @ shift.args2 @ shift.args1 @ shift.otherprms2 @ shift.otherprms1) in
@@ -849,33 +844,22 @@ let merge_rec_params_and_arity prms1 prms2 shift (concl:constr) =
     [rawlist], named ident.
     FIXME: params et cstr_expr (arity) *)
 let glob_constr_list_to_inductive_expr prms1 prms2 mib1 mib2 shift
-    (rawlist:(identifier * glob_constr) list) =
-  let lident = dummy_loc, shift.ident in
+    (rawlist:(Id.t * glob_constr) list) =
+  let lident = Loc.ghost, shift.ident in
   let bindlist , cstr_expr = (* params , arities *)
     merge_rec_params_and_arity prms1 prms2 shift mkSet in
   let lcstor_expr : (bool * (lident * constr_expr)) list  =
     List.map (* zeta_normalize t ? *)
-      (fun (id,t) -> false, ((dummy_loc,id),glob_constr_to_constr_expr t))
+      (fun (id,t) -> false, ((Loc.ghost,id),glob_constr_to_constr_expr t))
       rawlist in
   lident , bindlist , Some cstr_expr , lcstor_expr
 
 
-
 let mkProd_reldecl (rdecl:rel_declaration) (t2:glob_constr) =
   match rdecl with
     | (nme,None,t) ->
         let traw = Detyping.detype false [] [] t in
-        GProd (dummy_loc,nme,Explicit,traw,t2)
-    | (_,Some _,_) -> assert false
-
-
-
-
-let mkProd_reldecl (rdecl:rel_declaration) (t2:glob_constr) =
-  match rdecl with
-    | (nme,None,t) ->
-        let traw = Detyping.detype false [] [] t in
-        GProd (dummy_loc,nme,Explicit,traw,t2)
+        GProd (Loc.ghost,nme,Explicit,traw,t2)
     | (_,Some _,_) -> assert false
 
 
@@ -893,7 +877,7 @@ let merge_inductive (ind1: inductive) (ind2: inductive)
   let prms1,prms2, rawlist = merge_mutual_inductive_body mib1 mib2 shift_prm in
   let _ = prstr "\nrawlist : " in
   let _ =
-    List.iter (fun (nm,tp) -> prNamedRConstr (string_of_id nm) tp;prstr "\n") rawlist in
+    List.iter (fun (nm,tp) -> prNamedRConstr (Id.to_string nm) tp;prstr "\n") rawlist in
   let _ = prstr "\nend rawlist\n" in
 (* FIX: retransformer en constr ici
    let shift_prm =
@@ -910,9 +894,9 @@ let merge_inductive (ind1: inductive) (ind2: inductive)
 
 
 (* Find infos on identifier id. *)
-let find_Function_infos_safe (id:identifier): Indfun_common.function_info =
+let find_Function_infos_safe (id:Id.t): Indfun_common.function_info =
   let kn_of_id x =
-    let f_ref = Libnames.Ident (dummy_loc,x) in
+    let f_ref = Libnames.Ident (Loc.ghost,x) in
     locate_with_msg (str "Don't know what to do with " ++ Libnames.pr_reference f_ref)
       locate_constant f_ref in
     try find_Function_infos (kn_of_id id)
@@ -927,8 +911,8 @@ let find_Function_infos_safe (id:identifier): Indfun_common.function_info =
 
     Warning: For the moment, repetitions of an id in [args1] or
     [args2] are not supported. *)
-let merge (id1:identifier) (id2:identifier) (args1:identifier array)
-    (args2:identifier array) id : unit =
+let merge (id1:Id.t) (id2:Id.t) (args1:Id.t array)
+    (args2:Id.t array) id : unit =
   let finfo1 = find_Function_infos_safe id1 in
   let finfo2 = find_Function_infos_safe id2 in
   (* FIXME? args1 are supposed unlinked. mergescheme (G x x) ?? *)
@@ -938,7 +922,7 @@ let merge (id1:identifier) (id2:identifier) (args1:identifier array)
                  as above: vars may be linked inside args2?? *)
     Array.mapi
       (fun i c ->
-        match array_find_i (fun i x -> x=c) args1 with
+        match Array.findi (fun i x -> Id.equal x c) args1 with
           | Some j -> Linked j
           | None -> Unlinked)
       args2 in
@@ -955,7 +939,7 @@ let remove_last_arg c =
   let xnolast = List.rev (List.tl (List.rev x)) in
   compose_prod xnolast y
 
-let rec remove_n_fst_list n l = if n=0 then l else remove_n_fst_list (n-1) (List.tl l)
+let rec remove_n_fst_list n l = if Int.equal n 0 then l else remove_n_fst_list (n-1) (List.tl l)
 let remove_n_last_list n l = List.rev (remove_n_fst_list n (List.rev l))
 
 let remove_last_n_arg n c =
@@ -977,7 +961,7 @@ let funify_branches relinfo nfuns branch =
       | _ -> assert false in
   let is_dom c =
     match kind_of_term c with
-      | Ind((u,_)) | Construct((u,_),_) -> u = mut_induct
+      | Ind((u,_)) | Construct((u,_),_) -> MutInd.equal u mut_induct
       | _ -> false in
   let _dom_i c =
     assert (is_dom c);

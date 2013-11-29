@@ -9,10 +9,9 @@
 (*s Production of Scheme syntax. *)
 
 open Pp
+open Errors
 open Util
 open Names
-open Nameops
-open Libnames
 open Miniml
 open Mlutil
 open Table
@@ -21,22 +20,29 @@ open Common
 (*s Scheme renaming issues. *)
 
 let keywords =
-  List.fold_right (fun s -> Idset.add (id_of_string s))
+  List.fold_right (fun s -> Id.Set.add (Id.of_string s))
     [ "define"; "let"; "lambda"; "lambdas"; "match";
       "apply"; "car"; "cdr";
       "error"; "delay"; "force"; "_"; "__"]
-    Idset.empty
+    Id.Set.empty
 
-let preamble _ _ usf =
+let pp_comment s = str";; "++h 0 s++fnl ()
+
+let pp_header_comment = function
+  | None -> mt ()
+  | Some com -> pp_comment com ++ fnl () ++ fnl ()
+
+let preamble _ comment _ usf =
+  pp_header_comment comment ++
   str ";; This extracted scheme code relies on some additional macros\n" ++
-  str ";; available at http://www.pps.jussieu.fr/~letouzey/scheme\n" ++
+  str ";; available at http://www.pps.univ-paris-diderot.fr/~letouzey/scheme\n" ++
   str "(load \"macros_extr.scm\")\n\n" ++
   (if usf.mldummy then str "(define __ (lambda (_) __))\n\n" else mt ())
 
 let pr_id id =
-  let s = string_of_id id in
+  let s = Id.to_string id in
   for i = 0 to String.length s - 1 do
-    if s.[i] = '\'' then s.[i] <- '~'
+    if s.[i] == '\'' then s.[i] <- '~'
   done;
   str s
 
@@ -86,11 +92,11 @@ let rec pp_expr env args =
     | MLglob (r,_) ->
 	apply (pp_global Term r)
     | MLcons (_,r,args') ->
-	assert (args=[]);
+	assert (List.is_empty args);
 	let st =
 	  str "`" ++
 	  paren (pp_global Cons r ++
-		 (if args' = [] then mt () else spc ()) ++
+		 (if List.is_empty args' then mt () else spc ()) ++
 		 prlist_with_sep spc (pp_cons_args env) args')
 	in
 	if is_coinductive r then paren (str "delay " ++ st) else st
@@ -99,7 +105,7 @@ let rec pp_expr env args =
 	error "Cannot handle general patterns in Scheme yet."
     | MLcase (_,t,pv) when is_custom_match pv ->
 	let mkfun (ids,_,e) =
-	  if ids <> [] then named_lams (List.rev ids) e
+	  if not (List.is_empty ids) then named_lams (List.rev ids) e
 	  else dummy_lams (ast_lift 1 e) 1
 	in
 	apply
@@ -130,7 +136,7 @@ let rec pp_expr env args =
 and pp_cons_args env = function
   | MLcons (_,r,args) when is_coinductive r ->
       paren (pp_global Cons r ++
-	     (if args = [] then mt () else spc ()) ++
+	     (if List.is_empty args then mt () else spc ()) ++
 	     prlist_with_sep spc (pp_cons_args env) args)
   | e -> str "," ++ pp_expr env [] e
 
@@ -142,7 +148,7 @@ and pp_one_pat env (ids,p,t) =
   in
   let ids,env' = push_vars (List.rev_map id_of_mlid ids) env in
   let args =
-    if ids = [] then mt ()
+    if List.is_empty ids then mt ()
     else (str " " ++ prlist_with_sep spc pr_id (List.rev ids))
   in
   (pp_global Cons r ++ args), (pp_expr env' [] t)
@@ -162,7 +168,7 @@ and pp_fix env j (ids,bl) args =
 	       (prvect_with_sep fnl
 		  (fun (fi,ti) ->
 		     paren ((pr_id fi) ++ spc () ++ (pp_expr env [] ti)))
-		  (array_map2 (fun id b -> (id,b)) ids bl)) ++
+		  (Array.map2 (fun id b -> (id,b)) ids bl)) ++
 	     fnl () ++
       	     hov 2 (pp_apply (pr_id (ids.(j))) true args))))
 
@@ -178,7 +184,7 @@ let pp_decl = function
       prvecti
 	(fun i r ->
 	  let void = is_inline_custom r ||
-	    (not (is_custom r) && defs.(i) = MLexn "UNUSED")
+	    (not (is_custom r) && match defs.(i) with MLexn "UNUSED" -> true | _ -> false)
 	  in
 	  if void then mt ()
 	  else
@@ -223,7 +229,7 @@ let scheme_descr = {
   preamble = preamble;
   pp_struct = pp_struct;
   sig_suffix = None;
-  sig_preamble = (fun _ _ _ -> mt ());
+  sig_preamble = (fun _ _ _ _ -> mt ());
   pp_sig = (fun _ -> mt ());
   pp_decl = pp_decl;
 }

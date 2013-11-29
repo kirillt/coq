@@ -605,11 +605,10 @@ Qed.
 Lemma prime_rel_prime :
   forall p:Z, prime p -> forall a:Z, ~ (p | a) -> rel_prime p a.
 Proof.
-  simple induction 1; intros.
-  constructor; intuition.
-  elim (prime_divisors p H x H3); intuition; subst; auto with zarith.
-  absurd (p | a); auto with zarith.
-  absurd (p | a); intuition.
+  intros; constructor; intros; auto with zarith.
+  apply prime_divisors in H1; intuition; subst; auto with zarith.
+  - absurd (p | a); auto with zarith.
+  - absurd (p | a); intuition.
 Qed.
 
 Hint Resolve prime_rel_prime: zarith.

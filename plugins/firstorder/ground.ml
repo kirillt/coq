@@ -11,10 +11,9 @@ open Sequent
 open Rules
 open Instances
 open Term
+open Vars
 open Tacmach
-open Tactics
 open Tacticals
-open Libnames
 
 let update_flags ()=
   let predref=ref Names.Cpred.empty in
@@ -22,18 +21,19 @@ let update_flags ()=
     try
       let kn=destConst (Classops.get_coercion_value coe) in
 	predref:=Names.Cpred.add kn !predref
-    with Invalid_argument "destConst"-> () in
+    with DestKO -> ()
+  in
     List.iter f (Classops.coercions ());
     red_flags:=
     Closure.RedFlags.red_add_transparent
       Closure.betaiotazeta
-      (Names.Idpred.full,Names.Cpred.complement !predref)
+      (Names.Id.Pred.full,Names.Cpred.complement !predref)
 
 let ground_tac solver startseq gl=
   update_flags ();
   let rec toptac skipped seq gl=
     if Tacinterp.get_debug()=Tactic_debug.DebugOn 0
-    then Pp.msgnl (Printer.pr_goal gl);
+    then Pp.msg_debug (Printer.pr_goal gl);
     tclORELSE (axiom_tac seq.gl seq)
       begin
 	try

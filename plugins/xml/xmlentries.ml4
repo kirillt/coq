@@ -12,15 +12,9 @@
 (*                       http://helm.cs.unibo.it                        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
-open Util;;
-open Vernacinterp;;
-
-open Extend;;
-open Genarg;;
-open Pp;;
-open Pcoq;;
+open Pp
 
 (* File name *)
 
@@ -31,7 +25,7 @@ END
 
 (* Print XML and Show XML *)
 
-VERNAC COMMAND EXTEND Xml
+VERNAC COMMAND EXTEND Xml CLASSIFIED AS QUERY
 | [ "Print" "XML" filename(fn) global(qid) ] -> [ Xmlcommand.print_ref qid fn ]
 
 | [ "Show" "XML" filename(fn) "Proof" ] -> [ Xmlcommand.show fn ]

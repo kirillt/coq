@@ -218,7 +218,7 @@ struct
 
  let fold = P.fold
 
- let is_null p = fold (fun mn vl b -> b & sign_num vl = 0) p  true
+ let is_null p = fold (fun mn vl b -> b && sign_num vl = 0) p  true
 
  let compare = compare compare_num
 
@@ -315,7 +315,7 @@ module Vect =
 	if Big_int.compare_big_int res Big_int.zero_big_int = 0
 	then Big_int.unit_big_int else res
 
-    let rec mul z t =
+    let mul z t =
       match z with
 	| Int 0 -> []
 	| Int 1 -> t
@@ -585,7 +585,7 @@ struct
   module MonT = 
   struct
     module MonoMap = Map.Make(Monomial)
-    module IntMap  = Map.Make(struct type t = int let compare = Pervasives.compare end)
+    module IntMap  = Map.Make(Int)
 	  
     (** A hash table might be preferable but requires a hash function. *)
     let (index_of_monomial : int MonoMap.t ref) = ref (MonoMap.empty)

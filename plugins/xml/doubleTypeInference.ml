@@ -15,24 +15,18 @@
 (*CSC: tutto da rifare!!! Basarsi su Retyping che e' meno costoso! *)
 type types = {synthesized : Term.types ; expected : Term.types option};;
 
-let prerr_endline _ = ();;
-
 let cprop =
- let module N = Names in
-  N.make_con
-   (N.MPfile
+  Names.make_con
+   (Names.MPfile
      (Libnames.dirpath_of_string "CoRN.algebra.CLogic"))
-   (N.make_dirpath [])
-   (N.mk_label "CProp")
+   (Names.DirPath.empty)
+   (Names.Label.make "CProp")
 ;;
 
 let whd_betadeltaiotacprop env _evar_map ty =
- let module R = Glob_term in
- let module C = Closure in
- let module CR = C.RedFlags in
  (*** CProp is made Opaque ***)
- let flags = CR.red_sub C.betadeltaiota (CR.fCONST cprop) in
- C.whd_val (C.create_clos_infos flags env) (C.inject ty)
+ let flags = Closure.RedFlags.red_sub Closure.betadeltaiota (Closure.RedFlags.fCONST cprop) in
+ Closure.whd_val (Closure.create_clos_infos flags env) (Closure.inject ty)
 ;;
 
 
@@ -62,12 +56,13 @@ let double_type_of env sigma cstr expectedty subterms_to_types =
  (*CSC: functions used do checks that we do not need                       *)
  let rec execute env sigma cstr expectedty =
   let module T = Term in
+  let module V = Vars in
   let module E = Environ in
    (* the type part is the synthesized type *)
    let judgement =
     match T.kind_of_term cstr with
        T.Meta n ->
-        Util.error
+        Errors.error
          "DoubleTypeInference.double_type_of: found a non-instanciated goal"
 
      | T.Evar ((n,l) as ev) ->
@@ -87,7 +82,7 @@ let double_type_of env sigma cstr expectedty subterms_to_types =
                 (function (m,bo,ty) ->
                   (* Warning: the substitution should be performed also on bo *)
                   (* This is not done since bo is not used later yet          *)
-                  (m,bo,Unshare.unshare (T.replace_vars [n,he1] ty))
+                  (m,bo,Unshare.unshare (V.replace_vars [n,he1] ty))
                 ) tl2
               in
                iter tl1 tl2'
@@ -147,9 +142,8 @@ let double_type_of env sigma cstr expectedty subterms_to_types =
 (*CSC: universes.                                                        *)
 (try
         Typeops.judge_of_type u
- with e when e <> Sys.Break ->
- (* Successor of a non universe-variable universe anomaly *)
- (Pp.ppnl (Pp.str "Warning: universe refresh performed!!!") ; flush stdout ) ;
+ with _ -> (* Successor of a non universe-variable universe anomaly *)
+  Pp.msg_warning (Pp.str "Universe refresh performed!!!");
   Typeops.judge_of_type (Termops.new_univ ())
 )
 
@@ -165,7 +159,7 @@ let double_type_of env sigma cstr expectedty subterms_to_types =
               match T.kind_of_term (Reduction.whd_betadeltaiota env typ) with
                  T.Prod (_,c1,c2) ->
                   (Some (Reductionops.nf_beta sigma c1)) ::
-                   (aux (T.subst1 hj c2) restjl)
+                   (aux (V.subst1 hj c2) restjl)
                | _ -> assert false
          in
           Array.of_list (aux j.Environ.uj_type (Array.to_list args))
@@ -241,7 +235,7 @@ let double_type_of env sigma cstr expectedty subterms_to_types =
       in
 (*CSC: debugging stuff to be removed *)
 if Acic.CicHash.mem subterms_to_types cstr then
- (Pp.ppnl (Pp.(++) (Pp.str "DUPLICATE INSERTION: ") (Printer.pr_lconstr cstr)) ; flush stdout ) ;
+ Pp.msg_warning (Pp.(++) (Pp.str "DUPLICATE INSERTION: ") (Printer.pr_lconstr cstr));
        Acic.CicHash.add subterms_to_types cstr types ;
        E.make_judge cstr res
 
@@ -253,7 +247,7 @@ if Acic.CicHash.mem subterms_to_types cstr then
    let lara = Array.map (assumption_of_judgment env sigma) larj in
    let env1 = Environ.push_rec_types (names,lara,vdef) env in
    let expectedtypes =
-    Array.map (function i -> Some (Term.lift length i)) lar
+    Array.map (function i -> Some (Vars.lift length i)) lar
    in
    let vdefj = execute_array env1 sigma vdef expectedtypes in
    let vdefv = Array.map Environ.j_val vdefj in

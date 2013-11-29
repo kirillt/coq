@@ -9,18 +9,19 @@
 (* digit-based syntax for int31, bigN bigZ and bigQ *)
 
 open Bigint
-open Libnames
+open Names
+open Globnames
 open Glob_term
 
 (*** Constants for locating int31 / bigN / bigZ / bigQ constructors ***)
 
-let make_dir l = Names.make_dirpath (List.map Names.id_of_string (List.rev l))
-let make_path dir id = Libnames.make_path (make_dir dir) (Names.id_of_string id)
+let make_dir l = DirPath.make (List.rev_map Id.of_string l)
+let make_path dir id = Libnames.make_path (make_dir dir) (Id.of_string id)
 
-let make_mind mp id = Names.make_mind mp Names.empty_dirpath (Names.mk_label id)
-let make_mind_mpfile dir id = make_mind (Names.MPfile (make_dir dir)) id
+let make_mind mp id = Names.MutInd.make2 mp (Label.make id)
+let make_mind_mpfile dir id = make_mind (MPfile (make_dir dir)) id
 let make_mind_mpdot dir modname id =
-  let mp = Names.MPdot (Names.MPfile (make_dir dir), Names.mk_label modname)
+  let mp = MPdot (MPfile (make_dir dir), Label.make modname)
   in make_mind mp id
 
 
@@ -95,7 +96,7 @@ let int31_of_pos_bigint dloc n =
   GApp (dloc, ref_construct, List.rev (args 31 n))
 
 let error_negative dloc =
-  Util.user_err_loc (dloc, "interp_int31", Pp.str "int31 are only non-negative numbers.")
+  Errors.user_err_loc (dloc, "interp_int31", Pp.str "int31 are only non-negative numbers.")
 
 let interp_int31 dloc n =
   if is_pos_or_zero n then
@@ -127,7 +128,7 @@ let uninterp_int31 i =
 let _ = Notation.declare_numeral_interpreter int31_scope
   (int31_path, int31_module)
   interp_int31
-  ([GRef (Util.dummy_loc, int31_construct)],
+  ([GRef (Loc.ghost, int31_construct)],
    uninterp_int31,
    true)
 
@@ -164,10 +165,10 @@ let word_of_pos_bigint dloc hght n =
     if hgt <= 0 then
       int31_of_pos_bigint dloc n
     else if equal n zero then
-      GApp (dloc, ref_W0, [GHole (dloc, Evd.InternalHole)])
+      GApp (dloc, ref_W0, [GHole (dloc, Evar_kinds.InternalHole, None)])
     else
       let (h,l) = split_at hgt n in
-      GApp (dloc, ref_WW, [GHole (dloc, Evd.InternalHole);
+      GApp (dloc, ref_WW, [GHole (dloc, Evar_kinds.InternalHole, None);
 			   decomp (hgt-1) h;
 			   decomp (hgt-1) l])
   in
@@ -184,7 +185,7 @@ let bigN_of_pos_bigint dloc n =
   GApp (dloc, ref_constructor, args)
 
 let bigN_error_negative dloc =
-  Util.user_err_loc (dloc, "interp_bigN", Pp.str "bigN are only non-negative numbers.")
+  Errors.user_err_loc (dloc, "interp_bigN", Pp.str "bigN are only non-negative numbers.")
 
 let interp_bigN dloc n =
   if is_pos_or_zero n then
@@ -235,7 +236,7 @@ let uninterp_bigN rc =
 let bigN_list_of_constructors =
   let rec build i =
     if i < n_inlined+1 then
-      GRef (Util.dummy_loc, bigN_constructor i)::(build (i+1))
+      GRef (Loc.ghost, bigN_constructor i)::(build (i+1))
     else
       []
   in
@@ -281,8 +282,8 @@ let uninterp_bigZ rc =
 let _ = Notation.declare_numeral_interpreter bigZ_scope
   (bigZ_path, bigZ_module)
   interp_bigZ
-  ([GRef (Util.dummy_loc, bigZ_pos);
-    GRef (Util.dummy_loc, bigZ_neg)],
+  ([GRef (Loc.ghost, bigZ_pos);
+    GRef (Loc.ghost, bigZ_neg)],
    uninterp_bigZ,
    true)
 
@@ -302,5 +303,5 @@ let uninterp_bigQ rc =
 let _ = Notation.declare_numeral_interpreter bigQ_scope
   (bigQ_path, bigQ_module)
   interp_bigQ
-  ([GRef (Util.dummy_loc, bigQ_z)], uninterp_bigQ,
+  ([GRef (Loc.ghost, bigQ_z)], uninterp_bigQ,
    true)

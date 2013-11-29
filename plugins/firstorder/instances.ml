@@ -6,23 +6,23 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Formula
-open Sequent
 open Unify
 open Rules
+open Errors
 open Util
 open Term
+open Vars
 open Glob_term
 open Tacmach
 open Tactics
 open Tacticals
 open Termops
 open Reductionops
-open Declarations
 open Formula
 open Sequent
 open Names
-open Libnames
+open Globnames
+open Misctypes
 
 let compare_instance inst1 inst2=
 	match inst1,inst2 with
@@ -30,18 +30,18 @@ let compare_instance inst1 inst2=
 	      (OrderedConstr.compare d1 d2)
 	  | Real((m1,c1),n1),Real((m2,c2),n2)->
 	      ((-) =? (-) ==? OrderedConstr.compare) m2 m1 n1 n2 c1 c2
-	  | Phantom(_),Real((m,_),_)-> if m=0 then -1 else 1
-	  | Real((m,_),_),Phantom(_)-> if m=0 then 1 else -1
+	  | Phantom(_),Real((m,_),_)-> if Int.equal m 0 then -1 else 1
+	  | Real((m,_),_),Phantom(_)-> if Int.equal m 0 then 1 else -1
 
 let compare_gr id1 id2 =
   if id1==id2 then 0 else
     if id1==dummy_id then 1
     else if id2==dummy_id then -1
-    else Libnames.RefOrdered.compare id1 id2
+    else Globnames.RefOrdered.compare id1 id2
 
 module OrderedInstance=
 struct
-  type t=instance * Libnames.global_reference
+  type t=instance * Globnames.global_reference
   let compare (inst1,id1) (inst2,id2)=
     (compare_instance =? compare_gr) inst2 inst1 id2 id1
     (* we want a __decreasing__ total order *)
@@ -76,7 +76,7 @@ let match_one_quantified_hyp setref seq lf=
       Left(Lforall(i,dom,triv))|Right(Rexists(i,dom,triv))->
 	if do_sequent setref triv lf.id seq i dom lf.atoms then
 	  setref:=IS.add ((Phantom dom),lf.id) !setref
-    | _ ->anomaly "can't happen"
+    | _ -> anomaly (Pp.str "can't happen")
 
 let give_instances lf seq=
   let setref=ref IS.empty in
@@ -99,7 +99,7 @@ let rec collect_quantified seq=
 
 let dummy_constr=mkMeta (-1)
 
-let dummy_bvid=id_of_string "x"
+let dummy_bvid=Id.of_string "x"
 
 let mk_open_instance id gl m t=
   let env=pf_env gl in
@@ -113,22 +113,22 @@ let mk_open_instance id gl m t=
 	match nam with
 	    Name id -> id
 	  | Anonymous ->  dummy_bvid in
-  let revt=substl (list_tabulate (fun i->mkRel (m-i)) m) t in
+  let revt=substl (List.init m (fun i->mkRel (m-i))) t in
   let rec aux n avoid=
-    if n=0 then [] else
+    if Int.equal n 0 then [] else
       let nid=(fresh_id avoid var_id gl) in
 	(Name nid,None,dummy_constr)::(aux (n-1) (nid::avoid)) in
   let nt=it_mkLambda_or_LetIn revt (aux m []) in
   let rawt=Detyping.detype false [] [] nt in
   let rec raux n t=
-    if n=0 then t else
+    if Int.equal n 0 then t else
       match t with
 	  GLambda(loc,name,k,_,t0)->
 	    let t1=raux (n-1) t0 in
-	      GLambda(loc,name,k,GHole (dummy_loc,Evd.BinderType name),t1)
-	| _-> anomaly "can't happen" in
+	      GLambda(loc,name,k,GHole (Loc.ghost,Evar_kinds.BinderType name,None),t1)
+	| _-> anomaly (Pp.str "can't happen") in
   let ntt=try
-    Pretyping.Default.understand evmap env (raux m rawt)
+    Pretyping.understand evmap env (raux m rawt)
   with e when Errors.noncritical e ->
     error "Untypable instance, maybe higher-order non-prenex quantification" in
     decompose_lam_n_assum m ntt
@@ -143,14 +143,14 @@ let left_instance_tac (inst,id) continue seq=
 	else
 	  tclTHENS (cut dom)
 	    [tclTHENLIST
-	       [introf;
+	       [Proofview.V82.of_tactic introf;
 		(fun gls->generalize
 		   [mkApp(constr_of_global id,
 			  [|mkVar (Tacmach.pf_nth_hyp_id gls 1)|])] gls);
-		introf;
+		Proofview.V82.of_tactic introf;
 		tclSOLVE [wrap 1 false continue
 			    (deepen (record (id,None) seq))]];
-	    tclTRY assumption]
+	    tclTRY (Proofview.V82.of_tactic assumption)]
     | Real((m,t) as c,_)->
 	if lookup (id,Some c) seq then
 	  tclFAIL 0 (Pp.str "already done")
@@ -168,7 +168,7 @@ let left_instance_tac (inst,id) continue seq=
 	  in
 	    tclTHENLIST
 	      [special_generalize;
-	       introf;
+	       Proofview.V82.of_tactic introf;
 	       tclSOLVE
 		 [wrap 1 false continue (deepen (record (id,Some c) seq))]]
 
@@ -177,14 +177,14 @@ let right_instance_tac inst continue seq=
       Phantom dom ->
 	tclTHENS (cut dom)
 	[tclTHENLIST
-	   [introf;
+	   [Proofview.V82.of_tactic introf;
 	    (fun gls->
-	       split (Glob_term.ImplicitBindings
-			[mkVar (Tacmach.pf_nth_hyp_id gls 1)]) gls);
+	       Proofview.V82.of_tactic (split (ImplicitBindings
+			[mkVar (Tacmach.pf_nth_hyp_id gls 1)])) gls);
 	    tclSOLVE [wrap 0 true continue (deepen seq)]];
-	 tclTRY assumption]
+	 tclTRY (Proofview.V82.of_tactic assumption)]
     | Real ((0,t),_) ->
-	(tclTHEN (split (Glob_term.ImplicitBindings [t]))
+	(tclTHEN (Proofview.V82.of_tactic (split (ImplicitBindings [t])))
 	   (tclSOLVE [wrap 0 true continue (deepen seq)]))
     | Real ((m,t),_) ->
 	tclFAIL 0 (Pp.str "not implemented ... yet")

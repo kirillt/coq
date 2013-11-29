@@ -6,8 +6,9 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
-open Names
+open Cic
 open Term
 open Univ
 open Closure
@@ -121,14 +122,14 @@ let compare_stacks f fmind lft1 stk1 lft2 stk2 =
       | (z1::s1, z2::s2) ->
           cmp_rec s1 s2;
           (match (z1,z2) with
-            | (Zlapp a1,Zlapp a2) -> array_iter2 f a1 a2
+            | (Zlapp a1,Zlapp a2) -> Array.iter2 f a1 a2
             | (Zlfix(fx1,a1),Zlfix(fx2,a2)) ->
                 f fx1 fx2; cmp_rec a1 a2
             | (Zlcase(ci1,l1,p1,br1),Zlcase(ci2,l2,p2,br2)) ->
                 if not (fmind ci1.ci_ind ci2.ci_ind) then
 		  raise NotConvertible;
 		f (l1,p1) (l2,p2);
-                array_iter2 (fun c1 c2 -> f (l1,c1) (l2,c2)) br1 br2
+                Array.iter2 (fun c1 c2 -> f (l1,c1) (l2,c2)) br1 br2
             | _ -> assert false)
       | _ -> () in
   if compare_stack_shape stk1 stk2 then
@@ -143,7 +144,7 @@ type conv_pb =
 
 let sort_cmp univ pb s0 s1 =
   match (s0,s1) with
-    | (Prop c1, Prop c2) when pb = CUMUL -> if c1 = Pos & c2 = Null then raise NotConvertible
+    | (Prop c1, Prop c2) when pb = CUMUL -> if c1 = Pos && c2 = Null then raise NotConvertible
     | (Prop c1, Prop c2) -> if c1 <> c2 then raise NotConvertible
     | (Prop c1, Type u)  ->
         (match pb with
@@ -153,7 +154,7 @@ let sort_cmp univ pb s0 s1 =
         if not
 	  (match pb with
             | CONV -> check_eq univ u1 u2
-	    | CUMUL -> check_geq univ u2 u1)
+	    | CUMUL -> check_leq univ u1 u2)
         then raise NotConvertible
     | (_, _) -> raise NotConvertible
 
@@ -287,13 +288,13 @@ and eqappr univ cv_pb infos (lft1,st1) (lft2,st2) =
     (* Eta-expansion on the fly *)
     | (FLambda _, _) ->
         if v1 <> [] then
-          anomaly "conversion was given unreduced term (FLambda)";
+          anomaly (Pp.str "conversion was given unreduced term (FLambda)");
         let (_,_ty1,bd1) = destFLambda mk_clos hd1 in
         eqappr univ CONV infos
           (el_lift lft1,(bd1,[])) (el_lift lft2,(hd2,eta_expand_stack v2))
     | (_, FLambda _) ->
         if v2 <> [] then
-          anomaly "conversion was given unreduced term (FLambda)";
+          anomaly (Pp.str "conversion was given unreduced term (FLambda)");
         let (_,_ty2,bd2) = destFLambda mk_clos hd2 in
         eqappr univ CONV infos
           (el_lift lft1,(hd1,eta_expand_stack v1)) (el_lift lft2,(bd2,[]))
@@ -367,7 +368,7 @@ and convert_stacks univ infos lft1 lft2 stk1 stk2 =
     lft1 stk1 lft2 stk2
 
 and convert_vect univ infos lft1 lft2 v1 v2 =
-  array_iter2 (fun t1 t2 -> ccnv univ CONV infos lft1 lft2 t1 t2) v1 v2
+  Array.iter2 (fun t1 t2 -> ccnv univ CONV infos lft1 lft2 t1 t2) v1 v2
 
 let clos_fconv cv_pb env t1 t2 =
   let infos = create_clos_infos betaiotazeta env in
@@ -398,7 +399,7 @@ let vm_conv = fconv
 let hnf_prod_app env t n =
   match whd_betadeltaiota env t with
     | Prod (_,_,b) -> subst1 n b
-    | _ -> anomaly "hnf_prod_app: Need a product"
+    | _ -> anomaly ~label:"hnf_prod_app" (Pp.str "Need a product")
 
 let hnf_prod_applist env t nl =
   List.fold_left (hnf_prod_app env) t nl

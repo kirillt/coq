@@ -221,7 +221,7 @@ let loops = 10000
 let time_overhead_A_D () =
   let e = create_record () in
   let before = get_time () in
-  for i=1 to loops do
+  for _i = 1 to loops do
     (* This is a copy of profile1 for overhead estimation *)
     let dw = dummy_spent_alloc () in
     match !dummy_stack with [] -> assert false | p::_ ->
@@ -245,7 +245,7 @@ let time_overhead_A_D () =
   done;
   let after = get_time () in
   let beforeloop =  get_time () in
-  for i=1 to loops do () done;
+  for _i = 1 to loops do () done;
   let afterloop = get_time () in
   float_of_int ((after - before) - (afterloop - beforeloop))
   /. float_of_int loops
@@ -253,18 +253,18 @@ let time_overhead_A_D () =
 let time_overhead_B_C () =
   let dummy_x = 0 in
   let before = get_time () in
-  for i=1 to loops do
+  for _i = 1 to loops do
     try
       dummy_last_alloc := get_alloc ();
       let _r = dummy_f dummy_x in
       let _dw = dummy_spent_alloc () in
       let _dt = get_time () in
       ()
-    with e when e <> Sys.Break -> assert false
+    with e when Errors.noncritical e -> assert false
   done;
   let after = get_time () in
   let beforeloop =  get_time () in
-  for i=1 to loops do () done;
+  for _i = 1 to loops do () done;
   let afterloop = get_time () in
   float_of_int ((after - before) - (afterloop - beforeloop))
   /. float_of_int loops
@@ -279,7 +279,7 @@ let format_profile (table, outside, total) =
   Printf.printf
     "%-23s  %9s %9s %10s %10s %10s\n"
     "Function name" "Own time" "Tot. time" "Own alloc" "Tot. alloc" "Calls ";
-  let l = Sort.list (fun (_,{tottime=p}) (_,{tottime=p'}) -> p > p') table in
+  let l = List.sort (fun (_,{tottime=p}) (_,{tottime=p'}) -> p' - p) table in
   List.iter (fun (name,e) ->
     Printf.printf
       "%-23s %9.2f %9.2f %10.0f %10.0f %6d %6d\n"
@@ -352,7 +352,7 @@ let close_profile print =
 let print_profile () = close_profile true
 
 let declare_profile name =
-  if name = "___outside___" or name = "___total___" then
+  if name = "___outside___" || name = "___total___" then
     failwith ("Error: "^name^" is a reserved keyword");
   let e = create_record () in
   prof_table := (name,e)::!prof_table;
@@ -657,80 +657,15 @@ let profile7 e f a b c d g h i =
     last_alloc := get_alloc ();
     raise reraise
 
-(* Some utilities to compute the logical and physical sizes and depth
-   of ML objects *)
-
-let c = ref 0
-let s = ref 0
-let b = ref 0
-let m = ref 0
-
-let rec obj_stats d t =
-  if Obj.is_int t then m := max d !m
-  else if Obj.tag t >= Obj.no_scan_tag then
-    if Obj.tag t = Obj.string_tag then
-      (c := !c + Obj.size t; b := !b + 1; m := max d !m)
-    else if Obj.tag t = Obj.double_tag then
-      (s := !s + 2; b := !b + 1; m := max d !m)
-    else if Obj.tag t = Obj.double_array_tag then
-      (s := !s + 2 * Obj.size t; b := !b + 1; m := max d !m)
-    else (b := !b + 1; m := max d !m)
-  else
-    let n = Obj.size t in
-    s := !s + n; b := !b + 1;
-    block_stats (d + 1) (n - 1) t
-
-and block_stats d i t =
-  if i >= 0 then (obj_stats d (Obj.field t i); block_stats d (i-1) t)
-
-let obj_stats a =
-  c := 0; s:= 0; b:= 0; m:= 0;
-  obj_stats 0 (Obj.repr a);
-  (!c, !s + !b, !m)
-
-module H = Hashtbl.Make(
-  struct
-    type t = Obj.t
-    let equal = (==)
-    let hash o = Hashtbl.hash (Obj.magic o : int)
-  end)
-
-let tbl = H.create 13
-
-let rec obj_shared_size s t =
-  if Obj.is_int t then s
-  else if H.mem tbl t then s
-  else begin
-    H.add tbl t ();
-    let n = Obj.size t in
-    if Obj.tag t >= Obj.no_scan_tag then
-      if Obj.tag t = Obj.string_tag then (c := !c + n; s + 1)
-      else if Obj.tag t = Obj.double_tag then s + 3
-      else if Obj.tag t = Obj.double_array_tag then s + 2 * n + 1
-      else s + 1
-    else
-      block_shared_size (s + n + 1) (n - 1) t
-  end
-
-and block_shared_size s i t =
-  if i < 0 then s
-  else block_shared_size (obj_shared_size s (Obj.field t i)) (i-1) t
-
-let obj_shared_size a =
-  H.clear tbl;
-  c := 0;
-  let s = obj_shared_size 0 (Obj.repr a) in
-  (!c, s)
-
 let print_logical_stats a =
-  let (c, s, d) = obj_stats a in
+  let (c, s, d) = CObj.obj_stats a in
   Printf.printf "Expanded size: %10d (str: %8d) Depth: %6d\n" (s+c) c d
 
 let print_stats a =
-  let (c1, s, d) = obj_stats a in
-  let (c2, o) = obj_shared_size a in
-  Printf.printf "Size: %8d (str: %8d) (exp: %10d)  Depth: %6d\n"
-    (o + c2) c2 (s + c1) d
+  let (c1, s, d) = CObj.obj_stats a in
+  let c2 = CObj.size a in
+  Printf.printf "Size: %8d (exp: %10d)  Depth: %6d\n"
+    c2 (s + c1) d
 (*
 let _ = Gc.set { (Gc.get()) with Gc.verbose = 13 }
 *)

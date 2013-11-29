@@ -14,6 +14,7 @@
 
 open Names
 open Term
+open Context
 open Vm
 open Cemitcodes
 open Cbytecodes
@@ -51,35 +52,6 @@ let set_global v =
   incr num_global;
   n
 
-(* [global_transp],[global_boxed] contiennent les valeurs des
-   definitions gelees. Les deux versions sont maintenues en //.
-   [global_transp] contient la version transparente.
-   [global_boxed] contient la version gelees. *)
-
-external global_boxed : unit -> bool array = "get_coq_global_boxed"
-
-(* [realloc_global_data n] augmente de n la taille de [global_data] *)
-external realloc_global_boxed : int -> unit = "realloc_coq_global_boxed"
-
-let check_global_boxed n =
-  if n >= Array.length (global_boxed()) then realloc_global_boxed n
-
-let num_boxed = ref 0
-
-let boxed_tbl = Hashtbl.create 53
-
-let cst_opaque = ref Cpred.full
-
-let is_opaque kn = Cpred.mem kn !cst_opaque
-
-let set_global_boxed kn v =
-  let n = !num_boxed in
-  check_global_boxed n;
-  (global_boxed()).(n) <- (is_opaque kn);
-  Hashtbl.add boxed_tbl kn n ;
-  incr num_boxed;
-  set_global (val_of_constant_def n kn v)
-
 (* table pour les structured_constant et les annotations des switchs *)
 
 let str_cst_tbl = Hashtbl.create 31
@@ -94,7 +66,6 @@ let annot_tbl = Hashtbl.create 31
 
 exception NotEvaluated
 
-open Pp
 let key rk =
   match !rk with
   | Some k -> (*Pp.msgnl (str"found at: "++int k);*)  k
@@ -144,10 +115,10 @@ and slot_for_fv env fv =
 	match !nv with
 	| VKvalue (v,_) -> v
 	| VKnone ->
-	    let (_, b, _) = Sign.lookup_named id env.env_named_context in
+	    let (_, b, _) = Context.lookup_named id env.env_named_context in
 	    let v,d =
 	      match b with
-		| None -> (val_of_named id, Idset.empty)
+		| None -> (val_of_named id, Id.Set.empty)
 		| Some c -> (val_of_constr env c, Environ.global_vars_set (Environ.env_of_pre_env env) c)
 	    in
 	      nv := VKvalue (v,d); v
@@ -161,7 +132,7 @@ and slot_for_fv env fv =
 	    let (_, b, _) = lookup_rel i env.env_rel_context in
 	    let (v, d) =
 	      match b with
-		| None -> (val_of_rel (nb_rel env - i), Idset.empty)
+		| None -> (val_of_rel (nb_rel env - i), Id.Set.empty)
 		| Some c -> let renv =  env_of_rel i env in
 			      (val_of_constr renv c, Environ.global_vars_set (Environ.env_of_pre_env renv) c)
 	    in
@@ -191,18 +162,14 @@ and val_of_constr env c =
   let (_,fun_code,_ as ccfv) =
     try compile env c
     with reraise ->
-      print_string "can not compile \n";Format.print_flush();raise reraise
+      let reraise = Errors.push reraise in
+      let () = print_string "can not compile \n" in
+      let () = Format.print_flush () in
+      raise reraise
   in
   eval_to_patch env (to_memory ccfv)
 
-let set_transparent_const kn =
-  cst_opaque := Cpred.remove kn !cst_opaque;
-  List.iter (fun n -> (global_boxed()).(n) <- false)
-    (Hashtbl.find_all boxed_tbl kn)
-
-let set_opaque_const kn =
-  cst_opaque := Cpred.add kn !cst_opaque;
-  List.iter (fun n -> (global_boxed()).(n) <- true)
-    (Hashtbl.find_all boxed_tbl kn)
+let set_transparent_const kn = () (* !?! *)
+let set_opaque_const kn = () (* !?! *)
 
 

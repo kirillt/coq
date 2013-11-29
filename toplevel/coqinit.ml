@@ -6,13 +6,14 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Util
 open Pp
-open System
-open Toplevel
 
-let (/) = Filename.concat
+let ( / ) = Filename.concat
 
-let set_debug () = Flags.debug := true
+let set_debug () =
+  let () = Backtrace.record_backtrace true in
+  Flags.debug := true
 
 (* Loading of the ressource file.
    rcfile is either $XDG_CONFIG_HOME/.coqrc.VERSION, or $XDG_CONFIG_HOME/.coqrc if the first one
@@ -30,16 +31,19 @@ let load_rcfile() =
   if !load_rc then
     try
       if !rcfile_specified then
-        if file_readable_p !rcfile then
+        if CUnix.file_readable_p !rcfile then
           Vernac.load_vernac false !rcfile
         else raise (Sys_error ("Cannot read rcfile: "^ !rcfile))
-      else try let inferedrc = List.find file_readable_p [
-	Envars.xdg_config_home/rcdefaultname^"."^Coq_config.version;
-	Envars.xdg_config_home/rcdefaultname;
-	System.home/"."^rcdefaultname^"."^Coq_config.version;
-	System.home/"."^rcdefaultname;
-      ] in
-        Vernac.load_vernac false inferedrc
+      else
+	try
+	  let warn x = msg_warning (str x) in
+	  let inferedrc = List.find CUnix.file_readable_p [
+	    Envars.xdg_config_home warn / rcdefaultname^"."^Coq_config.version;
+	    Envars.xdg_config_home warn / rcdefaultname;
+	    Envars.home ~warn / "."^rcdefaultname^"."^Coq_config.version;
+	    Envars.home ~warn / "."^rcdefaultname
+	  ] in
+          Vernac.load_vernac false inferedrc
 	with Not_found -> ()
 	(*
 	Flags.if_verbose
@@ -47,15 +51,16 @@ let load_rcfile() =
 			 " found. Skipping rcfile loading."))
 	*)
     with reraise ->
-      (msgnl (str"Load of rcfile failed.");
-       raise reraise)
+      let reraise = Errors.push reraise in
+      let () = msg_info (str"Load of rcfile failed.") in
+      raise reraise
   else
-    Flags.if_verbose msgnl (str"Skipping rcfile loading.")
+    Flags.if_verbose msg_info (str"Skipping rcfile loading.")
 
 (* Puts dir in the path of ML and in the LoadPath *)
 let coq_add_path unix_path s =
-  Mltop.add_path ~unix_path ~coq_root:(Names.make_dirpath [Nameops.coq_root;Names.id_of_string s])
-let coq_add_rec_path unix_path = Mltop.add_rec_path ~unix_path ~coq_root:(Names.make_dirpath [Nameops.coq_root])
+  Mltop.add_path ~unix_path ~coq_root:(Names.DirPath.make [Nameops.coq_root;Names.Id.of_string s])
+let coq_add_rec_path unix_path = Mltop.add_rec_path ~unix_path ~coq_root:(Names.DirPath.make [Nameops.coq_root])
 
 (* By the option -include -I or -R of the command line *)
 let includes = ref []
@@ -94,17 +99,17 @@ let theories_dirs_map = [
 let init_load_path () =
   let coqlib = Envars.coqlib () in
   let user_contrib = coqlib/"user-contrib" in
-  let xdg_dirs = Envars.xdg_dirs in
+  let xdg_dirs = Envars.xdg_dirs ~warn:(fun x -> msg_warning (str x)) in
   let coqpath = Envars.coqpath in
-  let dirs = ["states";"plugins"] in
+  let dirs = ["plugins"] in
     (* NOTE: These directories are searched from last to first *)
     (* first, developer specific directory to open *)
     if Coq_config.local then coq_add_path (coqlib/"dev") "dev";
     (* then standard library *)
     List.iter
-      (fun (s,alias) -> Mltop.add_rec_path ~unix_path:(coqlib/s) ~coq_root:(Names.make_dirpath [Names.id_of_string alias; Nameops.coq_root]))
+      (fun (s,alias) -> Mltop.add_rec_path ~unix_path:(coqlib/s) ~coq_root:(Names.DirPath.make [Names.Id.of_string alias; Nameops.coq_root]))
       theories_dirs_map;
-    (* then states and plugins *)
+    (* then plugins *)
     List.iter (fun s -> coq_add_rec_path (coqlib/s)) dirs;
     (* then user-contrib *)
     if Sys.file_exists user_contrib then
@@ -134,12 +139,13 @@ let init_ocaml_path () =
     List.iter add_subdir
       [ [ "config" ]; [ "dev" ]; [ "lib" ]; [ "kernel" ]; [ "library" ];
 	[ "pretyping" ]; [ "interp" ]; [ "parsing" ]; [ "proofs" ];
-	[ "tactics" ]; [ "toplevel" ]; [ "translate" ]; [ "ide" ] ]
+	[ "tactics" ]; [ "toplevel" ]; [ "printing" ]; [ "intf" ];
+        [ "grammar" ]; [ "ide" ] ]
 
 let get_compat_version = function
   | "8.3" -> Flags.V8_3
   | "8.2" -> Flags.V8_2
   | ("8.1" | "8.0") as s ->
-    warning ("Compatibility with version "^s^" not supported.");
+    msg_warning (strbrk ("Compatibility with version "^s^" not supported."));
     Flags.V8_2
-  | s -> Util.error ("Unknown compatibility version \""^s^"\".")
+  | s -> Errors.error ("Unknown compatibility version \""^s^"\".")

@@ -13,11 +13,20 @@
    they actually are similar considering ['a option] as a type
    of lists with at most one element. *)
 
+exception IsNone
+
 (** [has_some x] is [true] if [x] is of the form [Some y] and [false]
     otherwise.  *)
 val has_some : 'a option -> bool
 
-exception IsNone
+(** Negation of [has_some] *)
+val is_empty : 'a option -> bool
+
+(** [equal f x y] lifts the equality predicate [f] to
+    option types. That is, if both [x] and [y] are [None] then
+    it returns [true], if they are both [Some _] then
+    [f] is called. Otherwise it returns [false]. *)
+val equal : ('a -> 'a -> bool) -> 'a option -> 'a option -> bool
 
 (** [get x] returns [y] where [x] is [Some y]. It raises IsNone
     if [x] equals [None]. *)
@@ -67,7 +76,7 @@ val fold_right : ('a -> 'b -> 'b) -> 'a option -> 'b -> 'b
 (** [fold_map f a x] is [a, f y] if [x] is [Some y], and [a] otherwise. *)
 val fold_map : ('a -> 'b -> 'a * 'c) -> 'a -> 'b option -> 'a * 'c option
 
-(** [cata e f x] is [e] if [x] is [None] and [f a] if [x] is [Some a] *)
+(** [cata f e x] is [e] if [x] is [None] and [f a] if [x] is [Some a] *)
 val cata : ('a -> 'b) -> 'b -> 'a option -> 'b
 
 (** {6 More Specific Operations} ***)
@@ -100,16 +109,6 @@ module List : sig
   (** [List.flatten l] is the list of all the [y]s such that [l] contains
       [Some y] (in the same order). *)
   val flatten : 'a option list -> 'a list
+
+  val find : ('a -> 'b option) -> 'a list -> 'b option
 end
-
-
-(** {6 Miscelaneous Primitives} *)
-
-module Misc : sig
-  (** [Misc.compare f x y] lifts the equality predicate [f] to
-      option types. That is, if both [x] and [y] are [None] then
-      it returns [true], if they are bothe [Some _] then
-      [f] is called. Otherwise it returns [false]. *)
-   val compare : ('a -> 'a -> bool) -> 'a option -> 'a option -> bool
-end
-

@@ -15,25 +15,25 @@
 open Util
 open Names
 open Term
+open Vars
 open Nametab
 open Nameops
 open Libnames
+open Globnames
 open Environ
 open Termops
 
 (**********************************************************************)
 (* Globality of identifiers *)
 
-let rec is_imported_modpath mp =
-  let current_mp,_ = Lib.current_prefix() in
-    match mp with
-      | MPfile dp ->
-	  let rec find_prefix = function
-	    |MPfile dp1 -> not (dp1=dp)
-	    |MPdot(mp,_) -> find_prefix mp
-	    |MPbound(_) -> false
-	  in find_prefix current_mp
-      | p -> false
+let is_imported_modpath = function
+  | MPfile dp ->
+    let rec find_prefix = function
+      |MPfile dp1 -> not (DirPath.equal dp1 dp)
+      |MPdot(mp,_) -> find_prefix mp
+      |MPbound(_) -> false
+    in find_prefix (Lib.current_mp ())
+  | _ -> false
 
 let is_imported_ref = function
   | VarRef _ -> false
@@ -62,7 +62,7 @@ let is_constructor id =
 (* Generating "intuitive" names from its type *)
 
 let lowercase_first_char id = (* First character of a constr *)
-  lowercase_first_char_utf8 (string_of_id id)
+  Unicode.lowercase_first_char (Id.to_string id)
 
 let sort_hdchar = function
   | Prop(_) -> "P"
@@ -76,7 +76,7 @@ let hdchar env c =
     | LetIn (_,_,_,c) -> hdrec (k+1) c
     | Cast (c,_,_)    -> hdrec k c
     | App (f,l)       -> hdrec k f
-    | Const kn -> lowercase_first_char (id_of_label (con_label kn))
+    | Const kn -> lowercase_first_char (Label.to_id (con_label kn))
     | Ind x -> lowercase_first_char (basename_of_global (IndRef x))
     | Construct x -> lowercase_first_char (basename_of_global (ConstructRef x))
     | Var id  -> lowercase_first_char id
@@ -99,11 +99,11 @@ let hdchar env c =
   hdrec 0 c
 
 let id_of_name_using_hdchar env a = function
-  | Anonymous -> id_of_string (hdchar env a)
+  | Anonymous -> Id.of_string (hdchar env a)
   | Name id   -> id
 
 let named_hd env a = function
-  | Anonymous -> Name (id_of_string (hdchar env a))
+  | Anonymous -> Name (Id.of_string (hdchar env a))
   | x         -> x
 
 let mkProd_name   env (n,a,b) = mkProd (named_hd env a n, a, b)
@@ -138,7 +138,7 @@ let it_mkLambda_or_LetIn_name env b hyps =
 (**********************************************************************)
 (* Fresh names *)
 
-let default_x = id_of_string "x"
+let default_x = Id.of_string "x"
 
 (* Looks for next "good" name by lifting subscript *)
 
@@ -155,13 +155,17 @@ let restart_subscript id =
      *** make_ident id (Some 0) *** mais ça brise la compatibilité... *)
     forget_subscript id
 
+let rec to_avoid id = function
+| [] -> false
+| id' :: avoid -> Id.equal id id' || to_avoid id avoid
+
 (* Now, there are different renaming strategies... *)
 
 (* 1- Looks for a fresh name for printing in cases pattern *)
 
 let next_name_away_in_cases_pattern na avoid =
   let id = match na with Name id -> id | Anonymous -> default_x in
-  next_ident_away_from id (fun id -> List.mem id avoid or is_constructor id)
+  next_ident_away_from id (fun id -> to_avoid id avoid || is_constructor id)
 
 (* 2- Looks for a fresh name for introduction in goal *)
 
@@ -173,12 +177,12 @@ let next_name_away_in_cases_pattern na avoid =
      name is taken by finding a free subscript starting from 0 *)
 
 let next_ident_away_in_goal id avoid =
-  let id = if List.mem id avoid then restart_subscript id else id in
-  let bad id = List.mem id avoid || (is_global id & not (is_section_variable id)) in
+  let id = if to_avoid id avoid then restart_subscript id else id in
+  let bad id = to_avoid id avoid || (is_global id && not (is_section_variable id)) in
   next_ident_away_from id bad
 
 let next_name_away_in_goal na avoid =
-  let id = match na with Name id -> id | Anonymous -> id_of_string "H" in
+  let id = match na with Name id -> id | Anonymous -> Id.of_string "H" in
   next_ident_away_in_goal id avoid
 
 (* 3- Looks for next fresh name outside a list that is moreover valid
@@ -189,20 +193,20 @@ let next_name_away_in_goal na avoid =
    beyond the current subscript *)
 
 let next_global_ident_away id avoid =
-  let id = if List.mem id avoid then restart_subscript id else id in
-  let bad id = List.mem id avoid || is_global id in
+  let id = if to_avoid id avoid then restart_subscript id else id in
+  let bad id = to_avoid id avoid || is_global id in
   next_ident_away_from id bad
 
 (* 4- Looks for next fresh name outside a list; if name already used,
    looks for same name with lower available subscript *)
 
 let next_ident_away id avoid =
-  if List.mem id avoid then
-    next_ident_away_from (restart_subscript id) (fun id -> List.mem id avoid)
+  if to_avoid id avoid then
+    next_ident_away_from (restart_subscript id) (fun id -> to_avoid id avoid)
   else id
 
 let next_name_away_with_default default na avoid =
-  let id = match na with Name id -> id | Anonymous -> id_of_string default in
+  let id = match na with Name id -> id | Anonymous -> Id.of_string default in
   next_ident_away id avoid
 
 let reserved_type_name = ref (fun t -> Anonymous)
@@ -213,7 +217,7 @@ let next_name_away_with_default_using_types default na avoid t =
     | Name id -> id
     | Anonymous -> match !reserved_type_name t with
 	| Name id -> id
-	| Anonymous -> id_of_string default in
+	| Anonymous -> Id.of_string default in
   next_ident_away id avoid
 
 let next_name_away = next_name_away_with_default "H"
@@ -233,15 +237,22 @@ let make_all_name_different env =
    subscript *)
 
 let occur_rel p env id =
-  try lookup_name_of_rel p env = Name id
+  try
+    let name = lookup_name_of_rel p env in
+    begin match name with
+    | Name id' -> Id.equal id' id
+    | Anonymous -> false
+    end
   with Not_found -> false (* Unbound indice : may happen in debug *)
 
 let visibly_occur_id id (nenv,c) =
   let rec occur n c = match kind_of_term c with
     | Const _ | Ind _ | Construct _ | Var _
-	  when shortest_qualid_of_global Idset.empty (global_of_constr c)
-	    = qualid_of_ident id -> raise Occur
-    | Rel p when p>n & occur_rel (p-n) nenv id -> raise Occur
+      when
+        let short = shortest_qualid_of_global Id.Set.empty (global_of_constr c) in
+        qualid_eq short (qualid_of_ident id) ->
+      raise Occur
+    | Rel p when p>n && occur_rel (p-n) nenv id -> raise Occur
     | _ -> iter_constr_with_binders succ occur n c
   in
   try occur 1 c; false
@@ -249,7 +260,7 @@ let visibly_occur_id id (nenv,c) =
     | Not_found -> false (* Happens when a global is not in the env *)
 
 let next_ident_away_for_default_printing env_t id avoid =
-  let bad id = List.mem id avoid or visibly_occur_id id env_t in
+  let bad id = to_avoid id avoid || visibly_occur_id id env_t in
   next_ident_away_from id bad
 
 let next_name_away_for_default_printing env_t na avoid =
@@ -259,7 +270,7 @@ let next_name_away_for_default_printing env_t na avoid =
       (* In principle, an anonymous name is not dependent and will not be *)
       (* taken into account by the function compute_displayed_name_in; *)
       (* just in case, invent a valid name *)
-      id_of_string "H" in
+      Id.of_string "H" in
   next_ident_away_for_default_printing env_t id avoid
 
 (**********************************************************************)
@@ -283,7 +294,7 @@ let next_name_away_for_default_printing env_t na avoid =
 type renaming_flags =
   | RenamingForCasesPattern
   | RenamingForGoal
-  | RenamingElsewhereFor of (name list * constr)
+  | RenamingElsewhereFor of (Name.t list * constr)
 
 let next_name_for_display flags =
   match flags with
@@ -293,17 +304,19 @@ let next_name_for_display flags =
 
 (* Remark: Anonymous var may be dependent in Evar's contexts *)
 let compute_displayed_name_in flags avoid na c =
-  if na = Anonymous & noccurn 1 c then
+  match na with
+  | Anonymous when noccurn 1 c ->
     (Anonymous,avoid)
-  else
+  | _ ->
     let fresh_id = next_name_for_display flags na avoid in
     let idopt = if noccurn 1 c then Anonymous else Name fresh_id in
     (idopt, fresh_id::avoid)
 
 let compute_and_force_displayed_name_in flags avoid na c =
-  if na = Anonymous & noccurn 1 c then
+  match na with
+  | Anonymous when noccurn 1 c ->
     (Anonymous,avoid)
-  else
+  | _ ->
     let fresh_id = next_name_for_display flags na avoid in
     (Name fresh_id, fresh_id::avoid)
 
@@ -311,7 +324,7 @@ let compute_displayed_let_name_in flags avoid na c =
   let fresh_id = next_name_for_display flags na avoid in
   (Name fresh_id, fresh_id::avoid)
 
-let rec rename_bound_vars_as_displayed avoid env c =
+let rename_bound_vars_as_displayed avoid env c =
   let rec rename avoid env c =
     match kind_of_term c with
     | Prod (na,c1,c2)  ->

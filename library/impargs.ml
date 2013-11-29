@@ -6,9 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
-open Libnames
+open Globnames
 open Term
 open Reduction
 open Declarations
@@ -16,11 +17,11 @@ open Environ
 open Inductive
 open Libobject
 open Lib
-open Nametab
 open Pp
-open Topconstr
+open Constrexpr
 open Termops
 open Namegen
+open Decl_kinds
 
 (*s Flags governing the computation of implicit arguments *)
 
@@ -74,14 +75,15 @@ let with_implicits flags f x =
     let rslt = f x in
     implicit_args := oflags;
     rslt
-  with reraise -> begin
-    implicit_args := oflags;
+  with reraise ->
+    let reraise = Errors.push reraise in
+    let () = implicit_args := oflags in
     raise reraise
-  end
 
 let set_maximality imps b =
   (* Force maximal insertion on ending implicits (compatibility) *)
-  b || List.for_all ((<>) None) imps
+  let is_set x = match x with None -> false | _ -> true in
+  b || List.for_all is_set imps
 
 (*s Computation of implicit arguments *)
 
@@ -112,6 +114,11 @@ type argument_position =
   | Conclusion
   | Hyp of int
 
+let argument_position_eq p1 p2 = match p1, p2 with
+| Conclusion, Conclusion -> true
+| Hyp h1, Hyp h2 -> Int.equal h1 h2
+| _ -> false
+
 type implicit_explanation =
   | DepRigid of argument_position
   | DepFlex of argument_position
@@ -131,10 +138,10 @@ let update pos rig (na,st) =
       | Some (DepRigid n as x) ->
           if argument_less (pos,n) then DepRigid pos else x
       | Some (DepFlexAndRigid (fpos,rpos) as x) ->
-          if argument_less (pos,fpos) or pos=fpos then DepRigid pos else
+          if argument_less (pos,fpos) || argument_position_eq pos fpos then DepRigid pos else
           if argument_less (pos,rpos) then DepFlexAndRigid (fpos,pos) else x
       | Some (DepFlex fpos) ->
-          if argument_less (pos,fpos) or pos=fpos then DepRigid pos
+          if argument_less (pos,fpos) || argument_position_eq pos fpos then DepRigid pos
           else DepFlexAndRigid (fpos,pos)
       | Some Manual -> assert false
   else
@@ -159,16 +166,17 @@ let is_flexible_reference env bound depth f =
         let cb = Environ.lookup_constant kn env in
 	(match cb.const_body with Def _ -> true | _ -> false)
     | Var id ->
-        let (_,value,_) = Environ.lookup_named id env in value <> None
+        let (_, value, _) = Environ.lookup_named id env in
+        begin match value with None -> false | _ -> true end
     | Ind _ | Construct _ -> false
     |  _ -> true
 
 let push_lift d (e,n) = (push_rel d e,n+1)
 
 let is_reversible_pattern bound depth f l =
-  isRel f & let n = destRel f in (n < bound+depth) & (n >= depth) &
-  array_for_all (fun c -> isRel c & destRel c < depth) l &
-  array_distinct l
+  isRel f && let n = destRel f in (n < bound+depth) && (n >= depth) &&
+  Array.for_all (fun c -> isRel c && destRel c < depth) l &&
+  Array.distinct l
 
 (* Precondition: rels in env are for inductive types only *)
 let add_free_rels_until strict strongly_strict revpat bound env m pos acc =
@@ -176,13 +184,13 @@ let add_free_rels_until strict strongly_strict revpat bound env m pos acc =
     let hd = if strict then whd_betadeltaiota env c else c in
     let c = if strongly_strict then hd else c in
     match kind_of_term hd with
-    | Rel n when (n < bound+depth) & (n >= depth) ->
+    | Rel n when (n < bound+depth) && (n >= depth) ->
 	let i = bound + depth - n - 1 in
         acc.(i) <- update pos rig acc.(i)
-    | App (f,l) when revpat & is_reversible_pattern bound depth f l ->
+    | App (f,l) when revpat && is_reversible_pattern bound depth f l ->
 	let i = bound + depth - destRel f - 1 in
 	acc.(i) <- update pos rig acc.(i)
-    | App (f,_) when rig & is_flexible_reference env bound depth f ->
+    | App (f,_) when rig && is_flexible_reference env bound depth f ->
 	if strict then () else
           iter_constr_with_full_binders push_lift (frec false) ed c
     | Case _ when rig ->
@@ -238,7 +246,7 @@ let compute_implicits_gen strict strongly_strict revpat contextual all env t =
 
 let compute_implicits_flags env f all t =
   compute_implicits_gen
-    (f.strict or f.strongly_strict) f.strongly_strict
+    (f.strict || f.strongly_strict) f.strongly_strict
     f.reversible_pattern f.contextual all env t
 
 let compute_auto_implicits env flags enriching t =
@@ -256,7 +264,7 @@ type force_inference = bool (* true = always infer, never turn into evar/subgoal
 
 type implicit_status =
     (* None = Not implicit *)
-    (identifier * implicit_explanation * (maximal_insertion * force_inference)) option
+    (Id.t * implicit_explanation * (maximal_insertion * force_inference)) option
 
 type implicit_side_condition = DefaultImpArgs | LessArgsThan of int
 
@@ -267,23 +275,23 @@ let is_status_implicit = function
   | _ -> true
 
 let name_of_implicit = function
-  | None -> anomaly "Not an implicit argument"
+  | None -> anomaly (Pp.str "Not an implicit argument")
   | Some (id,_,_) -> id
 
 let maximal_insertion_of = function
   | Some (_,_,(b,_)) -> b
-  | None -> anomaly "Not an implicit argument"
+  | None -> anomaly (Pp.str "Not an implicit argument")
 
 let force_inference_of = function
   | Some (_, _, (_, b)) -> b
-  | None -> anomaly "Not an implicit argument"
+  | None -> anomaly (Pp.str "Not an implicit argument")
 
 (* [in_ctx] means we know the expected type, [n] is the index of the argument *)
 let is_inferable_implicit in_ctx n = function
   | None -> false
-  | Some (_,DepRigid (Hyp p),_) -> in_ctx or n >= p
+  | Some (_,DepRigid (Hyp p),_) -> in_ctx || n >= p
   | Some (_,DepFlex (Hyp p),_) -> false
-  | Some (_,DepFlexAndRigid (_,Hyp q),_) -> in_ctx or n >= q
+  | Some (_,DepFlexAndRigid (_,Hyp q),_) -> in_ctx || n >= q
   | Some (_,DepRigid Conclusion,_) -> in_ctx
   | Some (_,DepFlex Conclusion,_) -> false
   | Some (_,DepFlexAndRigid (_,Conclusion),_) -> in_ctx
@@ -300,7 +308,7 @@ let positions_of_implicits (_,impls) =
 
 let rec prepare_implicits f = function
   | [] -> []
-  | (Anonymous, Some _)::_ -> anomaly "Unnamed implicit"
+  | (Anonymous, Some _)::_ -> anomaly (Pp.str "Unnamed implicit")
   | (Name id, Some imp)::imps ->
       let imps' = prepare_implicits f imps in
       Some (id,imp,(set_maximality imps' f.maximal,true)) :: imps'
@@ -310,7 +318,7 @@ let set_implicit id imp insmax =
   (id,(match imp with None -> Manual | Some imp -> imp),insmax)
 
 let rec assoc_by_pos k = function
-    (ExplByPos (k', x), b) :: tl when k = k' -> (x,b), tl
+    (ExplByPos (k', x), b) :: tl when Int.equal k k' -> (x,b), tl
   | hd :: tl -> let (x, tl) = assoc_by_pos k tl in x, hd :: tl
   | [] -> raise Not_found
 
@@ -318,9 +326,9 @@ let check_correct_manual_implicits autoimps l =
   List.iter (function
     | ExplByName id,(b,fi,forced) ->
 	if not forced then
-	  error ("Wrong or non-dependent implicit argument name: "^(string_of_id id)^".")
+	  error ("Wrong or non-dependent implicit argument name: "^(Id.to_string id)^".")
     | ExplByPos (i,_id),_t ->
-	if i<1 or i>List.length autoimps then
+	if i<1 || i>List.length autoimps then
 	  error ("Bad implicit argument number: "^(string_of_int i)^".")
 	else
 	  errorlabstrm ""
@@ -332,26 +340,31 @@ let set_manual_implicits env flags enriching autoimps l =
     try
       let (id, (b, fi, fo)), l' = assoc_by_pos k l in
 	if fo then
-	  let id = match id with Some id -> id | None -> id_of_string ("arg_" ^ string_of_int k) in
+	  let id = match id with Some id -> id | None -> Id.of_string ("arg_" ^ string_of_int k) in
 	    l', Some (id,Manual,(b,fi))
 	else l, None
     with Not_found -> l, None
   in
-  if not (list_distinct l) then
+  if not (List.distinct l) then
     error ("Some parameters are referred more than once.");
   (* Compare with automatic implicits to recover printing data and names *)
   let rec merge k l = function
   | (Name id,imp)::imps ->
       let l',imp,m =
 	try
-	  let (b, fi, fo) = List.assoc (ExplByName id) l in
-	  List.remove_assoc (ExplByName id) l, (Some Manual), (Some (b, fi))
+          let eq = (Pervasives.(=) : explicitation -> explicitation -> bool) in (* FIXME *)
+	  let (b, fi, fo) = List.assoc_f eq (ExplByName id) l in
+	  List.remove_assoc_f eq (ExplByName id) l, (Some Manual), (Some (b, fi))
 	with Not_found ->
 	try
 	  let (id, (b, fi, fo)), l' = assoc_by_pos k l in
 	    l', (Some Manual), (Some (b,fi))
 	with Not_found ->
-	  l,imp, if enriching && imp <> None then Some (flags.maximal,true) else None
+          let m = match enriching, imp with
+          | true, Some _ -> Some (flags.maximal, true)
+          | _ -> None
+          in
+          l, imp, m
       in
       let imps' = merge (k+1) l' imps in
       let m = Option.map (fun (b,f) -> set_maximality imps' b, f) m in
@@ -359,7 +372,7 @@ let set_manual_implicits env flags enriching autoimps l =
   | (Anonymous,imp)::imps ->
       let l', forced = try_forced k l in
 	forced :: merge (k+1) l' imps
-  | [] when l = [] -> []
+  | [] when begin match l with [] -> true | _ -> false end -> []
   | [] ->
       check_correct_manual_implicits autoimps l;
       []
@@ -375,8 +388,6 @@ let compute_semi_auto_implicits env f manual t =
   | _ ->
       let _,autoimpls = compute_auto_implicits env f f.auto t in
       [DefaultImpArgs, set_manual_implicits env f f.auto autoimpls manual]
-
-let compute_implicits env t = compute_semi_auto_implicits env !implicit_args [] t
 
 (*s Constants. *)
 
@@ -412,7 +423,7 @@ let compute_mib_implicits flags manual kn =
 let compute_all_mib_implicits flags manual kn =
   let imps = compute_mib_implicits flags manual kn in
   List.flatten
-    (array_map_to_list (fun (ind,cstrs) -> ind::Array.to_list cstrs) imps)
+    (Array.map_to_list (fun (ind,cstrs) -> ind::Array.to_list cstrs) imps)
 
 (*s Variables. *)
 
@@ -434,7 +445,7 @@ let compute_global_implicits flags manual = function
 (* Merge a manual explicitation with an implicit_status list *)
 
 let merge_impls (cond,oldimpls) (_,newimpls) =
-  let oldimpls,usersuffiximpls = list_chop (List.length newimpls) oldimpls in
+  let oldimpls,usersuffiximpls = List.chop (List.length newimpls) oldimpls in
   cond, (List.map2 (fun orig ni ->
     match orig with
     | Some (_, Manual, _) -> orig
@@ -453,7 +464,7 @@ type implicit_discharge_request =
   | ImplInteractive of global_reference * implicits_flags *
       implicit_interactive_request
 
-let implicits_table = ref Refmap.empty
+let implicits_table = Summary.ref Refmap.empty ~name:"implicits"
 
 let implicits_of_global ref =
   try
@@ -466,7 +477,7 @@ let implicits_of_global ref =
       List.map2 (fun (t, il) rl -> t, List.map2 rename il rl) l rename_l
     with Not_found -> l
     | Invalid_argument _ ->
-        anomaly "renamings list and implicits list have different lenghts"
+        anomaly (Pp.str "renamings list and implicits list have different lenghts")
   with Not_found -> [DefaultImpArgs,[]]
 
 let cache_implicits_decl (ref,imps) =
@@ -481,11 +492,18 @@ let subst_implicits_decl subst (r,imps as o) =
   let r' = fst (subst_global subst r) in if r==r' then o else (r',imps)
 
 let subst_implicits (subst,(req,l)) =
-  (ImplLocal,list_smartmap (subst_implicits_decl subst) l)
+  (ImplLocal,List.smartmap (subst_implicits_decl subst) l)
 
 let impls_of_context ctx =
-  List.rev_map (fun (id,impl,_,_) -> if impl = Lib.Implicit then Some (id, Manual, (true,true)) else None)
-    (List.filter (fun (_,_,b,_) -> b = None) ctx)
+  let map (id, impl, _, _) = match impl with
+  | Implicit -> Some (id, Manual, (true, true))
+  | _ -> None
+  in
+  let is_set (_, _, b, _) = match b with
+  | None -> true
+  | Some _ -> false
+  in
+  List.rev_map map (List.filter is_set ctx)
 
 let section_segment_of_reference = function
   | ConstRef con -> section_segment_of_constant con
@@ -560,13 +578,14 @@ let rebuild_implicits (req,l) =
 	  if flags.auto then
 	    let newimpls = List.hd (compute_global_implicits flags [] ref) in
 	    let p = List.length (snd newimpls) - userimplsize in
-	    let newimpls = on_snd (list_firstn p) newimpls in
+	    let newimpls = on_snd (List.firstn p) newimpls in
 	    [ref,List.map (fun o -> merge_impls o newimpls) oldimpls]
 	  else
 	    [ref,oldimpls]
 
-let classify_implicits (req,_ as obj) =
-  if req = ImplLocal then Dispose else Substitute obj
+let classify_implicits (req,_ as obj) = match req with
+| ImplLocal -> Dispose
+| _ -> Substitute obj
 
 type implicits_obj =
     implicit_discharge_request *
@@ -603,14 +622,14 @@ let declare_constant_implicits con =
 
 let declare_mib_implicits kn =
   let flags = !implicit_args in
-  let imps = array_map_to_list
+  let imps = Array.map_to_list
     (fun (ind,cstrs) -> ind::(Array.to_list cstrs))
     (compute_mib_implicits flags [] kn) in
     add_anonymous_leaf
       (inImplicits (ImplMutualInductive (kn,flags),List.flatten imps))
 
 (* Declare manual implicits *)
-type manual_explicitation = Topconstr.explicitation * (bool * bool * bool)
+type manual_explicitation = Constrexpr.explicitation * (bool * bool * bool)
 
 type manual_implicits = manual_explicitation list
 
@@ -645,7 +664,7 @@ let declare_manual_implicits local ref ?enriching l =
     | _ ->
 	check_rigidity isrigid;
 	let l = List.map (fun imps -> (imps,List.length imps)) l in
-	let l = Sort.list (fun (_,n1) (_,n2) -> n1 > n2) l in
+	let l = List.sort (fun (_,n1) (_,n2) -> n2 - n1) l in
 	check_inclusion l;
 	let nargs = List.length autoimpls in
 	List.map (fun (imps,n) ->
@@ -658,8 +677,9 @@ let declare_manual_implicits local ref ?enriching l =
     add_anonymous_leaf (inImplicits (req,[ref,l']))
 
 let maybe_declare_manual_implicits local ref ?enriching l =
-  if l = [] then ()
-  else declare_manual_implicits local ref ?enriching [l]
+  match l with
+  | [] -> ()
+  | _ -> declare_manual_implicits local ref ?enriching [l]
 
 let extract_impargs_data impls =
   let rec aux p = function
@@ -677,7 +697,7 @@ let lift_implicits n =
 let make_implicits_list l = [DefaultImpArgs, l]
 
 let rec drop_first_implicits p l =
-  if p = 0 then l else match l with
+  if Int.equal p 0 then l else match l with
   | _,[] as x -> x
   | DefaultImpArgs,imp::impls ->
       drop_first_implicits (p-1) (DefaultImpArgs,impls)
@@ -691,18 +711,6 @@ let rec select_impargs_size n = function
   | (LessArgsThan p, impls)::l ->
       if n <= p then impls else select_impargs_size n l
 
-let rec select_stronger_impargs = function
+let select_stronger_impargs = function
   | [] -> [] (* Tolerance for (DefaultImpArgs,[]) *)
   | (_,impls)::_ -> impls
-
-(*s Registration as global tables *)
-
-let init () = implicits_table := Refmap.empty
-let freeze () = !implicits_table
-let unfreeze t = implicits_table := t
-
-let _ =
-  Summary.declare_summary "implicits"
-    { Summary.freeze_function = freeze;
-      Summary.unfreeze_function = unfreeze;
-      Summary.init_function = init }

@@ -6,8 +6,52 @@
 (*         *       GNU Lesser General Public License Version 2.1       *)
 (***********************************************************************)
 
+open Pp
+
 (** This modules implements basic manipulations of errors for use
     throughout Coq's code. *)
+
+(** {6 Error handling} *)
+
+val push : exn -> exn
+(** Alias for [Backtrace.add_backtrace]. *)
+
+(** {6 Generic errors.}
+
+ [Anomaly] is used for system errors and [UserError] for the
+   user's ones. *)
+
+val make_anomaly : ?label:string -> std_ppcmds -> exn
+(** Create an anomaly. *)
+
+val anomaly : ?loc:Loc.t -> ?label:string -> std_ppcmds -> 'a
+(** Raise an anomaly, with an optional location and an optional
+    label identifying the anomaly. *)
+
+val is_anomaly : exn -> bool
+(** Check whether a given exception is an anomaly.
+    This is mostly provided for compatibility. Please avoid doing specific
+    tricks with anomalies thanks to it. See rather [noncritical] below. *)
+
+exception UserError of string * std_ppcmds
+val error : string -> 'a
+val errorlabstrm : string -> std_ppcmds -> 'a
+val user_err_loc : Loc.t * string * std_ppcmds -> 'a
+
+exception AlreadyDeclared of std_ppcmds
+val alreadydeclared : std_ppcmds -> 'a
+
+val invalid_arg_loc : Loc.t * string -> 'a
+
+(** [todo] is for running of an incomplete code its implementation is
+   "do nothing" (or print a message), but this function should not be
+   used in a released code *)
+
+val todo : string -> unit
+
+exception Timeout
+exception Drop
+exception Quit
 
 (** [register_handler h] registers [h] as a handler.
     When an expression is printed with [print e], it
@@ -36,14 +80,9 @@ val print : exn -> Pp.std_ppcmds
     isn't printed (used in Ltac debugging). *)
 val print_no_report : exn -> Pp.std_ppcmds
 
-(** Same as [print], except that anomalies are not printed but re-raised
-    (used for the Fail command) *)
-val print_no_anomaly : exn -> Pp.std_ppcmds
-
 (** Critical exceptions shouldn't be catched and ignored by mistake
     by inner functions during a [vernacinterp]. They should be handled
     only in [Toplevel.do_vernac] (or Ideslave), to be displayed to the user.
-    Typical example: [Sys.Break]. In the 8.4 branch, for maximal
-    compatibility, anomalies are not considered as critical...
+    Typical example: [Sys.Break], [Assert_failure], [Anomaly] ...
 *)
 val noncritical : exn -> bool

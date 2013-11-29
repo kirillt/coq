@@ -1,0 +1,17 @@
+parsing
+ide
+ide/utils
+interp
+kernel
+kernel/byterun
+lib
+library
+plugins
+pretyping
+proofs
+states
+tactics
+theories
+tools
+tools/coqdoc
+toplevel

@@ -20,7 +20,7 @@ let option_D = ref false
 let option_w = ref false
 let option_sort = ref false
 
-let rec warning_mult suf iter =
+let warning_mult suf iter =
   let tab = Hashtbl.create 151 in
   let check f d =
     begin try
@@ -157,9 +157,10 @@ let declare_dependencies () =
     (List.rev !vAccu)
 
 let usage () =
-  eprintf
-  "[ usage: coqdep [-w] [-I dir] [-R dir coqdir] [-coqlib dir] [-c] [-i] [-D] <filename>+ ]\n";
-  flush stderr;
+  eprintf " usage: coqdep [-w] [-c] [-D] [-I dir] [-R dir coqdir] <filename>+\n";
+  eprintf " extra options:\n";
+  eprintf "  -coqlib dir : set the coq standard library directory\n";
+  eprintf "  -exclude-dir f : skip subdirectories named f during -R search\n";
   exit 1
 
 let rec parse = function
@@ -177,9 +178,11 @@ let rec parse = function
   | "-R" :: r :: "-as" :: [] -> usage ()
   | "-R" :: r :: ln :: ll -> add_rec_dir add_known r [ln]; parse ll
   | "-R" :: ([] | [_]) -> usage ()
-  | "-coqlib" :: (r :: ll) -> Flags.coqlib_spec := true; Flags.coqlib := r; parse ll
+  | "-exclude-dir" :: r :: ll -> norec_dirnames := r::!norec_dirnames; parse ll
+  | "-exclude-dir" :: [] -> usage ()
+  | "-coqlib" :: r :: ll -> Flags.coqlib_spec := true; Flags.coqlib := r; parse ll
   | "-coqlib" :: [] -> usage ()
-  | "-suffix" :: (s :: ll) -> suffixe := s ; parse ll
+  | "-suffix" :: s :: ll -> suffixe := s ; parse ll
   | "-suffix" :: [] -> usage ()
   | "-slash" :: ll -> option_slash := true; parse ll
   | ("-h"|"--help"|"-help") :: _ -> usage ()
@@ -195,12 +198,14 @@ let coqdep () =
     add_rec_dir add_known "theories" ["Coq"];
     add_rec_dir add_known "plugins" ["Coq"]
   end else begin
+    Envars.set_coqlib ~fail:Errors.error;
     let coqlib = Envars.coqlib () in
     add_rec_dir add_coqlib_known (coqlib//"theories") ["Coq"];
     add_rec_dir add_coqlib_known (coqlib//"plugins") ["Coq"];
     let user = coqlib//"user-contrib" in
     if Sys.file_exists user then add_rec_dir add_coqlib_known user [];
-    List.iter (fun s -> add_rec_dir add_coqlib_known s []) Envars.xdg_dirs;
+    List.iter (fun s -> add_rec_dir add_coqlib_known s [])
+      (Envars.xdg_dirs (fun x -> Pp.msg_warning (Pp.str x)));
     List.iter (fun s -> add_rec_dir add_coqlib_known s []) Envars.coqpath;
   end;
   List.iter (fun (f,d) -> add_mli_known f d) !mliAccu;

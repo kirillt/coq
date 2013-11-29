@@ -6,18 +6,23 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Util
 open Names
-open Constrextern
 open Pp
 open Tacexpr
 open Termops
 
-let prtac = ref (fun _ -> assert false)
-let set_tactic_printer f = prtac := f
-let prmatchpatt = ref (fun _ _ -> assert false)
-let set_match_pattern_printer f = prmatchpatt := f
-let prmatchrl = ref (fun _ -> assert false)
-let set_match_rule_printer f = prmatchrl := f
+let (prtac, tactic_printer) = Hook.make ()
+let (prmatchpatt, match_pattern_printer) = Hook.make ()
+let (prmatchrl, match_rule_printer) = Hook.make ()
+
+(* Notations *)
+let return = Proofview.NonLogical.ret
+let (>>=) = Proofview.NonLogical.bind
+let (>>) = Proofview.NonLogical.seq
+let (:=) = Proofview.NonLogical.set
+let (!) = Proofview.NonLogical.get
+let raise = Proofview.NonLogical.raise
 
 (* This module intends to be a beginning of debugger for tactic expressions.
    Currently, it is quite simple and we can hope to have, in the future, a more
@@ -33,23 +38,29 @@ let explain_logic_error = ref (fun e -> mt())
 
 let explain_logic_error_no_anomaly = ref (fun e -> mt())
 
+let msg_tac_debug s = Proofview.NonLogical.print (s++fnl())
+
 (* Prints the goal *)
 
-let db_pr_goal g =
-  let env = Refiner.pf_env g in
+let db_pr_goal gl =
+  let env = Proofview.Goal.env gl in
+  let concl = Proofview.Goal.concl gl in
   let penv = print_named_context env in
-  let pc = print_constr_env env (Goal.V82.concl (Refiner.project g) (Refiner.sig_it g)) in
-  str"  " ++ hv 0 (penv ++ fnl () ++
+  let pc = print_constr_env env concl in
+    str"  " ++ hv 0 (penv ++ fnl () ++
                    str "============================" ++ fnl ()  ++
                    str" "  ++ pc) ++ fnl ()
 
-let db_pr_goal g =
-  msgnl (str "Goal:" ++ fnl () ++ db_pr_goal g)
+let db_pr_goal =
+  Proofview.Goal.enter begin fun gl ->
+  let pg = db_pr_goal gl in
+  Proofview.tclLIFT (msg_tac_debug (str "Goal:" ++ fnl () ++ pg))
+  end
 
 
 (* Prints the commands *)
 let help () =
-  msgnl (str "Commands: <Enter> = Continue" ++ fnl() ++
+  msg_tac_debug (str "Commands: <Enter> = Continue" ++ fnl() ++
          str "          h/? = Help" ++ fnl() ++
          str "          r <num> = Run <num> times" ++ fnl() ++
          str "          r <string> = Run up to next idtac <string>" ++ fnl() ++
@@ -57,168 +68,237 @@ let help () =
          str "          x = Exit")
 
 (* Prints the goal and the command to be executed *)
-let goal_com g tac =
-  begin
-    db_pr_goal g;
-    msg (str "Going to execute:" ++ fnl () ++ !prtac tac ++ fnl ())
-  end
+let goal_com tac =
+  Proofview.tclTHEN
+    db_pr_goal
+    (Proofview.tclLIFT (msg_tac_debug (str "Going to execute:" ++ fnl () ++ Hook.get prtac tac)))
 
-let skipped = ref 0
-let skip = ref 0
-let breakpoint = ref None
+(* [run (new_ref _)] gives us a ref shared among [NonLogical.t]
+   expressions. It avoids parametrizing everything over a
+   reference. *)
+let skipped = Proofview.NonLogical.run (Proofview.NonLogical.new_ref 0)
+let skip = Proofview.NonLogical.run (Proofview.NonLogical.new_ref 0)
+let breakpoint = Proofview.NonLogical.run (Proofview.NonLogical.new_ref None)
 
 let rec drop_spaces inst i =
-  if String.length inst > i && inst.[i] = ' ' then drop_spaces inst (i+1)
+  if String.length inst > i && inst.[i] == ' ' then drop_spaces inst (i+1)
   else i
 
 let possibly_unquote s =
-  if String.length s >= 2 & s.[0] = '"' & s.[String.length s - 1] = '"' then
+  if String.length s >= 2 && s.[0] == '"' && s.[String.length s - 1] == '"' then
     String.sub s 1 (String.length s - 2)
   else
     s
 
 (* (Re-)initialize debugger *)
-let db_initialize () =
-  skip:=0;skipped:=0;breakpoint:=None
+let db_initialize =
+  (skip:=0) >> (skipped:=0) >> (breakpoint:=None)
+
+let int_of_string s =
+  try return (int_of_string s)
+  with e -> Proofview.NonLogical.raise e
+
+let string_get s i =
+  try return (String.get s i)
+  with e -> Proofview.NonLogical.raise e
 
 (* Gives the number of steps or next breakpoint of a run command *)
 let run_com inst =
-  if (String.get inst 0)='r' then
+  string_get inst 0 >>= fun first_char ->
+  if first_char ='r' then
     let i = drop_spaces inst 1 in
     if String.length inst > i then
       let s = String.sub inst i (String.length inst - i) in
       if inst.[0] >= '0' && inst.[0] <= '9' then
-        let num = int_of_string s in
-        if num<0 then raise (Invalid_argument "run_com");
-        skip:=num;skipped:=0
+        int_of_string s >>= fun num ->
+        (if num<0 then invalid_arg "run_com" else return ()) >>
+        (skip:=num) >> (skipped:=0)
       else
         breakpoint:=Some (possibly_unquote s)
     else
-      raise (Invalid_argument "run_com")
+      invalid_arg "run_com"
   else
-    raise (Invalid_argument "run_com")
+    invalid_arg "run_com"
 
 (* Prints the run counter *)
 let run ini =
   if not ini then
-  begin
-    for i=1 to 2 do
-      print_char (Char.chr 8);print_char (Char.chr 13)
-    done;
-    msg (str "Executed expressions: " ++ int !skipped ++ fnl() ++ fnl())
-  end;
-  incr skipped
+    begin
+      Proofview.NonLogical.print (str"\b\r\b\r") >>
+      !skipped >>= fun skipped ->
+      msg_tac_debug (str "Executed expressions: " ++ int skipped ++ fnl())
+    end >>
+    !skipped >>= fun x ->
+    skipped := x+1
+  else
+    return ()
 
 (* Prints the prompt *)
 let rec prompt level =
   begin
-    msg (fnl () ++ str "TcDebug (" ++ int level ++ str ") > ");
-    flush stdout;
-    let exit () = skip:=0;skipped:=0;raise Sys.Break in
-    let inst = try read_line () with End_of_file -> exit () in
+    Proofview.NonLogical.print (fnl () ++ str "TcDebug (" ++ int level ++ str ") > ") >>
+    let exit = (skip:=0) >> (skipped:=0) >> raise Sys.Break in
+    Proofview.NonLogical.catch Proofview.NonLogical.read_line
+      begin function
+        | End_of_file -> exit
+        | e -> raise e
+      end
+    >>= fun inst ->
     match inst with
-    | ""  -> DebugOn (level+1)
-    | "s" -> DebugOff
-    | "x" -> print_char (Char.chr 8); exit ()
+    | ""  -> return (DebugOn (level+1))
+    | "s" -> return (DebugOff)
+    | "x" -> Proofview.NonLogical.print_char '\b' >> exit
     | "h"| "?" ->
       begin
-        help ();
+        help () >>
         prompt level
       end
     | _ ->
-      (try run_com inst;run true;DebugOn (level+1)
-       with Failure _ | Invalid_argument _ -> prompt level)
+        Proofview.NonLogical.catch (run_com inst >> run true >> return (DebugOn (level+1)))
+          begin function
+            | Failure _ | Invalid_argument _ -> prompt level
+            | e -> raise e
+          end
   end
 
 (* Prints the state and waits for an instruction *)
-let debug_prompt lev g tac f =
+(* spiwack: the only reason why we need to take the continuation [f]
+   as an argument rather than returning the new level directly seems to
+   be that [f] is wrapped in with "explain_logic_error". I don't think
+   it serves any purpose in the current design, so we could just drop
+   that. *)
+let debug_prompt lev tac f =
+  let (>=) = Proofview.tclBIND in
   (* What to print and to do next *)
   let newlevel =
-    if !skip = 0 then
-      if !breakpoint = None then (goal_com g tac; prompt lev)
-      else (run false; DebugOn (lev+1))
-    else (decr skip; run false; if !skip=0 then skipped:=0; DebugOn (lev+1)) in
+    Proofview.tclLIFT !skip >= fun initial_skip ->
+    if Int.equal initial_skip 0 then
+      Proofview.tclLIFT !breakpoint >= fun breakpoint ->
+      if Option.is_empty breakpoint then Proofview.tclTHEN (goal_com tac) (Proofview.tclLIFT (prompt lev))
+      else Proofview.tclLIFT(run false >> return (DebugOn (lev+1)))
+    else Proofview.tclLIFT begin
+      (!skip >>= fun s -> skip:=s-1) >>
+      run false >>
+      !skip >>= fun new_skip ->
+      (if Int.equal new_skip 0 then skipped:=0 else return ()) >>
+      return (DebugOn (lev+1))
+    end in
+  newlevel >= fun newlevel ->
   (* What to execute *)
-  try f newlevel
-  with reraise ->
-    skip:=0; skipped:=0;
-    if Logic.catchable_exception reraise then
-      ppnl (str "Level " ++ int lev ++ str ": " ++ !explain_logic_error reraise);
-    raise reraise
+  Proofview.tclOR
+    (f newlevel)
+    begin fun reraise ->
+      Proofview.tclTHEN
+        (Proofview.tclLIFT begin
+          (skip:=0) >> (skipped:=0) >>
+            if Logic.catchable_exception reraise then
+              msg_tac_debug (str "Level " ++ int lev ++ str ": " ++ Pervasives.(!) explain_logic_error reraise)
+            else return ()
+        end)
+        (Proofview.tclZERO reraise)
+    end
+
+let is_debug db =
+  !breakpoint >>= fun breakpoint ->
+  match db, breakpoint with
+  | DebugOff, _ -> return false
+  | _, Some _ -> return false
+  | _ ->
+      !skip >>= fun skip ->
+      return (Int.equal skip 0)
 
 (* Prints a constr *)
 let db_constr debug env c =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str "Evaluated term: " ++ print_constr_env env c)
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str "Evaluated term: " ++ print_constr_env env c)
+  else return ()
 
 (* Prints the pattern rule *)
 let db_pattern_rule debug num r =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
+  is_debug debug >>= fun db ->
+  if db then
   begin
-    msgnl (str "Pattern rule " ++ int num ++ str ":");
-    msgnl (str "|" ++ spc () ++ !prmatchrl r)
+    msg_tac_debug (str "Pattern rule " ++ int num ++ str ":" ++ fnl () ++
+      str "|" ++ spc () ++ Hook.get prmatchrl r)
   end
+  else return ()
 
 (* Prints the hypothesis pattern identifier if it exists *)
 let hyp_bound = function
   | Anonymous -> " (unbound)"
-  | Name id -> " (bound to "^(Names.string_of_id id)^")"
+  | Name id -> " (bound to "^(Names.Id.to_string id)^")"
 
 (* Prints a matched hypothesis *)
 let db_matched_hyp debug env (id,_,c) ido =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str "Hypothesis " ++
-           str ((Names.string_of_id id)^(hyp_bound ido)^
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str "Hypothesis " ++
+           str ((Names.Id.to_string id)^(hyp_bound ido)^
                 " has been matched: ") ++ print_constr_env env c)
+  else return ()
 
 (* Prints the matched conclusion *)
 let db_matched_concl debug env c =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str "Conclusion has been matched: " ++ print_constr_env env c)
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str "Conclusion has been matched: " ++ print_constr_env env c)
+  else return ()
 
 (* Prints a success message when the goal has been matched *)
 let db_mc_pattern_success debug =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str "The goal has been successfully matched!" ++ fnl() ++
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str "The goal has been successfully matched!" ++ fnl() ++
            str "Let us execute the right-hand side part..." ++ fnl())
+  else return ()
 
 (* Prints a failure message for an hypothesis pattern *)
 let db_hyp_pattern_failure debug env (na,hyp) =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str ("The pattern hypothesis"^(hyp_bound na)^
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str ("The pattern hypothesis"^(hyp_bound na)^
                 " cannot match: ") ++
-           !prmatchpatt env hyp)
+           Hook.get prmatchpatt env hyp)
+  else return ()
 
 (* Prints a matching failure message for a rule *)
 let db_matching_failure debug =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
-    msgnl (str "This rule has failed due to matching errors!" ++ fnl() ++
+  is_debug debug >>= fun db ->
+  if db then
+    msg_tac_debug (str "This rule has failed due to matching errors!" ++ fnl() ++
            str "Let us try the next one...")
+  else return ()
 
 (* Prints an evaluation failure message for a rule *)
 let db_eval_failure debug s =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
+  is_debug debug >>= fun db ->
+  if db then
     let s = str "message \"" ++ s ++ str "\"" in
-    msgnl
+    msg_tac_debug
       (str "This rule has failed due to \"Fail\" tactic (" ++
        s ++ str ", level 0)!" ++ fnl() ++ str "Let us try the next one...")
+  else return ()
 
 (* Prints a logic failure message for a rule *)
 let db_logic_failure debug err =
-  if debug <> DebugOff & !skip = 0 & !breakpoint = None then
+  is_debug debug >>= fun db ->
+  if db then
   begin
-    msgnl (!explain_logic_error err);
-    msgnl (str "This rule has failed due to a logic error!" ++ fnl() ++
+    msg_tac_debug (Pervasives.(!) explain_logic_error err) >>
+    msg_tac_debug (str "This rule has failed due to a logic error!" ++ fnl() ++
            str "Let us try the next one...")
   end
+  else return ()
 
 let is_breakpoint brkname s = match brkname, s with
-  | Some s, MsgString s'::_ -> s = s'
+  | Some s, MsgString s'::_ -> String.equal s s'
   | _ -> false
 
 let db_breakpoint debug s =
+  !breakpoint >>= fun opt_breakpoint ->
   match debug with
-  | DebugOn lev when s <> [] & is_breakpoint !breakpoint s ->
+  | DebugOn lev when not (List.is_empty s) && is_breakpoint opt_breakpoint s ->
       breakpoint:=None
   | _ ->
-      ()
+      return ()

@@ -8,6 +8,7 @@
 
 open Names
 open Term
+open Context
 open Univ
 open Evd
 open Environ
@@ -17,30 +18,38 @@ open Closure
 
 exception Elimconst
 
-(***********************************************************************
-  s A [stack] is a context of arguments, arguments are pushed by
-   [append_stack] one array at a time but popped with [decomp_stack]
-   one by one *)
-
+(** 90% copy-paste of kernel/closure.ml but polymorphic and with extra
+    arguments for storing refold *)
 type 'a stack_member =
-  | Zapp of 'a list
-  | Zcase of case_info * 'a * 'a array
-  | Zfix of 'a * 'a stack
-  | Zshift of int
-  | Zupdate of 'a
+| Zapp of 'a list
+| Zcase of case_info * 'a * 'a array * ('a * 'a list) option
+| Zfix of fixpoint * 'a stack * ('a * 'a list) option
+| Zshift of int
+| Zupdate of 'a
 
 and 'a stack = 'a stack_member list
 
 val empty_stack : 'a stack
-val append_stack : 'a array -> 'a stack -> 'a stack
-val append_stack_list : 'a list -> 'a stack -> 'a stack
+val compare_stack_shape : 'a stack -> 'a stack -> bool
+(** [fold_stack2 f x sk1 sk2] folds [f] on any pair of term in [(sk1,sk2)].
+@return the result and the lifts to apply on the terms *)
+val fold_stack2 : ('a -> Term.constr -> Term.constr -> 'a) -> 'a ->
+  Term.constr stack -> Term.constr stack -> 'a * int * int
+val append_stack_app : 'a array -> 'a stack -> 'a stack
+val append_stack_app_list : 'a list -> 'a stack -> 'a stack
 
 val decomp_stack : 'a stack -> ('a * 'a stack) option
-val list_of_stack : 'a stack -> 'a list
-val array_of_stack : 'a stack -> 'a array
+val strip_app : 'a stack -> 'a list * 'a stack
+(** Takes the n first arguments of application put on the stack. Fails is the
+    stack does not start by n arguments of application. *)
+val nfirsts_app_of_stack : int -> 'a stack -> 'a list
+(** @return (the nth first elements, the (n+1)th element, the remaining stack)  *)
+val strip_n_app : int -> 'a stack -> ('a list * 'a * 'a stack) option
+val list_of_app_stack : 'a stack -> 'a list option
+val array_of_app_stack : 'a stack -> 'a array option
 val stack_assign : 'a stack -> int -> 'a -> 'a stack
 val stack_args_size : 'a stack -> int
-val app_stack : constr * constr stack -> constr
+val zip : ?refold:bool -> constr * constr stack -> constr
 val stack_tail : int -> 'a stack -> 'a stack
 val stack_nth : 'a stack -> int -> 'a
 
@@ -63,11 +72,18 @@ type contextual_state_reduction_function =
 type state_reduction_function = contextual_state_reduction_function
 type local_state_reduction_function = evar_map -> state -> state
 
-(** Removes cast and put into applicative form *)
-val whd_stack : local_stack_reduction_function
+(** {6 Machinery about a stack of unfolded constant }
 
-(** For compatibility: alias for whd\_stack *)
-val whd_castapp_stack : local_stack_reduction_function
+    cst applied to params must convertible to term of the state applied to args
+*)
+module Cst_stack : sig
+  type t
+  val empty : t
+  val add_param : constr -> t -> t
+  val add_args : constr array -> t -> t
+  val add_cst : constr -> t -> t
+  val best_cst : t -> (constr * constr list) option
+end
 
 (** {6 Reduction Function Operators } *)
 
@@ -80,6 +96,9 @@ val stack_reduction_of_reduction :
 i*)
 val stacklam : (state -> 'a) -> constr list -> constr -> constr stack -> 'a
 
+val whd_state_gen : ?csts:Cst_stack.t -> bool -> Closure.RedFlags.reds ->
+  Environ.env -> Evd.evar_map -> state -> state * Cst_stack.t
+
 (** {6 Generic Optimized Reduction Function using Closures } *)
 
 val clos_norm_flags : Closure.RedFlags.reds -> reduction_function
@@ -87,13 +106,16 @@ val clos_norm_flags : Closure.RedFlags.reds -> reduction_function
 (** Same as [(strong whd_beta[delta][iota])], but much faster on big terms *)
 val nf_beta : local_reduction_function
 val nf_betaiota : local_reduction_function
+val nf_betaiotazeta : local_reduction_function
 val nf_betadeltaiota : reduction_function
 val nf_evar : evar_map -> constr -> constr
 
 val nf_betaiota_preserving_vm_cast : reduction_function
 
 (** Lazy strategy, weak head reduction *)
+
 val whd_evar :  evar_map -> constr -> constr
+val whd_nored : local_reduction_function
 val whd_beta : local_reduction_function
 val whd_betaiota : local_reduction_function
 val whd_betaiotazeta : local_reduction_function
@@ -102,6 +124,8 @@ val whd_betadeltaiota_nolet :  contextual_reduction_function
 val whd_betaetalet : local_reduction_function
 val whd_betalet : local_reduction_function
 
+(** Removes cast and put into applicative form *)
+val whd_nored_stack : local_stack_reduction_function
 val whd_beta_stack : local_stack_reduction_function
 val whd_betaiota_stack : local_stack_reduction_function
 val whd_betaiotazeta_stack : local_stack_reduction_function
@@ -110,6 +134,7 @@ val whd_betadeltaiota_nolet_stack : contextual_stack_reduction_function
 val whd_betaetalet_stack : local_stack_reduction_function
 val whd_betalet_stack : local_stack_reduction_function
 
+val whd_nored_state : local_state_reduction_function
 val whd_beta_state : local_state_reduction_function
 val whd_betaiota_state : local_state_reduction_function
 val whd_betaiotazeta_state : local_state_reduction_function
@@ -149,16 +174,14 @@ val hnf_lam_app      : env ->  evar_map -> constr -> constr -> constr
 val hnf_lam_appvect  : env ->  evar_map -> constr -> constr array -> constr
 val hnf_lam_applist  : env ->  evar_map -> constr -> constr list -> constr
 
-val splay_prod : env ->  evar_map -> constr -> (name * constr) list * constr
-val splay_lam : env ->  evar_map -> constr -> (name * constr) list * constr
-val splay_arity : env ->  evar_map -> constr -> (name * constr) list * sorts
+val splay_prod : env ->  evar_map -> constr -> (Name.t * constr) list * constr
+val splay_lam : env ->  evar_map -> constr -> (Name.t * constr) list * constr
+val splay_arity : env ->  evar_map -> constr -> (Name.t * constr) list * sorts
 val sort_of_arity : env -> evar_map -> constr -> sorts
 val splay_prod_n : env ->  evar_map -> int -> constr -> rel_context * constr
 val splay_lam_n : env ->  evar_map -> int -> constr -> rel_context * constr
 val splay_prod_assum :
   env ->  evar_map -> constr -> rel_context * constr
-val decomp_sort : env -> evar_map -> types -> sorts
-val is_sort : env -> evar_map -> types -> bool
 
 type 'a miota_args = {
   mP      : constr;     (** the result type *)
@@ -172,20 +195,16 @@ val reduce_mind_case : constr miota_args -> constr
 
 val find_conclusion : env -> evar_map -> constr -> (constr,constr) kind_of_term
 val is_arity : env ->  evar_map -> constr -> bool
+val is_sort : env -> evar_map -> types -> bool
 
 val whd_programs :  reduction_function
 
-(** [reduce_fix redfun fix stk] contracts [fix stk] if it is actually
-   reducible; the structural argument is reduced by [redfun] *)
-
-type fix_reduction_result = NotReducible | Reduced of state
-
+val contract_fix : ?env:Environ.env -> fixpoint ->
+  (constr * constr list) option -> constr
 val fix_recarg : fixpoint -> constr stack -> (int * constr) option
-val reduce_fix : local_state_reduction_function -> evar_map -> fixpoint
-   -> constr stack -> fix_reduction_result
 
 (** {6 Querying the kernel conversion oracle: opaque/transparent constants } *)
-val is_transparent : 'a tableKey -> bool
+val is_transparent : Environ.env -> 'a tableKey -> bool
 
 (** {6 Conversion Functions (uses closures, lazy strategy) } *)
 
@@ -207,14 +226,15 @@ val is_trans_fconv : conv_pb -> transparent_state -> env ->  evar_map -> constr 
 (** {6 Special-Purpose Reduction Functions } *)
 
 val whd_meta : evar_map -> constr -> constr
-val plain_instance : (metavariable * constr) list -> constr -> constr
-val instance :evar_map -> (metavariable * constr) list -> constr -> constr
+val plain_instance : constr Metamap.t -> constr -> constr
+val instance : evar_map -> constr Metamap.t -> constr -> constr
 val head_unfold_under_prod : transparent_state -> reduction_function
 
 (** {6 Heuristic for Conversion with Evar } *)
 
 val whd_betaiota_deltazeta_for_iota_state :
-  transparent_state -> state_reduction_function
+  transparent_state -> Environ.env -> Evd.evar_map -> Cst_stack.t -> state ->
+  state * Cst_stack.t
 
 (** {6 Meta-related reduction functions } *)
 val meta_instance : evar_map -> constr freelisted -> constr

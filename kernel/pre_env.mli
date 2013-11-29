@@ -6,11 +6,10 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
 open Names
-open Sign
 open Univ
 open Term
+open Context
 open Declarations
 
 (** The type of environments. *)
@@ -32,12 +31,12 @@ type stratification = {
 }
 
 type val_kind =
-    | VKvalue of values * Idset.t
+    | VKvalue of values * Id.Set.t
     | VKnone
 
 type lazy_val = val_kind ref
 
-type named_vals = (identifier * lazy_val) list
+type named_vals = (Id.t * lazy_val) list
 
 type env = {
     env_globals       : globals;
@@ -47,6 +46,7 @@ type env = {
     env_rel_val       : lazy_val list;
     env_nb_rel        : int;
     env_stratification : stratification;
+    env_conv_oracle   : Conv_oracle.oracle;
     retroknowledge : Retroknowledge.retroknowledge }
 
 type named_context_val = named_context * named_vals
@@ -67,8 +67,8 @@ val env_of_rel     : int -> env -> env
 val push_named_context_val  :
     named_declaration -> named_context_val -> named_context_val
 val push_named       : named_declaration -> env -> env
-val lookup_named_val : identifier -> env -> lazy_val
-val env_of_named     : identifier -> env -> env
+val lookup_named_val : Id.t -> env -> lazy_val
+val env_of_named     : Id.t -> env -> env
 
 (** Global constants *)
 

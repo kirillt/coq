@@ -7,20 +7,18 @@
 (***********************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
-open Pcoq
 open Glob_term
-open Topconstr
-open Libnames
+open Globnames
 open Coqlib
-open Bigint
 
 exception Non_closed_ascii
 
-let make_dir l = make_dirpath (List.map id_of_string (List.rev l))
-let make_kn dir id = Libnames.encode_mind (make_dir dir) (id_of_string id)
-let make_path dir id = Libnames.make_path (make_dir dir) (id_of_string id)
+let make_dir l = DirPath.make (List.rev_map Id.of_string l)
+let make_kn dir id = Globnames.encode_mind (make_dir dir) (Id.of_string id)
+let make_path dir id = Libnames.make_path (make_dir dir) (Id.of_string id)
 
 let ascii_module = ["Coq";"Strings";"Ascii"]
 
@@ -37,17 +35,17 @@ open Lazy
 
 let interp_ascii dloc p =
   let rec aux n p =
-     if n = 0 then [] else
+     if Int.equal n 0 then [] else
      let mp = p mod 2 in
-     GRef (dloc,if mp = 0 then glob_false else glob_true)
+     GRef (dloc,if Int.equal mp 0 then glob_false else glob_true)
      :: (aux (n-1) (p/2)) in
   GApp (dloc,GRef(dloc,force glob_Ascii), aux 8 p)
 
 let interp_ascii_string dloc s =
   let p =
-    if String.length s = 1 then int_of_char s.[0]
+    if Int.equal (String.length s) 1 then int_of_char s.[0]
     else
-      if String.length s = 3 & is_digit s.[0] & is_digit s.[1] & is_digit s.[2]
+      if Int.equal (String.length s) 3 && is_digit s.[0] && is_digit s.[1] && is_digit s.[2]
       then int_of_string s
       else
 	user_err_loc (dloc,"interp_ascii_string",
@@ -56,13 +54,13 @@ let interp_ascii_string dloc s =
 
 let uninterp_ascii r =
   let rec uninterp_bool_list n = function
-    | [] when n = 0 -> 0
-    | GRef (_,k)::l when k = glob_true  -> 1+2*(uninterp_bool_list (n-1)  l)
-    | GRef (_,k)::l when k = glob_false -> 2*(uninterp_bool_list (n-1) l)
+    | [] when Int.equal n 0 -> 0
+    | GRef (_,k)::l when Globnames.eq_gr k glob_true  -> 1+2*(uninterp_bool_list (n-1)  l)
+    | GRef (_,k)::l when Globnames.eq_gr k glob_false -> 2*(uninterp_bool_list (n-1) l)
     | _ -> raise Non_closed_ascii in
   try
-    let rec aux = function
-    | GApp (_,GRef (_,k),l) when k = force glob_Ascii -> uninterp_bool_list 8 l
+    let aux = function
+    | GApp (_,GRef (_,k),l) when Globnames.eq_gr k (force glob_Ascii) -> uninterp_bool_list 8 l
     | _ -> raise Non_closed_ascii in
     Some (aux r)
   with
@@ -78,4 +76,4 @@ let _ =
   Notation.declare_string_interpreter "char_scope"
     (ascii_path,ascii_module)
     interp_ascii_string
-    ([GRef (dummy_loc,static_glob_Ascii)], uninterp_ascii_string, true)
+    ([GRef (Loc.ghost,static_glob_Ascii)], uninterp_ascii_string, true)

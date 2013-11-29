@@ -89,6 +89,7 @@ intentional type theory, Journal of Symbolic Logic 70(2):488-514, 2005.
 *)
 
 Set Implicit Arguments.
+Local Unset Intuition Negation Unfolding.
 
 (**********************************************************************)
 (** * Definitions *)
@@ -814,9 +815,9 @@ Corollary fun_reification_descr_computational_excluded_middle_in_prop_context :
   (forall P:Prop, P \/ ~ P) ->
   forall C:Prop, ((forall P:Prop, {P} + {~ P}) -> C) -> C.
 Proof.
-  intros FunReify EM C H.
-  apply relative_non_contradiction_of_definite_descr; trivial.
-  auto using constructive_definite_descr_excluded_middle.
+  intros FunReify EM C; intuition auto using
+    constructive_definite_descr_excluded_middle,
+    (relative_non_contradiction_of_definite_descr (C:=C)).
 Qed.
 
 (**********************************************************************)

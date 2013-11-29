@@ -26,7 +26,8 @@ let option_slash = ref false
 let option_natdynlk = ref true
 let option_mldep = ref None
 
-let norecdir_list = ref ([]:string list)
+let norec_dirs = ref ([] : string list)
+let norec_dirnames = ref ["CVS"; "_darcs"]
 
 let suffixe = ref ".vo"
 
@@ -50,7 +51,7 @@ let rec get_extension f = function
 
 let basename_noext filename =
   let fn = Filename.basename filename in
-  try Filename.chop_extension fn with _ -> fn
+  try Filename.chop_extension fn with Invalid_argument _ -> fn
 
 (** ML Files specified on the command line. In the entries:
     - the first string is the basename of the file, without extension nor
@@ -141,7 +142,7 @@ let warning_clash file dir =
       let f = Filename.basename f1 in
       let d1 = Filename.dirname f1 in
       let d2 = Filename.dirname f2 in
-      let dl = List.map Filename.dirname (List.rev fl) in
+      let dl = List.rev_map Filename.dirname fl in
       eprintf
         "*** Warning: in file %s, \n    required library %s matches several files in path\n    (found %s.v in "
         file (String.concat "." dir) f;
@@ -264,10 +265,10 @@ let escape =
     Buffer.clear s';
     for i = 0 to String.length s - 1 do
       let c = s.[i] in
-      if c = ' ' or c = '#' or c = ':' (* separators and comments *)
-	or c = '%' (* pattern *)
-	or c = '?' or c = '[' or c = ']' or c = '*' (* expansion in filenames *)
-	or i=0 && c = '~' && (String.length s = 1 || s.[1] = '/' || 
+      if c = ' ' || c = '#' || c = ':' (* separators and comments *)
+        || c = '%' (* pattern *)
+	|| c = '?' || c = '[' || c = ']' || c = '*' (* expansion in filenames *)
+	|| i=0 && c = '~' && (String.length s = 1 || s.[1] = '/' || 
 	    'A' <= s.[1] && s.[1] <= 'Z' || 
 	    'a' <= s.[1] && s.[1] <= 'z') (* homedir expansion *)
       then begin
@@ -439,14 +440,17 @@ let rec add_directory recur add_file phys_dir log_dir =
   try
     while true do
       let f = readdir dirh in
-      (* we avoid . .. and all hidden files and subdirs (e.g. .svn, _darcs) *)
-      if f.[0] <> '.' && f.[0] <> '_' then
+      (* we avoid all files and subdirs starting by '.' (e.g. .svn),
+         plus CVS and _darcs and any subdirs given via -exclude-dirs *)
+      if f.[0] <> '.' then
         let phys_f = if phys_dir = "." then f else phys_dir//f in
 	match try (stat phys_f).st_kind with _ -> S_BLK with
 	  | S_DIR when recur ->
-	      if List.mem phys_f !norecdir_list then ()
-	      else
-		add_directory recur add_file phys_f (log_dir@[f])
+              if List.mem f !norec_dirnames then ()
+              else
+	        if List.mem phys_f !norec_dirs then ()
+	        else
+		  add_directory recur add_file phys_f (log_dir@[f])
 	  | S_REG -> add_file phys_dir log_dir f
 	  | _ -> ()
     done

@@ -78,7 +78,7 @@ coq_makefile [subdirectory] .... [file.v] ... [file.ml[i4]?] ... [file.mllib]
 [--help]: equivalent to [-h]\n";
   exit 1
 
-let is_genrule r =
+let is_genrule r = (* generic rule (like bar%foo: ...) *)
     let genrule = Str.regexp("%") in
       Str.string_match genrule r 0
 
@@ -89,7 +89,7 @@ let string_prefix a b =
 let is_prefix dir1 dir2 =
   let l1 = String.length dir1 in
   let l2 = String.length dir2 in
-    dir1 = dir2 or (l1 < l2 & String.sub dir2 0 l1 = dir1 & dir2.[l1] = '/')
+    dir1 = dir2 || (l1 < l2 && String.sub dir2 0 l1 = dir1 && dir2.[l1] = '/')
 
 let physical_dir_of_logical_dir ldir =
   let le = String.length ldir - 1 in
@@ -111,7 +111,7 @@ let classify_files_by_root var files (inc_i,inc_r) =
   if not (List.exists (fun (pdir,_,_) -> pdir = ".") inc_r) then
     begin
       let absdir_of_files = List.rev_map
-	(fun x -> Minilib.canonical_path_name (Filename.dirname x))
+	(fun x -> CUnix.canonical_path_name (Filename.dirname x))
 	files in
 	(* files in scope of a -I option (assuming they are no overlapping) *)
       let has_inc_i = List.exists (fun (_,a) -> List.mem a absdir_of_files) inc_i in
@@ -134,117 +134,157 @@ let classify_files_by_root var files (inc_i,inc_r) =
 	  inc_r;
     end
 
-let install_include_by_root files_var files (inc_i,inc_r) =
+let vars_to_put_by_root var_x_files_l (inc_i,inc_r) =
+  let var_x_absdirs_l = List.rev_map
+    (fun (v,l) -> (v,List.rev_map (fun x -> CUnix.canonical_path_name (Filename.dirname x)) l))
+    var_x_files_l in
+  let var_filter f g = List.fold_left (fun acc (var,dirs) ->
+    if f dirs
+    then (g var)::acc else acc) [] var_x_absdirs_l in
   try
     (* All files caught by a -R . option (assuming it is the only one) *)
     let ldir = match inc_r with
       |[(".",t,_)] -> t
-      |l -> let out = List.assoc "." (List.map (fun (p,l,_) -> (p,l)) inc_r) in
-	 let () = prerr_string "Warning: install rule assumes that -R . _ is the only -R option" in
-	   out in
-    let pdir = physical_dir_of_logical_dir ldir in
-      printf "\tfor i in $(%s); do \\\n" files_var;
-      printf "\t install -d `dirname $(DSTROOT)$(COQLIBINSTALL)/%s/$$i`; \\\n" pdir;
-      printf "\t install -m 0644 $$i $(DSTROOT)$(COQLIBINSTALL)/%s/$$i; \\\n" pdir;
-      printf "\tdone\n"
+      |l -> let out = List.assoc "." (List.rev_map (fun (p,l,_) -> (p,l)) inc_r) in
+	    let () = prerr_string "Warning: install rule assumes that -R . _ is the only -R option" in
+	    out in
+    (None,[".",physical_dir_of_logical_dir ldir,List.rev_map fst var_x_files_l])
   with Not_found ->
-    let absdir_of_files = List.rev_map
-      (fun x -> Minilib.canonical_path_name (Filename.dirname x))
-      files in
-    let has_inc_i_files =
-      List.exists (fun (_,a) -> List.mem a absdir_of_files) inc_i in
-    let install_inc_i d =
-      printf "\tinstall -d $(DSTROOT)$(COQLIBINSTALL)/%s; \\\n" d;
-      printf "\tfor i in $(%sINC); do \\\n" files_var;
-      printf "\t install -m 0644 $$i $(DSTROOT)$(COQLIBINSTALL)/%s/`basename $$i`; \\\n" d;
-      printf "\tdone\n"
-    in
+    (
+      (* vars for -I options *)
+      Some (var_filter (fun l -> List.exists (fun (_,a) -> List.mem a l) inc_i) (fun x -> x)),
+      (* (physical dir, physical dir of logical path,vars) for -R options
+	 (assuming physical dirs are disjoint) *)
       if inc_r = [] then
-	if has_inc_i_files then
-	  begin
-	    (* Files in the scope of a -I option *)
-	    install_inc_i "$(INSTALLDEFAULTROOT)";
-	  end else ()
+	[".","$(INSTALLDEFAULTROOT)",[]]
       else
-	(* Files in the scope of a -R option (assuming they are disjoint) *)
-	list_iter_i (fun i (pdir,ldir,abspdir) ->
-		       let has_inc_r_files = List.exists (is_prefix abspdir) absdir_of_files in
-		       let pdir' = physical_dir_of_logical_dir ldir in
-			 if has_inc_r_files then
-			   begin
-			     printf "\tcd %s; for i in $(%s%d); do \\\n" pdir files_var i;
-			     printf "\t install -d `dirname $(DSTROOT)$(COQLIBINSTALL)/%s/$$i`; \\\n" pdir';
-			     printf "\t install -m 0644 $$i $(DSTROOT)$(COQLIBINSTALL)/%s/$$i; \\\n" pdir';
-			     printf "\tdone\n";
-			   end;
-			 if has_inc_i_files then install_inc_i pdir'
-		    ) inc_r
+	Util.List.fold_left_i (fun i out (pdir,ldir,abspdir) ->
+	  let vars_r = var_filter (List.exists (is_prefix abspdir)) (fun x -> x^string_of_int i) in
+	  let pdir' = physical_dir_of_logical_dir ldir in
+	  (pdir,pdir',vars_r)::out) 1 [] inc_r
+    )
 
-let install_doc some_vfiles some_mlifiles (_,inc_r) =
-  let install_one_kind kind dir =
-    printf "\tinstall -d $(DSTROOT)$(COQDOCINSTALL)/%s/%s\n" dir kind;
-    printf "\tfor i in %s/*; do \\\n" kind;
-    printf "\t install -m 0644 $$i $(DSTROOT)$(COQDOCINSTALL)/%s/$$i;\\\n" dir;
-    print "\tdone\n" in
-    print "install-doc:\n";
-    let () = match inc_r with
-      |[] ->
-	 if some_vfiles then install_one_kind "html" "$(INSTALLDEFAULTROOT)";
-	  if some_mlifiles then install_one_kind "mlihtml" "$(INSTALLDEFAULTROOT)";
-      |(_,lp,_)::q ->
-	 let pr = List.fold_left (fun a (_,b,_) -> string_prefix a b) lp q in
-	   if (pr <> "") &&
-	     ((List.exists (fun(_,b,_) -> b = pr) inc_r) || pr.[String.length pr - 1] = '.')
-	   then begin
-	     let rt = physical_dir_of_logical_dir pr in
-	       if some_vfiles then install_one_kind "html" rt;
-	       if some_mlifiles then install_one_kind "mlihtml" rt;
-	   end else begin
-	     prerr_string "Warning: -R options don't have a correct common prefix,
- install-doc will put anything in $INSTALLDEFAULTROOT\n";
-	   if some_vfiles then install_one_kind "html" "$(INSTALLDEFAULTROOT)";
-	   if some_mlifiles then install_one_kind "mlihtml" "$(INSTALLDEFAULTROOT)";
-	   end in
-      print "\n"
+let install_include_by_root =
+  let install_dir for_i (pdir,pdir',vars) =
+    let b = vars <> [] in
+    if b then begin
+      printf "\tcd \"%s\" && for i in " pdir;
+      print_list " " (List.rev_map (Format.sprintf "$(%s)") vars);
+      print "; do \\\n";
+      printf "\t install -d \"`dirname \"$(DSTROOT)\"$(COQLIBINSTALL)/%s/$$i`\"; \\\n" pdir';
+      printf "\t install -m 0644 $$i \"$(DSTROOT)\"$(COQLIBINSTALL)/%s/$$i; \\\n" pdir';
+      printf "\tdone\n";
+    end;
+    for_i b pdir' in
+  let install_i = function
+    |[] -> fun _ _ -> ()
+    |l -> fun b d ->
+      if not b then printf "\tinstall -d \"$(DSTROOT)\"$(COQLIBINSTALL)/%s; \\\n" d;
+      print "\tfor i in ";
+      print_list " " (List.rev_map (Format.sprintf "$(%sINC)") l);
+      print "; do \\\n";
+      printf "\t install -m 0644 $$i \"$(DSTROOT)\"$(COQLIBINSTALL)/%s/`basename $$i`; \\\n" d;
+      printf "\tdone\n"
+  in function
+  |None,l -> List.iter (install_dir (fun _ _ -> ())) l
+  |Some v_i,l -> List.iter (install_dir (install_i v_i)) l
+
+let uninstall_by_root =
+  let uninstall_dir for_i (pdir,pdir',vars) =
+    printf "\tprintf 'cd \"$${DSTROOT}\"$(COQLIBINSTALL)/%s" pdir';
+    if vars <> [] then begin
+      print " && rm -f ";
+      print_list " " (List.rev_map (Format.sprintf "$(%s)") vars);
+    end;
+    for_i ();
+    print " && find . -type d -and -empty -delete\\n";
+    print "cd \"$${DSTROOT}\"$(COQLIBINSTALL) && ";
+    printf "find \"%s\" -maxdepth 0 -and -empty -exec rmdir -p \\{\\} \\;\\n' >> \"$@\"\n" pdir'
+in
+  let uninstall_i = function
+    |[] -> ()
+    |l ->
+      print " && \\\\\\nfor i in ";
+      print_list " " (List.rev_map (Format.sprintf "$(%sINC)") l);
+      print "; do rm -f \"`basename \"$$i\"`\"; done"
+  in function
+  |None,l -> List.iter (uninstall_dir (fun _ -> ())) l
+  |Some v_i,l -> List.iter (uninstall_dir (fun () -> uninstall_i v_i)) l
+
+let where_put_doc = function
+    |_,[] -> "$(INSTALLDEFAULTROOT)";
+    |_,((_,lp,_)::q as inc_r) ->
+      let pr = List.fold_left (fun a (_,b,_) -> string_prefix a b) lp q in
+      if (pr <> "") &&
+	((List.exists (fun(_,b,_) -> b = pr) inc_r) || pr.[String.length pr - 1] = '.')
+      then
+	physical_dir_of_logical_dir pr
+      else
+	let () = prerr_string "Warning: -R options don't have a correct common prefix,
+ install-doc will put anything in $INSTALLDEFAULTROOT\n" in
+	"$(INSTALLDEFAULTROOT)"
 
 let install (vfiles,(mlifiles,ml4files,mlfiles,mllibfiles,mlpackfiles),_,sds) inc = function
   |Project_file.NoInstall -> ()
   |is_install ->
+    let not_empty = function |[] -> false |_::_ -> true in
+    let cmofiles = List.rev_append mlpackfiles (List.rev_append mlfiles ml4files) in
+    let cmifiles = List.rev_append mlifiles cmofiles in
+    let cmxsfiles = List.rev_append cmofiles mllibfiles in
+    let where_what_cmxs = vars_to_put_by_root [("CMXSFILES",cmxsfiles)] inc in
+    let where_what_oth = vars_to_put_by_root
+      [("VOFILES",vfiles);("CMOFILES",cmofiles);("CMIFILES",cmifiles);("CMAFILES",mllibfiles)]
+      inc in
+    let doc_dir = where_put_doc inc in
     let () = if is_install = Project_file.UnspecInstall then
 	print "userinstall:\n\t+$(MAKE) USERINSTALL=true install\n\n" in
-  let not_empty = function |[] -> false |_::_ -> true in
-  let cmofiles = mlpackfiles@mlfiles@ml4files in
-  let cmifiles = mlifiles@cmofiles in
-  let cmxsfiles = cmofiles@mllibfiles in
     if (not_empty cmxsfiles) then begin
       print "install-natdynlink:\n";
-      install_include_by_root "CMXSFILES" cmxsfiles inc;
+      install_include_by_root where_what_cmxs;
       print "\n";
     end;
     print "install:";
     if (not_empty cmxsfiles) then print "$(if $(HASNATDYNLINK_OR_EMPTY),install-natdynlink)";
     print "\n";
-    if not_empty vfiles then install_include_by_root "VOFILES" vfiles inc;
-    if (not_empty cmofiles) then
-      install_include_by_root "CMOFILES" cmofiles inc;
-    if (not_empty cmifiles) then
-      install_include_by_root "CMIFILES" cmifiles inc;
-    if (not_empty mllibfiles) then
-      install_include_by_root "CMAFILES" mllibfiles inc;
+    install_include_by_root where_what_oth;
     List.iter
       (fun x ->
-	 printf "\t(cd %s; $(MAKE) DSTROOT=$(DSTROOT) INSTALLDEFAULTROOT=$(INSTALLDEFAULTROOT)/%s install)\n" x x)
+	printf "\t+cd %s && $(MAKE) DSTROOT=\"$(DSTROOT)\" INSTALLDEFAULTROOT=\"$(INSTALLDEFAULTROOT)/%s\" install\n" x x)
       sds;
     print "\n";
-    install_doc (not_empty vfiles) (not_empty mlifiles) inc
+    let install_one_kind kind dir =
+      printf "\tinstall -d \"$(DSTROOT)\"$(COQDOCINSTALL)/%s/%s\n" dir kind;
+      printf "\tfor i in %s/*; do \\\n" kind;
+      printf "\t install -m 0644 $$i \"$(DSTROOT)\"$(COQDOCINSTALL)/%s/$$i;\\\n" dir;
+      print "\tdone\n" in
+    print "install-doc:\n";
+    if not_empty vfiles then install_one_kind "html" doc_dir;
+    if not_empty mlifiles then install_one_kind "mlihtml" doc_dir;
+    print "\n";
+    let uninstall_one_kind kind dir =
+      printf "\tprintf 'cd \"$${DSTROOT}\"$(COQDOCINSTALL)/%s \\\\\\n' >> \"$@\"\n" dir;
+      printf "\tprintf '&& rm -f $(shell find \"%s\" -maxdepth 1 -and -type f -print)\\n' >> \"$@\"\n" kind;
+      print "\tprintf 'cd \"$${DSTROOT}\"$(COQDOCINSTALL) && ";
+      printf "find %s/%s -maxdepth 0 -and -empty -exec rmdir -p \\{\\} \\;\\n' >> \"$@\"\n" dir kind
+    in
+    print "uninstall_me.sh:\n";
+    print "\techo '#!/bin/sh' > $@ \n";
+    if (not_empty cmxsfiles) then uninstall_by_root where_what_cmxs;
+    uninstall_by_root where_what_oth;
+    if not_empty vfiles then uninstall_one_kind "html" doc_dir;
+    if not_empty mlifiles then uninstall_one_kind "mlihtml" doc_dir;
+    print "\tchmod +x $@\n";
+    print "\n";
+    print "uninstall: uninstall_me.sh\n";
+    print "\tsh $<\n\n"
 
 let make_makefile sds =
   if !make_name <> "" then begin
     printf "%s: %s\n" !makefile_name !make_name;
     print "\tmv -f $@ $@.bak\n";
-    print "\t$(COQBIN)coq_makefile -f $< -o $@\n\n";
+    print "\t\"$(COQBIN)coq_makefile\" -f $< -o $@\n\n";
     List.iter
-      (fun x -> print "\t(cd "; print x; print " ; $(MAKE) Makefile)\n")
+      (fun x -> print "\t+cd "; print x; print " && $(MAKE) Makefile\n")
       sds;
     print "\n";
   end
@@ -259,25 +299,25 @@ let clean sds sps =
   if !some_vfile then
     print "\trm -f $(VOFILES) $(VIFILES) $(GFILES) $(VFILES:.v=.v.d) $(VFILES:=.beautified) $(VFILES:=.old)\n";
   print "\trm -f all.ps all-gal.ps all.pdf all-gal.pdf all.glob $(VFILES:.v=.glob) $(VFILES:.v=.tex) $(VFILES:.v=.g.tex) all-mli.tex\n";
-  print "\t- rm -rf html mlihtml\n";
+  print "\t- rm -rf html mlihtml uninstall_me.sh\n";
   List.iter
-    (fun (file,_,_) ->
-       if not (is_genrule file) then
+    (fun (file,_,is_phony,_) ->
+       if not (is_phony || is_genrule file) then
 	 (print "\t- rm -rf "; print file; print "\n"))
     sps;
   List.iter
-    (fun x -> print "\t(cd "; print x; print " ; $(MAKE) clean)\n")
+    (fun x -> print "\t+cd "; print x; print " && $(MAKE) clean\n")
     sds;
   print "\n";
   print "archclean:\n";
   print "\trm -f *.cmx *.o\n";
   List.iter
-    (fun x -> print "\t(cd "; print x; print " ; $(MAKE) archclean)\n")
+    (fun x -> print "\t+cd "; print x; print " && $(MAKE) archclean\n")
     sds;
   print "\n";
-  print "printenv:\n\t@$(COQBIN)coqtop -config\n";
-  print "\t@echo CAMLC =\t$(CAMLC)\n\t@echo CAMLOPTC =\t$(CAMLOPTC)\n\t@echo PP =\t$(PP)\n\t@echo COQFLAGS =\t$(COQFLAGS)\n";
-  print "\t@echo COQLIBINSTALL =\t$(COQLIBINSTALL)\n\t@echo COQDOCINSTALL =\t$(COQDOCINSTALL)\n\n"
+  print "printenv:\n\t@\"$(COQBIN)coqtop\" -config\n";
+  print "\t@echo 'CAMLC =\t$(CAMLC)'\n\t@echo 'CAMLOPTC =\t$(CAMLOPTC)'\n\t@echo 'PP =\t$(PP)'\n\t@echo 'COQFLAGS =\t$(COQFLAGS)'\n";
+  print "\t@echo 'COQLIBINSTALL =\t$(COQLIBINSTALL)'\n\t@echo 'COQDOCINSTALL =\t$(COQDOCINSTALL)'\n\n"
 
 let header_includes () = ()
 
@@ -318,7 +358,7 @@ in
     print "%.tex: %.v\n\t$(COQDOC) $(COQDOCFLAGS) -latex $< -o $@\n\n";
     print "%.html: %.v %.glob\n\t$(COQDOC) $(COQDOCFLAGS) -html $< -o $@\n\n";
     print "%.g.tex: %.v\n\t$(COQDOC) $(COQDOCFLAGS) -latex -g $< -o $@\n\n";
-    print "%.g.html: %.v %.glob\n\t$(COQDOC)$(COQDOCFLAGS)  -html -g $< -o $@\n\n";
+    print "%.g.html: %.v %.glob\n\t$(COQDOC) $(COQDOCFLAGS)  -html -g $< -o $@\n\n";
     print "%.v.d: %.v\n";
     print "\t$(COQDEP) -slash $(COQLIBS) \"$<\" > \"$@\" || ( RV=$$?; rm -f \"$@\"; exit $${RV} )\n\n";
     print "%.v.beautified:\n\t$(COQC) $(COQDEBUG) $(COQFLAGS) -beautify $*\n\n"
@@ -350,55 +390,60 @@ let variables is_install opt (args,defs) =
     end;
     (* Coq executables and relative variables *)
     if !some_vfile || !some_mlpackfile || !some_mllibfile then
-      print "COQDEP?=$(COQBIN)coqdep -c\n";
+      print "COQDEP?=\"$(COQBIN)coqdep\" -c\n";
     if !some_vfile then begin
     print "COQFLAGS?=-q $(OPT) $(COQLIBS) $(OTHERFLAGS) $(COQ_XML)\n";
     print "COQCHKFLAGS?=-silent -o\n";
     print "COQDOCFLAGS?=-interpolate -utf8\n";
-    print "COQC?=$(COQBIN)coqc\n";
-    print "GALLINA?=$(COQBIN)gallina\n";
-    print "COQDOC?=$(COQBIN)coqdoc\n";
-    print "COQCHK?=$(COQBIN)coqchk\n\n";
+    print "COQC?=$(TIMER) \"$(COQBIN)coqc\"\n";
+    print "GALLINA?=\"$(COQBIN)gallina\"\n";
+    print "COQDOC?=\"$(COQBIN)coqdoc\"\n";
+    print "COQCHK?=\"$(COQBIN)coqchk\"\n";
+    print "COQMKTOP?=\"$(COQBIN)coqmktop\"\n\n";
     end;
     (* Caml executables and relative variables *)
     if !some_ml4file || !some_mlfile || !some_mlifile then begin
-    print "COQSRCLIBS?=-I $(COQLIB)kernel -I $(COQLIB)lib \\
-  -I $(COQLIB)library -I $(COQLIB)parsing \\
-  -I $(COQLIB)pretyping -I $(COQLIB)interp \\
-  -I $(COQLIB)proofs -I $(COQLIB)tactics \\
-  -I $(COQLIB)toplevel";
+    print "COQSRCLIBS?=-I \"$(COQLIB)kernel\" -I \"$(COQLIB)lib\" \\
+  -I \"$(COQLIB)library\" -I \"$(COQLIB)parsing\" -I \"$(COQLIB)pretyping\" \\
+  -I \"$(COQLIB)interp\" -I \"$(COQLIB)printing\" -I \"$(COQLIB)intf\" \\
+  -I \"$(COQLIB)proofs\" -I \"$(COQLIB)tactics\" -I \"$(COQLIB)tools\" \\
+  -I \"$(COQLIB)toplevel\" -I \"$(COQLIB)grammar\"";
     List.iter (fun c -> print " \\
-  -I $(COQLIB)plugins/"; print c) Coq_config.plugins_dirs; print "\n";
+  -I $(COQLIB)/"; print c) Coq_config.plugins_dirs; print "\n";
     print "ZFLAGS=$(OCAMLLIBS) $(COQSRCLIBS) -I $(CAMLP4LIB)\n\n";
     print "CAMLC?=$(OCAMLC) -c -rectypes\n";
     print "CAMLOPTC?=$(OCAMLOPT) -c -rectypes\n";
     print "CAMLLINK?=$(OCAMLC) -rectypes\n";
     print "CAMLOPTLINK?=$(OCAMLOPT) -rectypes\n";
     print "GRAMMARS?=grammar.cma\n";
-    print "CAMLP4EXTEND?=pa_extend.cmo pa_macro.cmo q_MLast.cmo\n";
-    print "CAMLP4OPTIONS?=-loc loc\n";
-    print "PP?=-pp \"$(CAMLP4BIN)$(CAMLP4)o -I $(CAMLLIB) -I . $(COQSRCLIBS) $(CAMLP4EXTEND) $(GRAMMARS) $(CAMLP4OPTIONS) -impl\"\n\n";
+    print "ifeq ($(CAMLP4),camlp5)
+CAMLP4EXTEND=pa_extend.cmo q_MLast.cmo pa_macro.cmo
+else
+CAMLP4EXTEND=
+endif\n";
+    print "PP?=-pp '\"$(CAMLP4O)\" -I \"$(CAMLLIB)\" -I . $(COQSRCLIBS) compat5.cmo \\
+  $(CAMLP4EXTEND) $(GRAMMARS) $(CAMLP4OPTIONS) -impl'\n\n";
     end;
     match is_install with
       | Project_file.NoInstall -> ()
       | Project_file.UnspecInstall ->
         section "Install Paths.";
 	print "ifdef USERINSTALL\n";
-        print "XDG_DATA_HOME?=$(HOME)/.local/share\n";
+        print "XDG_DATA_HOME?=\"$(HOME)/.local/share\"\n";
         print "COQLIBINSTALL=$(XDG_DATA_HOME)/coq\n";
         print "COQDOCINSTALL=$(XDG_DATA_HOME)/doc/coq\n";
 	print "else\n";
-        print "COQLIBINSTALL=${COQLIB}user-contrib\n";
-        print "COQDOCINSTALL=${DOCDIR}user-contrib\n";
+        print "COQLIBINSTALL=\"${COQLIB}user-contrib\"\n";
+        print "COQDOCINSTALL=\"${DOCDIR}user-contrib\"\n";
 	print "endif\n\n"
       | Project_file.TraditionalInstall ->
           section "Install Paths.";
-          print "COQLIBINSTALL=${COQLIB}user-contrib\n";
-          print "COQDOCINSTALL=${DOCDIR}user-contrib\n";
+          print "COQLIBINSTALL=\"${COQLIB}user-contrib\"\n";
+          print "COQDOCINSTALL=\"${DOCDIR}user-contrib\"\n";
           print "\n"
       | Project_file.UserInstall ->
           section "Install Paths.";
-          print "XDG_DATA_HOME?=$(HOME)/.local/share\n";
+          print "XDG_DATA_HOME?=\"$(HOME)/.local/share\"\n";
           print "COQLIBINSTALL=$(XDG_DATA_HOME)/coq\n";
           print "COQDOCINSTALL=$(XDG_DATA_HOME)/doc/coq\n";
           print "\n"
@@ -407,12 +452,16 @@ let parameters () =
   print ".DEFAULT_GOAL := all\n\n# \n";
   print "# This Makefile may take arguments passed as environment variables:\n";
   print "# COQBIN to specify the directory where Coq binaries resides;\n";
+  print "# TIMECMD set a command to log .v compilation time;\n";
+  print "# TIMED if non empty, use the default time command as TIMECMD;\n";
   print "# ZDEBUG/COQDEBUG to specify debug flags for ocamlc&ocamlopt/coqc;\n";
   print "# DSTROOT to specify a prefix to install path.\n\n";
   print "# Here is a hack to make $(eval $(shell works:\n";
   print "define donewline\n\n\nendef\n";
   print "includecmdwithout@ = $(eval $(subst @,$(donewline),$(shell { $(1) | tr -d '\\r' | tr '\\n' '@'; })))\n";
-  print "$(call includecmdwithout@,$(COQBIN)coqtop -config)\n\n"
+  print "$(call includecmdwithout@,$(COQBIN)coqtop -config)\n\n";
+  print "TIMED=\nTIMECMD=\nSTDTIME?=/usr/bin/time -f \"$* (user: %U mem: %M ko)\"\n";
+  print "TIMER=$(if $(TIMED), $(STDTIME), $(TIMECMD))\n\n"
 
 let include_dirs (inc_i,inc_r) =
   let parse_includes l = List.map (fun (x,_) -> "-I " ^ x) l in
@@ -434,16 +483,17 @@ let include_dirs (inc_i,inc_r) =
     end
 
 let custom sps =
-  let pr_path (file,dependencies,com) =
+  let pr_path (file,dependencies,is_phony,com) =
     print file; print ": "; print dependencies; print "\n";
-    if com <> "" then (print "\t"; print com); print "\n\n"
+    if com <> "" then (print "\t"; print com; print "\n");
+    print "\n"
   in
     if sps <> [] then section "Custom targets.";
     List.iter pr_path sps
 
 let subdirs sds =
   let pr_subdir s =
-    print s; print ":\n\tcd "; print s; print " ; $(MAKE) all\n\n"
+    print s; print ":\n\t+cd \""; print s; print "\" && $(MAKE) all\n\n"
   in
     if sds <> [] then section "Subdirectories.";
     List.iter pr_subdir sds
@@ -591,13 +641,18 @@ let main_targets vfiles (mlifiles,ml4files,mlfiles,mllibfiles,mlpackfiles) other
     end
 
 let all_target (vfiles, (_,_,_,_,mlpackfiles as mlfiles), sps, sds) inc =
-  let special_targets = List.filter (fun (n,_,_) -> not (is_genrule n)) sps in
-  let other_targets = List.map (function x,_,_ -> x) special_targets @ sds in
+  let other_targets = CList.map_filter
+    (fun (n,_,is_phony,_) -> if is_phony || not (is_genrule n) then Some n else None)
+    sps @ sds in
   main_targets vfiles mlfiles other_targets inc;
     print ".PHONY: ";
     print_list " "
-      ("all" ::  "opt" :: "byte" :: "archclean" :: "clean" :: "install"
-	:: "userinstall" :: "depend" :: "html" :: "validate" :: sds);
+      ("all" ::  "opt" :: "byte" :: "archclean" :: "clean" :: "install" ::
+	  "uninstall_me.sh" :: "uninstall" :: "userinstall" :: "depend" ::
+	  "html" :: "validate" :: sds);
+    print_list " " (CList.map_filter
+		      (fun (n,_,is_phony,_) -> if is_phony then Some n else None)
+		      sps);
     print "\n\n";
     custom sps;
     subdirs sds;
@@ -632,8 +687,8 @@ let ensure_root_dir (v,(mli,ml4,ml,mllib,mlpack),_,_) ((i_inc,r_inc) as l) =
   let here = Sys.getcwd () in
   let not_tops =List.for_all (fun s -> s <> Filename.basename s) in
   if List.exists (fun (_,x) -> x = here) i_inc
-    or List.exists (fun (_,_,x) -> is_prefix x here) r_inc
-    or (not_tops v && not_tops mli && not_tops ml4 && not_tops ml
+    || List.exists (fun (_,_,x) -> is_prefix x here) r_inc
+    || (not_tops v && not_tops mli && not_tops ml4 && not_tops ml
 	&& not_tops mllib && not_tops mlpack) then
     l
   else
@@ -651,13 +706,13 @@ let warn_install_at_root_directory
 
 let check_overlapping_include (_,inc_r) =
   let pwd = Sys.getcwd () in
-  let rec aux = function
+  let aux = function
     | [] -> ()
     | (pdir,_,abspdir)::l ->
 	if not (is_prefix pwd abspdir) then
 	  Printf.eprintf "Warning: in option -R, %s is not a subdirectory of the current directory\n" pdir;
 	List.iter (fun (pdir',_,abspdir') ->
-	  if is_prefix abspdir abspdir' or is_prefix abspdir' abspdir then
+	  if is_prefix abspdir abspdir' || is_prefix abspdir' abspdir then
 	    Printf.eprintf "Warning: in options -R, %s and %s overlap\n" pdir pdir') l;
   in aux inc_r
 
@@ -686,7 +741,7 @@ let do_makefile args =
     else if (Filename.check_suffix f ".mllib") then some_mllibfile := true
     else if (Filename.check_suffix f ".mlpack") then some_mlpackfile := true
   in
-  List.iter (fun (_,dependencies,_) ->
+  List.iter (fun (_,dependencies,_,_) ->
     List.iter check_dep (Str.split (Str.regexp "[ \t]+") dependencies)) sps;
 
   let inc = ensure_root_dir targets inc in

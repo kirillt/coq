@@ -34,7 +34,6 @@ Local Open Scope lazy_bool_scope.
 (* For nicer extraction, we create induction principles
    only when needed *)
 Local Unset Elimination Schemes.
-Local Unset Case Analysis Schemes.
 
 Module Type InfoTyp.
  Parameter t : Set.
@@ -341,7 +340,7 @@ Module Import MX := OrderedTypeFacts X.
 Scheme tree_ind := Induction for tree Sort Prop.
 Scheme bst_ind := Induction for bst Sort Prop.
 
-Local Hint Resolve MX.eq_refl MX.eq_trans MX.lt_trans @ok.
+Local Hint Resolve MX.eq_refl MX.eq_trans MX.lt_trans ok.
 Local Hint Immediate MX.eq_sym.
 Local Hint Unfold In lt_tree gt_tree.
 Local Hint Constructors InT bst.
@@ -378,7 +377,7 @@ Ltac invtree f :=
 
 Ltac inv := inv_ok; invtree InT.
 
-Ltac intuition_in := repeat progress (intuition; inv).
+Ltac intuition_in := repeat (intuition; inv).
 
 (** Helper tactic concerning order of elements. *)
 

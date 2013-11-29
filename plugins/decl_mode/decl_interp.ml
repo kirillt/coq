@@ -6,22 +6,25 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
-open Topconstr
+open Constrexpr
+open Tacintern
 open Tacinterp
-open Tacmach
 open Decl_expr
 open Decl_mode
-open Pretyping.Default
+open Pretyping
 open Glob_term
 open Term
+open Vars
 open Pp
-open Compat
+open Decl_kinds
+open Misctypes
 
 (* INTERN *)
 
-let glob_app (loc,hd,args) = if args =[] then hd else GApp(loc,hd,args)
+let glob_app (loc,hd,args) = if List.is_empty args then hd else GApp(loc,hd,args)
 
 let intern_justification_items globs =
   Option.map (List.map (intern_constr globs))
@@ -41,8 +44,7 @@ let intern_constr_or_thesis globs = function
   | This c -> This (intern_constr globs c)
 
 let add_var id globs=
-  let l1,l2=globs.ltacvars in
-    {globs with ltacvars= (id::l1),(id::l2)}
+    {globs with ltacvars = Id.Set.add id globs.ltacvars}
 
 let add_name nam globs=
  match nam with
@@ -56,7 +58,7 @@ let intern_hyp iconstr globs = function
       Hprop (intern_statement iconstr globs st)
 
 let intern_hyps iconstr globs hyps =
-  snd (list_fold_map (intern_hyp iconstr) globs hyps)
+  snd (List.fold_map (intern_hyp iconstr) globs hyps)
 
 let intern_cut intern_it globs cut=
   let nglobs,nstat=intern_it globs cut.cut_stat in
@@ -73,10 +75,10 @@ let intern_hyp_list args globs =
   let intern_one globs (loc,(id,opttyp)) =
     (add_var id globs),
     (loc,(id,Option.map (intern_constr globs) opttyp)) in
-  list_fold_map intern_one globs args
+  List.fold_map intern_one globs args
 
 let intern_suffices_clause globs (hyps,c) =
-  let nglobs,nhyps = list_fold_map (intern_hyp intern_constr) globs hyps in
+  let nglobs,nhyps = List.fold_map (intern_hyp intern_constr) globs hyps in
     nglobs,(nhyps,intern_constr_or_thesis nglobs c)
 
 let intern_fundecl args body globs=
@@ -93,10 +95,11 @@ let rec add_vars_of_simple_pattern globs = function
 	(UserError ("simple_pattern",str "\"(_ | _)\" is not allowed here"))
   | CPatDelimiters (_,_,p) ->
       add_vars_of_simple_pattern globs p
-  | CPatCstr (_,_,pl) | CPatCstrExpl (_,_,pl) ->
-      List.fold_left add_vars_of_simple_pattern globs pl
-  | CPatNotation(_,_,(pl,pll)) ->
-      List.fold_left add_vars_of_simple_pattern globs (List.flatten (pl::pll))
+  | CPatCstr (_,_,pl1,pl2) ->
+    List.fold_left add_vars_of_simple_pattern
+      (List.fold_left add_vars_of_simple_pattern globs pl1) pl2
+  | CPatNotation(_,_,(pl,pll),pl') ->
+      List.fold_left add_vars_of_simple_pattern globs (List.flatten (pl::pl'::pll))
   | CPatAtom (_,Some (Libnames.Ident (_,id))) -> add_var id globs
   |  _  -> globs
 
@@ -135,7 +138,7 @@ let rec intern_bare_proof_instr globs = function
   | Pcast (id,typ) ->
       Pcast (id,intern_constr globs typ)
 
-let rec intern_proof_instr globs instr=
+let intern_proof_instr globs instr=
   {emph = instr.emph;
    instr = intern_bare_proof_instr globs instr.instr}
 
@@ -146,7 +149,7 @@ let interp_justification_items sigma env =
 
 let interp_constr check_sort sigma env c =
   if check_sort then
-    understand_type sigma env (fst c)
+    understand sigma env ~expected_type:IsType (fst c)
   else
     understand sigma env (fst c)
 
@@ -154,14 +157,14 @@ let special_whd env =
   let infos=Closure.create_clos_infos Closure.betadeltaiota env in
     (fun t -> Closure.whd_val infos (Closure.inject t))
 
-let _eq = Libnames.constr_of_global (Coqlib.glob_eq)
+let _eq = Globnames.constr_of_global (Coqlib.glob_eq)
 
 let decompose_eq env id =
   let typ = Environ.named_type id env in
   let whd = special_whd env typ in
     match kind_of_term whd with
 	App (f,args)->
-	  if eq_constr f _eq && (Array.length args)=3
+	  if eq_constr f _eq && Int.equal (Array.length args) 3
 	  then args.(0)
 	  else error "Previous step is not an equality."
       | _ -> error "Previous step is not an equality."
@@ -171,7 +174,7 @@ let get_eq_typ info env =
     typ
 
 let interp_constr_in_type typ sigma env c =
-  understand sigma env (fst c) ~expected_type:typ
+  understand sigma env (fst c) ~expected_type:(OfType typ)
 
 let interp_statement interp_it sigma env st =
   {st_label=st.st_label;
@@ -184,16 +187,16 @@ let interp_constr_or_thesis check_sort sigma env = function
 let abstract_one_hyp inject h glob =
   match h with
       Hvar (loc,(id,None)) ->
-	GProd (dummy_loc,Name id, Explicit, GHole (loc,Evd.BinderType (Name id)), glob)
+	GProd (Loc.ghost,Name id, Explicit, GHole (loc,Evar_kinds.BinderType (Name id), None), glob)
     | Hvar (loc,(id,Some typ)) ->
-	GProd (dummy_loc,Name id, Explicit, fst typ, glob)
+	GProd (Loc.ghost,Name id, Explicit, fst typ, glob)
     | Hprop st ->
-	GProd (dummy_loc,st.st_label, Explicit, inject st.st_it, glob)
+	GProd (Loc.ghost,st.st_label, Explicit, inject st.st_it, glob)
 
 let glob_constr_of_hyps inject hyps head =
   List.fold_right (abstract_one_hyp inject) hyps head
 
-let glob_prop = GSort (dummy_loc,GProp Null)
+let glob_prop = GSort (Loc.ghost,GProp)
 
 let rec match_hyps blend names constr = function
     [] -> [],substl names constr
@@ -216,7 +219,7 @@ let interp_hyps_gen inject blend sigma env hyps head =
 
 let interp_hyps sigma env hyps = fst (interp_hyps_gen fst (fun x _ -> x) sigma env hyps glob_prop)
 
-let dummy_prefix= id_of_string "__"
+let dummy_prefix= Id.of_string "__"
 
 let rec deanonymize ids =
   function
@@ -234,34 +237,34 @@ let rec deanonymize ids =
 
 let rec glob_of_pat =
   function
-      PatVar (loc,Anonymous) -> anomaly "Anonymous pattern variable"
+      PatVar (loc,Anonymous) -> anomaly (Pp.str "Anonymous pattern variable")
     | PatVar (loc,Name id) ->
 	  GVar (loc,id)
     | PatCstr(loc,((ind,_) as cstr),lpat,_) ->
 	let mind= fst (Global.lookup_inductive ind) in
 	let rec add_params n q =
 	  if n<=0 then q else
-	    add_params (pred n) (GHole(dummy_loc,
-				       Evd.TomatchTypeParameter(ind,n))::q) in
+	    add_params (pred n) (GHole(Loc.ghost,
+				       Evar_kinds.TomatchTypeParameter(ind,n), None)::q) in
 	    let args = List.map glob_of_pat lpat in
-	      glob_app(loc,GRef(dummy_loc,Libnames.ConstructRef cstr),
+	      glob_app(loc,GRef(Loc.ghost,Globnames.ConstructRef cstr),
 		   add_params mind.Declarations.mind_nparams args)
 
 let prod_one_hyp = function
     (loc,(id,None)) ->
       (fun glob ->
-	 GProd (dummy_loc,Name id, Explicit,
-		GHole (loc,Evd.BinderType (Name id)), glob))
+	 GProd (Loc.ghost,Name id, Explicit,
+		GHole (loc,Evar_kinds.BinderType (Name id), None), glob))
   | (loc,(id,Some typ)) ->
       (fun glob ->
-	 GProd (dummy_loc,Name id, Explicit, fst typ, glob))
+	 GProd (Loc.ghost,Name id, Explicit, fst typ, glob))
 
 let prod_one_id (loc,id) glob =
-  GProd (dummy_loc,Name id, Explicit,
-	 GHole (loc,Evd.BinderType (Name id)), glob)
+  GProd (Loc.ghost,Name id, Explicit,
+	 GHole (loc,Evar_kinds.BinderType (Name id), None), glob)
 
 let let_in_one_alias (id,pat) glob =
-  GLetIn (dummy_loc,Name id, glob_of_pat pat, glob)
+  GLetIn (Loc.ghost,Name id, glob_of_pat pat, glob)
 
 let rec bind_primary_aliases map pat =
   match pat with
@@ -275,7 +278,7 @@ let rec bind_primary_aliases map pat =
 	  List.fold_left bind_primary_aliases map1 lpat
 
 let bind_secondary_aliases map subst =
-  List.fold_left (fun map (ids,idp) -> (ids,List.assoc idp map)::map) map subst
+  Id.Map.fold (fun ids idp map -> (ids,Id.List.assoc idp map)::map) subst map
 
 let bind_aliases patvars subst patt =
   let map = bind_primary_aliases [] patt in
@@ -285,10 +288,10 @@ let bind_aliases patvars subst patt =
 let interp_pattern env pat_expr =
   let patvars,pats = Constrintern.intern_pattern env pat_expr in
     match pats with
-	[] -> anomaly "empty pattern list"
+	[] -> anomaly (Pp.str "empty pattern list")
       | [subst,patt] ->
 	  (patvars,bind_aliases patvars subst patt,patt)
-      | _  -> anomaly "undetected disjunctive pattern"
+      | _  -> anomaly (Pp.str "undetected disjunctive pattern")
 
 let rec match_args dest names constr = function
     [] -> [],names,substl names constr
@@ -325,31 +328,31 @@ let interp_cases info sigma env params (pat:cases_pattern_expr) hyps =
   let num_params = pinfo.per_nparams in
   let _ =
     let expected = mib.Declarations.mind_nparams - num_params in
-      if List.length params <> expected then
+      if not (Int.equal (List.length params) expected) then
 	errorlabstrm "suppose it is" 
 	  (str "Wrong number of extra arguments: " ++ 
-	     (if expected = 0 then str "none" else int expected) ++ spc () ++
+	     (if Int.equal expected 0 then str "none" else int expected) ++ spc () ++
 	     str "expected.") in
   let app_ind =
-    let rind = GRef (dummy_loc,Libnames.IndRef pinfo.per_ind) in
+    let rind = GRef (Loc.ghost,Globnames.IndRef pinfo.per_ind) in
     let rparams = List.map detype_ground pinfo.per_params in
     let rparams_rec =
       List.map
 	(fun (loc,(id,_)) ->
 	   GVar (loc,id)) params in
     let dum_args=
-      list_tabulate (fun _ -> GHole (dummy_loc,Evd.QuestionMark (Evd.Define false)))
-	oib.Declarations.mind_nrealargs in
-      glob_app(dummy_loc,rind,rparams@rparams_rec@dum_args) in
+      List.init oib.Declarations.mind_nrealargs
+	(fun _ -> GHole (Loc.ghost,Evar_kinds.QuestionMark (Evar_kinds.Define false),None)) in
+      glob_app(Loc.ghost,rind,rparams@rparams_rec@dum_args) in
   let pat_vars,aliases,patt = interp_pattern env pat in
   let inject = function
-      Thesis (Plain) -> Glob_term.GSort(dummy_loc,GProp Null)
+      Thesis (Plain) -> Glob_term.GSort(Loc.ghost,GProp)
     | Thesis (For rec_occ) ->
-	if not (List.mem rec_occ pat_vars) then
+	if not (Id.List.mem rec_occ pat_vars) then
 	  errorlabstrm "suppose it is"
 	    (str "Variable " ++ Nameops.pr_id rec_occ ++
 	       str " does not occur in pattern.");
-	Glob_term.GSort(dummy_loc,GProp Null)
+	Glob_term.GSort(Loc.ghost,GProp)
     | This (c,_) -> c in
   let term1 = glob_constr_of_hyps inject hyps glob_prop in
   let loc_ids,npatt =
@@ -357,9 +360,9 @@ let interp_cases info sigma env params (pat:cases_pattern_expr) hyps =
     let npatt= deanonymize rids patt in
       List.rev (fst !rids),npatt in
   let term2 =
-    GLetIn(dummy_loc,Anonymous,
-	   GCast(dummy_loc,glob_of_pat npatt,
-		 CastConv (DEFAULTcast,app_ind)),term1) in
+    GLetIn(Loc.ghost,Anonymous,
+	   GCast(Loc.ghost,glob_of_pat npatt,
+		 CastConv app_ind),term1) in
   let term3=List.fold_right let_in_one_alias aliases term2 in
   let term4=List.fold_right prod_one_id loc_ids term3 in
   let term5=List.fold_right prod_one_hyp params term4 in
@@ -413,11 +416,11 @@ let interp_casee sigma env = function
 let abstract_one_arg = function
     (loc,(id,None)) ->
       (fun glob ->
-	 GLambda (dummy_loc,Name id, Explicit,
-		GHole (loc,Evd.BinderType (Name id)), glob))
+	 GLambda (Loc.ghost,Name id, Explicit,
+		GHole (loc,Evar_kinds.BinderType (Name id),None), glob))
   | (loc,(id,Some typ)) ->
       (fun glob ->
-	 GLambda (dummy_loc,Name id, Explicit, fst typ, glob))
+	 GLambda (Loc.ghost,Name id, Explicit, fst typ, glob))
 
 let glob_constr_of_fun args body =
   List.fold_right abstract_one_arg args (fst body)
@@ -463,7 +466,7 @@ let rec interp_bare_proof_instr info (sigma:Evd.evar_map) (env:Environ.env) = fu
   | Pcast (id,typ) ->
       Pcast(id,interp_constr true sigma env typ)
 
-let rec interp_proof_instr info sigma env instr=
+let interp_proof_instr info sigma env instr=
   {emph = instr.emph;
    instr = interp_bare_proof_instr info sigma env instr.instr}
 

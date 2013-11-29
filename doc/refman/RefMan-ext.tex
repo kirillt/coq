@@ -267,10 +267,10 @@ available. The command to activate it is
 The corresponding grammar rules are given Figure~\ref{fig:projsyntax}.
 When {\qualid} denotes a projection, the syntax {\tt
   {\term}.({\qualid})} is equivalent to {\qualid~\term}, the syntax
-{\tt {\term}.({\qualid}~{\termarg}$_1$~ \ldots~ {\termarg}$_n$)} to
-{\qualid~{\termarg}$_1$ \ldots {\termarg}$_n$~\term}, and the syntax
-{\tt {\term}.(@{\qualid}~{\term}$_1$~\ldots~{\term}$_n$)} to
-{@\qualid~{\term}$_1$ \ldots {\term}$_n$~\term}. In each case, {\term}
+{\term}{\tt .(}{\qualid}~{\termarg}$_1$ {\ldots} {\termarg}$_n${\tt )} to
+{\qualid~{\termarg}$_1$ {\ldots} {\termarg}$_n$~\term}, and the syntax
+{\term}{\tt .(@}{\qualid}~{\term}$_1$~\ldots~{\term}$_n${\tt )} to
+{@\qualid~{\term}$_1$ {\ldots} {\term}$_n$~\term}. In each case, {\term}
 is the object projected and the other arguments are the parameters of
 the inductive type.
 
@@ -417,9 +417,9 @@ patterns to do the deconstruction. For example:
 \begin{coq_example}
 Definition deep_tuple (A:Set) (x:(A*A)*(A*A)) : A*A*A*A :=
   let '((a,b), (c, d)) := x in (a,b,c,d).
-Notation " x 'with' p " := (exist _ x p) (at level 20).
+Notation " x 'With' p " := (exist _ x p) (at level 20).
 Definition proj1_sig' (A:Set) (P:A->Prop) (t:{ x:A | P x }) : A :=
-  let 'x with p := t in x.
+  let 'x With p := t in x.
 \end{coq_example}
 
 When printing definitions which are written using this construct it
@@ -994,7 +994,8 @@ declaration is added to the context. An absolute name is called {\it
 visible} from a given short or partially qualified name when this
 latter name is enough to denote it. This means that the short or
 partially qualified name is mapped to the absolute name in {\Coq} name
-table.
+table. Definitions flagged as {\tt Local} are only accessible with their
+fully qualified name (see \ref{Definition}).
 
 A similar table exists for library file names. It is updated by the
 vernacular commands {\tt Add LoadPath} and {\tt Add Rec LoadPath} (or

@@ -311,7 +311,7 @@ called \CIC). The formal presentation of {\CIC} is given in Chapter
 {\annotation} & ::= & {\tt \{ struct} {\ident} {\tt \}} \\ 
 &&\\
 {\caseitem} & ::= & {\term} \zeroone{{\tt as} \name}
-     \zeroone{{\tt in} \term} \\
+     \zeroone{{\tt in} \pattern} \\
 &&\\
 {\ifitem} & ::= & \zeroone{{\tt as} {\name}} {\returntype} \\
 &&\\
@@ -322,6 +322,8 @@ called \CIC). The formal presentation of {\CIC} is given in Chapter
 {\multpattern} & ::= & \nelist{\pattern}{\tt ,}\\
 &&\\
 {\pattern} & ::= & {\qualid} \nelist{\pattern}{}  \\
+ & $|$ & {\tt @} {\qualid} \sequence{\pattern}{} \\
+
  & $|$ & {\pattern} {\tt as} {\ident}             \\
  & $|$ & {\pattern} {\tt \%} {\ident}         \\
  & $|$ & {\qualid}                              \\
@@ -396,13 +398,6 @@ subclass of the syntactic class {\term}.
 \end{itemize}
 \noindent More on sorts can be found in Section~\ref{Sorts}.
 
-\bigskip
-
-{\Coq} terms are typed. {\Coq} types are recognized by the same
-syntactic class as {\term}. We denote by {\type} the semantic subclass
-of types inside the syntactic class {\term}.
-\index{type@{\type}}
-
 \subsection{Binders
 \label{Binders}
 \index{binders}}
@@ -451,7 +446,7 @@ expression ``{\tt fun}~{\ident$_{1}$}~{\ldots}~{\ident$_{n}$}~{\tt
 :}~\type~{\tt =>}~{\term}'' denotes the same function as ``{\tt
 fun}~{\ident$_{1}$}~{\tt :}~\type~{\tt =>}~{\ldots}~{\tt
 fun}~{\ident$_{n}$}~{\tt :}~\type~{\tt =>}~{\term}''. If a let-binder
-occurs in the list of binders, it is expanded to a local definition
+occurs in the list of binders, it is expanded to a let-in definition
 (see Section~\ref{let-in}).
 
 \subsection{Products
@@ -513,16 +508,16 @@ Expressions often contain redundant pieces of information. Subterms that
 can be automatically inferred by {\Coq} can be replaced by the
 symbol ``\_'' and {\Coq} will guess the missing piece of information.
 
-\subsection{Local definitions (let-in)
+\subsection{Let-in definitions
 \label{let-in}
-\index{Local definitions}
+\index{Let-in definitions}
 \index{let-in}}
 
 
 {\tt let}~{\ident}~{\tt :=}~{\term$_1$}~{\tt in}~{\term$_2$} denotes
 the local binding of \term$_1$ to the variable $\ident$ in
 \term$_2$. 
-There is a syntactic sugar for local definition of functions: {\tt
+There is a syntactic sugar for let-in definition of functions: {\tt
 let} {\ident} {\binder$_1$} {\ldots} {\binder$_n$} {\tt :=} {\term$_1$}
 {\tt in} {\term$_2$} stands for {\tt let} {\ident} {\tt := fun}
 {\binder$_1$} {\ldots} {\binder$_n$} {\tt =>} {\term$_1$} {\tt in}
@@ -703,7 +698,7 @@ definition have a special syntax: ``{\tt let fix}~$f$~{\ldots}~{\tt
 &&\\
 %% Definitions
 {\definition} & ::= & 
-         {\tt Definition} {\ident} \zeroone{\binders} {\typecstr} {\tt :=} {\term} {\tt .} \\
+         \zeroone{\tt Local} {\tt Definition} {\ident} \zeroone{\binders} {\typecstr} {\tt :=} {\term} {\tt .} \\
  & $|$ & {\tt Let} {\ident} \zeroone{\binders} {\typecstr} {\tt :=} {\term} {\tt .} \\
 &&\\
 %% Inductives
@@ -777,13 +772,13 @@ a postulate.
   {\tt Parameter {\ident} :{\term}.} \\
   Is equivalent to {\tt Axiom {\ident} : {\term}}
 
-\item {\tt Parameter {\ident$_1$}\ldots{\ident$_n$} {\tt :}{\term}.}\\
+\item {\tt Parameter {\ident$_1$} {\ldots} {\ident$_n$} {\tt :}{\term}.}\\
   Adds $n$ parameters with specification {\term}
 
 \item
  {\tt Parameter\,%
-(\,{\ident$_{1,1}$}\ldots{\ident$_{1,k_1}$}\,{\tt :}\,{\term$_1$} {\tt )}\,%
-\ldots\,{\tt (}\,{\ident$_{n,1}$}\ldots{\ident$_{n,k_n}$}\,{\tt :}\,%
+(\,{\ident$_{1,1}$} {\ldots} {\ident$_{1,k_1}$}\,{\tt :}\,{\term$_1$} {\tt )}\;%
+\ldots\;{\tt (}\,{\ident$_{n,1}$}{\ldots}{\ident$_{n,k_n}$}\,{\tt :}\,%
 {\term$_n$} {\tt )}.}\\ 
   Adds $n$ blocks of parameters with different specifications.
 
@@ -813,12 +808,12 @@ Variable} command out of any section is equivalent to using {\tt Parameter}.
 \end{ErrMsgs}
 
 \begin{Variants}
-\item {\tt Variable {\ident$_1$}\ldots{\ident$_n$} {\tt :}{\term}.}\\
-  Links {\term} to names {\ident$_1$}\ldots{\ident$_n$}.
+\item {\tt Variable {\ident$_1$} {\ldots} {\ident$_n$} {\tt :}{\term}.}\\
+  Links {\term} to names {\ident$_1$} {\ldots} {\ident$_n$}.
 \item
  {\tt Variable\,%
-(\,{\ident$_{1,1}$}\ldots{\ident$_{1,k_1}$}\,{\tt :}\,{\term$_1$} {\tt )}\,%
-\ldots\,{\tt (}\,{\ident$_{n,1}$}\ldots{\ident$_{n,k_n}$}\,{\tt :}\,%
+(\,{\ident$_{1,1}$} {\ldots} {\ident$_{1,k_1}$}\,{\tt :}\,{\term$_1$} {\tt )}\;%
+\ldots\;{\tt (}\,{\ident$_{n,1}$} {\ldots}{\ident$_{n,k_n}$}\,{\tt :}\,%
 {\term$_n$} {\tt )}.}\\ 
   Adds $n$ blocks of variables with different specifications.
 \item \comindex{Hypothesis}
@@ -871,22 +866,27 @@ environment, provided that {\term} is well-typed.
 \end{ErrMsgs}
 
 \begin{Variants}
-\item {\tt Definition {\ident} {\tt :}{\term$_1$} := {\term$_2$}.}\\
+\item {\tt Definition} {\ident} {\tt :} {\term$_1$} {\tt :=} {\term$_2$}{\tt .}\\
   It checks that the type of {\term$_2$} is definitionally equal to
   {\term$_1$}, and registers {\ident} as being of type {\term$_1$},
   and bound to value {\term$_2$}.
-\item {\tt Definition {\ident} {\binder$_1$}\ldots{\binder$_n$}
-       {\tt :}\term$_1$ {\tt :=} {\term$_2$}.}\\
+\item {\tt Definition} {\ident} {\binder$_1$} {\ldots} {\binder$_n$}
+       {\tt :} \term$_1$ {\tt :=} {\term$_2$}{\tt .}\\
   This is equivalent to \\
-   {\tt Definition\,{\ident}\,{\tt :\,forall}\,%
-       {\binder$_1$}\ldots{\binder$_n$}{\tt ,}\,\term$_1$\,{\tt :=}}\,%
-       {\tt fun}\,{\binder$_1$}\ldots{\binder$_n$}\,{\tt =>}\,{\term$_2$}\,%
+   {\tt Definition} {\ident} {\tt : forall}%
+       {\binder$_1$} {\ldots} {\binder$_n$}{\tt ,}\,\term$_1$\,{\tt :=}\,%
+       {\tt fun}\,{\binder$_1$} {\ldots} {\binder$_n$}\,{\tt =>}\,{\term$_2$}\,%
        {\tt .}
 
+\item {\tt Local Definition} {\ident} := {\term}\\
+\comindex{Local Definition}
+  Such definitions are never made accessible through their unqualified name by
+  {\tt Import} and its variants (see \ref{Import}). You have to explicitly
+  give their fully qualified name to refer to them.
 \item {\tt Example {\ident} := {\term}.}\\
-{\tt Example {\ident} {\tt :}{\term$_1$} := {\term$_2$}.}\\
-{\tt Example {\ident} {\binder$_1$}\ldots{\binder$_n$}
-       {\tt :}\term$_1$ {\tt :=} {\term$_2$}.}\\
+{\tt Example} {\ident} {\tt :} {\term$_1$} {\tt :=} {\term$_2$}{\tt .}\\
+{\tt Example} {\ident} {\binder$_1$} {\ldots} {\binder$_n$}
+       {\tt :} {\term$_1$} {\tt :=} {\term$_2$}{\tt .}\\
 \comindex{Example}
 These are synonyms of the {\tt Definition} forms.
 \end{Variants}
@@ -904,7 +904,7 @@ This command binds the value {\term} to the name {\ident} in the
 environment of the current section. The name {\ident} disappears
 when the current section is eventually closed, and, all
 persistent objects (such as theorems) defined within the
-section and depending on {\ident} are prefixed by the local definition
+section and depending on {\ident} are prefixed by the let-in definition
 {\tt let {\ident} := {\term} in}.
 
 \begin{ErrMsgs}
@@ -913,6 +913,8 @@ section and depending on {\ident} are prefixed by the local definition
 
 \begin{Variants}
 \item {\tt Let {\ident} : {\term$_1$} := {\term$_2$}.}
+\item {\tt Let Fixpoint {\ident} \nelist{\fixpointbody}{with} {\tt .}.}
+\item {\tt Let CoFixpoint {\ident} \nelist{\cofixpointbody}{with} {\tt .}.}
 \end{Variants}
 
 \SeeAlso Sections \ref{Section} (section mechanism), \ref{Opaque},
@@ -937,16 +939,14 @@ mutually inductive types. We explain also co-inductive types.
 The definition of a simple inductive type has the following form:
 
 \medskip
-{\tt 
 \begin{tabular}{l}
-Inductive {\ident} : {\sort} :=  \\
+{\tt Inductive} {\ident} {\tt :} {\sort} {\tt :=} \\
 \begin{tabular}{clcl}
-   & {\ident$_1$}  &:& {\type$_1$} \\
- | & {\ldots} && \\
- | & {\ident$_n$} &:& {\type$_n$}
+         & {\ident$_1$} & {\tt :} & {\type$_1$} \\
+ {\tt |} & {\ldots} && \\
+ {\tt |} & {\ident$_n$} & {\tt :} & {\type$_n$} \\
 \end{tabular}
 \end{tabular}
-}
 \medskip
 
 The name {\ident} is the name of the inductively defined type and
@@ -1189,24 +1189,22 @@ this reason, the parameters must be strictly the same for each
 inductive types The extended syntax is:
 
 \medskip
-{\tt 
 \begin{tabular}{l}
-Inductive {\ident$_1$} {\params} : {\type$_1$} :=  \\
+{\tt Inductive} {\ident$_1$} {\params} {\tt :} {\type$_1$} {\tt :=}  \\
 \begin{tabular}{clcl}
-   & {\ident$_1^1$}     &:& {\type$_1^1$} \\
- | & {\ldots} && \\
- | & {\ident$_{n_1}^1$} &:& {\type$_{n_1}^1$}
+         & {\ident$_1^1$}    &{\tt :}& {\type$_1^1$} \\
+ {\tt |} & {\ldots} && \\
+ {\tt |} & {\ident$_{n_1}^1$} &{\tt :}& {\type$_{n_1}^1$}
 \end{tabular}  \\
-with\\
+{\tt with}\\
 ~{\ldots} \\
-with {\ident$_m$} {\params} : {\type$_m$} := \\
+{\tt with} {\ident$_m$} {\params} {\tt :} {\type$_m$} {\tt :=} \\
 \begin{tabular}{clcl}
-   & {\ident$_1^m$}     &:& {\type$_1^m$} \\
- | & {\ldots} \\
- | & {\ident$_{n_m}^m$} &:& {\type$_{n_m}^m$}.
+         & {\ident$_1^m$}    &{\tt :}& {\type$_1^m$} \\
+ {\tt |} & {\ldots} \\
+ {\tt |} & {\ident$_{n_m}^m$} &{\tt :}& {\type$_{n_m}^m$}.
 \end{tabular}
 \end{tabular}
-}
 \medskip
 
 \Example
@@ -1438,9 +1436,9 @@ to define functions over mutually defined inductive types or more
 generally any mutually recursive definitions.
 
 \begin{Variants}
-\item {\tt Fixpoint {\ident$_1$} {\params$_1$} :{\type$_1$} := {\term$_1$}\\
-        with {\ldots} \\
-        with {\ident$_m$} {\params$_m$} :{\type$_m$} :=  {\term$_m$}}\\
+\item {\tt Fixpoint} {\ident$_1$} {\params$_1$} {\tt :} {\type$_1$} {\tt :=} {\term$_1$}\\
+        {\tt with} {\ldots} \\
+        {\tt with} {\ident$_m$} {\params$_m$} {\tt :} {\type$_m$} {\tt :=} {\term$_m$}\\
         Allows to define simultaneously {\ident$_1$}, {\ldots},
         {\ident$_m$}.
 \end{Variants}
@@ -1535,10 +1533,10 @@ Eval compute in (tl (from 0)).
 \item{\tt CoFixpoint {\ident$_1$} {\params} :{\type$_1$} :=
   {\term$_1$}}\\ As for most constructions, arguments of co-fixpoints
   expressions can be introduced before the {\tt :=} sign.
-\item{\tt CoFixpoint {\ident$_1$} :{\type$_1$} := {\term$_1$}\\
-     with\\
-        \mbox{}\hspace{0.1cm} $\ldots$  \\
-        with {\ident$_m$}   : {\type$_m$} := {\term$_m$}}\\
+\item{\tt CoFixpoint} {\ident$_1$} {\tt :} {\type$_1$} {\tt :=} {\term$_1$}\\
+     {\tt with}\\
+        \mbox{}\hspace{0.1cm} {\ldots} \\
+        {\tt with} {\ident$_m$} {\tt :} {\type$_m$} {\tt :=} {\term$_m$}\\
 As in the \texttt{Fixpoint} command (see Section~\ref{Fixpoint}), it
 is possible to introduce a block of mutually dependent methods.
 \end{Variants}
@@ -1625,7 +1623,7 @@ and {\tt Transparent}) and~\ref{unfold} (tactic {\tt unfold}).
 \item {\tt Let {\ident} \zeroone{\binders} : {\type}.}
 
 Like {\tt Definition {\ident} \zeroone{\binders} : {\type}.} except
-that the definition is turned into a local definition generalized over
+that the definition is turned into a let-in definition generalized over
 the declarations depending on it after closing the current section.
 
 \item {\tt Fixpoint \nelist{{\ident} {\binders} \zeroone{\annotation} {\typecstr} \zeroone{{\tt :=} {\term}}}{with}.}

@@ -20,7 +20,7 @@
 
 open Printf
 
-type xml = 
+type xml = Xml_datatype.xml =
         | Element of (string * (string * string) list * xml list)
         | PCData of string
 
@@ -42,7 +42,7 @@ type error_msg =
         | AttributeValueExpected
         | EndOfTagExpected of string
         | EOFExpected
-	| Empty
+        | Empty
 
 type error = error_msg * error_pos
 
@@ -51,21 +51,16 @@ exception Error of error
 exception File_not_found of string
 
 type t = {
-	mutable check_eof : bool;
-	mutable concat_pcdata : bool;
+  mutable check_eof : bool;
+  mutable concat_pcdata : bool;
+  source : Lexing.lexbuf;
+  stack : Xml_lexer.token Stack.t;
 }
 
-type source = 
-	| SFile of string
-	| SChannel of in_channel
-	| SString of string
-	| SLexbuf of Lexing.lexbuf
-
-type state = {
-	source : Lexing.lexbuf;
-	stack : Xml_lexer.token Stack.t;
-	xparser : t;
-}
+type source =
+| SChannel of in_channel
+| SString of string
+| SLexbuf of Lexing.lexbuf
 
 exception Internal_error of error_msg
 exception NoMoreData
@@ -89,14 +84,21 @@ let _raises e f =
 	xml_error := e;
 	file_not_found := f
 
-let make () =
-	{
-		check_eof = true;
-		concat_pcdata = true;
-	}
+let make source =
+  let source = match source with
+  | SChannel chan -> Lexing.from_channel chan
+  | SString s -> Lexing.from_string s
+  | SLexbuf lexbuf -> lexbuf
+  in
+  let () = Xml_lexer.init source in
+  {
+    check_eof = false;
+    concat_pcdata = true;
+    source = source;
+    stack = Stack.create ();
+  }
 
 let check_eof p v = p.check_eof <- v
-let concat_pcdata p v = p.concat_pcdata <- v
 
 let pop s =
 	try
@@ -159,41 +161,27 @@ let convert = function
 	| Xml_lexer.EAttributeValueExpected -> AttributeValueExpected
 	| Xml_lexer.EUnterminatedEntity -> 	UnterminatedEntity
 
-let error_of_exn stk = function
-  | NoMoreData when Stack.pop stk = Xml_lexer.Eof -> Empty
+let error_of_exn xparser = function
+  | NoMoreData when pop xparser = Xml_lexer.Eof -> Empty
   | NoMoreData -> NodeExpected
   | Internal_error e -> e
   | Xml_lexer.Error e -> convert e
-  | e -> raise e
+  | e ->
+    (*let e = Errors.push e in: We do not record backtrace here. *)
+    raise e
 
-let do_parse xparser source =
-        let stk = Stack.create() in
+let do_parse xparser =
 	try
-		Xml_lexer.init source;
-		let s = { source = source; xparser = xparser; stack = stk } in
-		let x = read_xml s in
-		if xparser.check_eof && pop s <> Xml_lexer.Eof then raise (Internal_error EOFExpected);
-		Xml_lexer.close source;
+		Xml_lexer.init xparser.source;
+		let x = read_xml xparser in
+		if xparser.check_eof && pop xparser <> Xml_lexer.Eof then raise (Internal_error EOFExpected);
+		Xml_lexer.close ();
 		x
-	with e when e <> Sys.Break ->
-	  Xml_lexer.close source;
-	  raise (!xml_error (error_of_exn stk e) source)
+	with any ->
+	  Xml_lexer.close ();
+	  raise (!xml_error (error_of_exn xparser any) xparser.source)
 
-let parse p = function
-	| SChannel ch -> do_parse p (Lexing.from_channel ch)
-	| SString str -> do_parse p (Lexing.from_string str)
-	| SLexbuf lex -> do_parse p lex
-	| SFile fname ->
-		let ch = (try open_in fname with Sys_error _ -> raise (!file_not_found fname)) in
-		try
-			let x = do_parse p (Lexing.from_channel ch) in
-			close_in ch;
-			x
-		with
-			reraise ->
-				close_in ch;
-				raise reraise
-
+let parse p = do_parse p
 
 let error_msg = function
         | UnterminatedComment -> "Unterminated comment"

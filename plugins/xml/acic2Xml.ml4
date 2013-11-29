@@ -21,12 +21,12 @@ let typesdtdname = "http://mowgli.cs.unibo.it/dtd/cictypes.dtd";;
 
 let rec find_last_id =
  function
-    [] -> Util.anomaly "find_last_id: empty list"
+    [] -> Errors.anomaly ~label:"find_last_id" (Pp.str "empty list")
   | [id,_,_] -> id
   | _::tl -> find_last_id tl
 ;;
 
-let export_existential = string_of_int
+let export_existential ev = string_of_int (Evar.repr ev)
 
 let print_term ids_to_inner_sorts =
  let rec aux =
@@ -37,7 +37,7 @@ let print_term ids_to_inner_sorts =
        A.ARel (id,n,idref,b) ->
         let sort = Hashtbl.find ids_to_inner_sorts id in
          X.xml_empty "REL"
-          ["value",(string_of_int n) ; "binder",(N.string_of_id b) ;
+          ["value",(string_of_int n) ; "binder",(N.Id.to_string b) ;
            "id",id ; "idref",idref; "sort",sort]
      | A.AVar (id,uri) ->
         let sort = Hashtbl.find ids_to_inner_sorts id in
@@ -71,7 +71,7 @@ let print_term ids_to_inner_sorts =
                   ("id",id)::("type",sort)::
                   match binder with
                      Names.Anonymous -> []
-                   | Names.Name b -> ["binder",Names.string_of_id b]
+                   | Names.Name b -> ["binder",Names.Id.to_string b]
                  in
                   [< X.xml_nempty "decl" attrs (aux s) ; i >]
               ) [< >] prods ;
@@ -96,7 +96,7 @@ let print_term ids_to_inner_sorts =
                   ("id",id)::("type",sort)::
                   match binder with
                      Names.Anonymous -> []
-                   | Names.Name b -> ["binder",Names.string_of_id b]
+                   | Names.Name b -> ["binder",Names.Id.to_string b]
                  in
                   [< X.xml_nempty "decl" attrs (aux s) ; i >]
               ) [< >] lambdas ;
@@ -115,7 +115,7 @@ let print_term ids_to_inner_sorts =
                   ("id",id)::("sort",sort)::
                   match binder with
                      Names.Anonymous -> assert false
-                   | Names.Name b -> ["binder",Names.string_of_id b]
+                   | Names.Name b -> ["binder",Names.Id.to_string b]
                  in
                   [< X.xml_nempty "def" attrs (aux s) ; i >]
               ) [< >] letins ;
@@ -161,7 +161,7 @@ let print_term ids_to_inner_sorts =
               (fun i (id,fi,ai,ti,bi) ->
                 [< i ;
                    X.xml_nempty "FixFunction"
-                    ["id",id ; "name", (Names.string_of_id fi) ;
+                    ["id",id ; "name", (Names.Id.to_string fi) ;
                      "recIndex", (string_of_int ai)]
                     [< X.xml_nempty "type" [] [< aux ti >] ;
                        X.xml_nempty "body" [] [< aux bi >]
@@ -177,7 +177,7 @@ let print_term ids_to_inner_sorts =
               (fun i (id,fi,ti,bi) ->
                 [< i ;
                    X.xml_nempty "CofixFunction"
-                    ["id",id ; "name", Names.string_of_id fi]
+                    ["id",id ; "name", Names.Id.to_string fi]
                     [< X.xml_nempty "type" [] [< aux ti >] ;
                        X.xml_nempty "body" [] [< aux bi >]
                     >]
@@ -210,7 +210,7 @@ let param_attribute_of_params params =
 ;;
 
 let print_object uri ids_to_inner_sorts =
- let rec aux =
+ let aux =
   let module A = Acic in
   let module X = Xml in
     function
@@ -229,11 +229,11 @@ let print_object uri ids_to_inner_sorts =
                           [< (match t with
                                 n,A.Decl t ->
                                  X.xml_nempty "Decl"
-                                  ["id",hid;"name",Names.string_of_id n]
+                                  ["id",hid;"name",Names.Id.to_string n]
                                   (print_term ids_to_inner_sorts t)
                               | n,A.Def (t,_) ->
                                  X.xml_nempty "Def"
-                                  ["id",hid;"name",Names.string_of_id n]
+                                  ["id",hid;"name",Names.Id.to_string n]
                                   (print_term ids_to_inner_sorts t)
                              ) ;
                              i
@@ -315,7 +315,7 @@ let print_object uri ids_to_inner_sorts =
                   (fun i (id,typename,finite,arity,cons) ->
                     [< i ;
                        X.xml_nempty "InductiveType"
-                        ["id",id ; "name",Names.string_of_id typename ;
+                        ["id",id ; "name",Names.Id.to_string typename ;
                          "inductive",(string_of_bool finite)
                         ]
                         [< X.xml_nempty "arity" []
@@ -324,7 +324,7 @@ let print_object uri ids_to_inner_sorts =
                             (fun i (name,lc) ->
                               [< i ;
                                  X.xml_nempty "Constructor"
-                                  ["name",Names.string_of_id name]
+                                  ["name",Names.Id.to_string name]
                                   (print_term ids_to_inner_sorts lc)
                               >]) [<>] cons
                            )

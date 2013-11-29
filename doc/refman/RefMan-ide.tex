@@ -147,16 +147,16 @@ arguments.
 
 
 We call \emph{query} any vernacular command that do not change the
-current state, such as \verb|Check|, \verb|SearchAbout|, etc. Those
+current state, such as \verb|Check|, \verb|Search|, etc. Those
 commands are of course useless during compilation of a file, hence
 should not be included in scripts. To run such commands without
 writing them in the script, \CoqIDE{} offers another input window
 called the \emph{query window}. This window can be displayed on
 demand, either by using the \texttt{Window} menu, or directly using
 shortcuts given in the \texttt{Queries} menu. Indeed, with \CoqIDE{}
-the simplest way to perform a \texttt{SearchAbout} on some identifier
+the simplest way to perform a \texttt{Search} on some identifier
 is to select it using the mouse, and pressing \verb|F2|. This will
-both make appear the query window and run the \texttt{SearchAbout} in
+both make appear the query window and run the \texttt{Search} in
 it, displaying the result. Shortcuts \verb|F3| and \verb|F4| are for
 \verb|Check| and \verb|Print| respectively.
 Figure~\ref{fig:querywindow} displays the query window after selection
@@ -209,21 +209,11 @@ Notice that these settings are saved in the file \verb|.coqiderc| of
 your home directory. 
 
 A gtk2 accelerator keymap is saved under the name \verb|.coqide.keys|.
-This file should not be edited manually: to modify a given menu
+It is not recommanded to edit this file manually: to modify a given menu
 shortcut, go to the corresponding menu item without releasing the
 mouse button, press the key you want for the new shortcut, and release
-the mouse button afterwards.
-
-For experts: it is also possible to set up a specific gtk resource
-file, under the name \verb|.coqide-gtk2rc|, following the gtk2
-resources syntax
-\url{http://developer.gnome.org/doc/API/2.0/gtk/gtk-Resource-Files.html}.
-Such a default resource file can be found in the subdirectory
-\verb=lib/coq/ide= of the root installation directory of \Coq{}
-(alternatively, it can be found in the subdirectory \verb=ide= of the
-source archive of \Coq{}). You may
-copy this file into your home directory, and edit it using any text
-editor, \CoqIDE{} itself for example.
+the mouse button afterwards. If your system does not allow it, you may still 
+edit this configuration file by hand, but this is more involved.
 
 \section{Using unicode symbols}
 

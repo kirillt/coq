@@ -6,23 +6,21 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-(*i camlp4deps: "parsing/grammar.cma" i*)
+(*i camlp4deps: "grammar/grammar.cma" i*)
 
 open Pp
+open Errors
 open Util
 open Names
 open Term
+open Vars
 open Closure
 open Environ
 open Libnames
-open Tactics
+open Globnames
 open Glob_term
 open Tacticals
 open Tacexpr
-open Pcoq
-open Tactic
-open Constr
-open Proof_type
 open Coqlib
 open Tacmach
 open Mod_subst
@@ -32,14 +30,18 @@ open Printer
 open Declare
 open Decl_kinds
 open Entries
+open Misctypes
 
 (****************************************************************************)
 (* controlled reduction *)
 
-let mark_arg i c = mkEvar(i,[|c|])
+(** ppedrot: something dubious here, we're obviously using evars the wrong
+    way. FIXME! *)
+
+let mark_arg i c = mkEvar(Evar.unsafe_of_int i,[|c|])
 let unmark_arg f c =
   match destEvar c with
-    | (i,[|c|]) -> f i c
+    | (i,[|c|]) -> f (Evar.repr i) c
     | _ -> assert false
 
 type protect_flag = Eval|Prot|Rec
@@ -48,7 +50,7 @@ let tag_arg tag_rec map subs i c =
   match map i with
       Eval -> mk_clos subs c
     | Prot -> mk_atom c
-    | Rec -> if i = -1 then mk_clos subs c else tag_rec c
+    | Rec -> if Int.equal i (-1) then mk_clos subs c else tag_rec c
 
 let rec mk_clos_but f_map subs t =
   match f_map t with
@@ -62,7 +64,7 @@ let rec mk_clos_but f_map subs t =
 and mk_clos_app_but f_map subs f args n =
   if n >= Array.length args then mk_atom(mkApp(f, args))
   else
-    let fargs, args' = array_chop n args in
+    let fargs, args' = Array.chop n args in
     let f' = mkApp(f,fargs) in
     match f_map f' with
         Some map ->
@@ -72,24 +74,13 @@ and mk_clos_app_but f_map subs f args n =
             (mkApp (mark_arg (-1) f', Array.mapi mark_arg args'))
       | None -> mk_clos_app_but f_map subs f args (n+1)
 
-
-let interp_map l c =
-  try
-    let (im,am) = List.assoc c l in
-    Some(fun i ->
-      if List.mem i im then Eval
-      else if List.mem i am then Prot
-      else if i = -1 then Eval
-      else Rec)
-  with Not_found -> None
-
 let interp_map l t =
-  try Some(list_assoc_f eq_constr t l) with Not_found -> None
+  try Some(List.assoc_f eq_constr t l) with Not_found -> None
 
-let protect_maps = ref Stringmap.empty
-let add_map s m = protect_maps := Stringmap.add s m !protect_maps
+let protect_maps = ref String.Map.empty
+let add_map s m = protect_maps := String.Map.add s m !protect_maps
 let lookup_map map =
-  try Stringmap.find map !protect_maps
+  try String.Map.find map !protect_maps
   with Not_found ->
     errorlabstrm"lookup_map"(str"map "++qs map++str"not found")
 
@@ -101,14 +92,14 @@ let protect_tac map =
   Tactics.reduct_option (protect_red map,DEFAULTcast) None ;;
 
 let protect_tac_in map id =
-  Tactics.reduct_option (protect_red map,DEFAULTcast) (Some(id, Termops.InHyp));;
+  Tactics.reduct_option (protect_red map,DEFAULTcast) (Some(id, Locus.InHyp));;
 
 
 TACTIC EXTEND protect_fv
   [ "protect_fv" string(map) "in" ident(id) ] ->
-    [ protect_tac_in map id ]
+    [ Proofview.V82.tactic (protect_tac_in map id) ]
 | [ "protect_fv" string(map) ] ->
-    [ protect_tac map ]
+    [ Proofview.V82.tactic (protect_tac map) ]
 END;;
 
 (****************************************************************************)
@@ -121,30 +112,30 @@ let closed_term t l =
 
 TACTIC EXTEND closed_term
   [ "closed_term" constr(t) "[" ne_reference_list(l) "]" ] ->
-    [ closed_term t l ]
+    [ Proofview.V82.tactic (closed_term t l) ]
 END
 ;;
 
-TACTIC EXTEND echo
+(* TACTIC EXTEND echo
 | [ "echo" constr(t) ] ->
   [ Pp.msg (Termops.print_constr t);  Tacinterp.eval_tactic (TacId []) ]
-END;;
+END;;*)
 
 (*
 let closed_term_ast l =
-  TacFun([Some(id_of_string"t")],
-  TacAtom(dummy_loc,TacExtend(dummy_loc,"closed_term",
-  [Genarg.in_gen Genarg.wit_constr (mkVar(id_of_string"t"));
-   Genarg.in_gen (Genarg.wit_list1 Genarg.wit_ref) l])))
+  TacFun([Some(Id.of_string"t")],
+  TacAtom(Loc.ghost,TacExtend(Loc.ghost,"closed_term",
+  [Genarg.in_gen Constrarg.wit_constr (mkVar(Id.of_string"t"));
+   Genarg.in_gen (Genarg.wit_list Constrarg.wit_ref) l])))
 *)
 let closed_term_ast l =
-  let l = List.map (fun gr -> ArgArg(dummy_loc,gr)) l in
-  TacFun([Some(id_of_string"t")],
-  TacAtom(dummy_loc,TacExtend(dummy_loc,"closed_term",
-  [Genarg.in_gen Genarg.globwit_constr (GVar(dummy_loc,id_of_string"t"),None);
-   Genarg.in_gen (Genarg.wit_list1 Genarg.globwit_ref) l])))
+  let l = List.map (fun gr -> ArgArg(Loc.ghost,gr)) l in
+  TacFun([Some(Id.of_string"t")],
+  TacAtom(Loc.ghost,TacExtend(Loc.ghost,"closed_term",
+  [Genarg.in_gen (Genarg.glbwit Constrarg.wit_constr) (GVar(Loc.ghost,Id.of_string"t"),None);
+   Genarg.in_gen (Genarg.glbwit (Genarg.wit_list Constrarg.wit_ref)) l])))
 (*
-let _ = add_tacdef false ((dummy_loc,id_of_string"ring_closed_term"
+let _ = add_tacdef false ((Loc.ghost,Id.of_string"ring_closed_term"
 *)
 
 (****************************************************************************)
@@ -156,57 +147,57 @@ let ic c =
 let ty c = Typing.type_of (Global.env()) Evd.empty c
 
 let decl_constant na c =
-  mkConst(declare_constant (id_of_string na) (DefinitionEntry
+  mkConst(declare_constant (Id.of_string na) (DefinitionEntry
     { const_entry_body = c;
       const_entry_secctx = None;
       const_entry_type = None;
-      const_entry_opaque = true },
+      const_entry_opaque = true;
+      const_entry_inline_code = false},
     IsProof Lemma))
 
 (* Calling a global tactic *)
 let ltac_call tac (args:glob_tactic_arg list) =
-  TacArg(dummy_loc,TacCall(dummy_loc, ArgArg(dummy_loc, Lazy.force tac),args))
+  TacArg(Loc.ghost,TacCall(Loc.ghost, ArgArg(Loc.ghost, Lazy.force tac),args))
 
 (* Calling a locally bound tactic *)
 let ltac_lcall tac args =
-  TacArg(dummy_loc,TacCall(dummy_loc, ArgVar(dummy_loc, id_of_string tac),args))
+  TacArg(Loc.ghost,TacCall(Loc.ghost, ArgVar(Loc.ghost, Id.of_string tac),args))
 
 let ltac_letin (x, e1) e2 =
-  TacLetIn(false,[(dummy_loc,id_of_string x),e1],e2)
+  TacLetIn(false,[(Loc.ghost,Id.of_string x),e1],e2)
 
 let ltac_apply (f:glob_tactic_expr) (args:glob_tactic_arg list) =
   Tacinterp.eval_tactic
     (ltac_letin ("F", Tacexp f) (ltac_lcall "F" args))
 
 let ltac_record flds =
-  TacFun([Some(id_of_string"proj")], ltac_lcall "proj" flds)
+  TacFun([Some(Id.of_string"proj")], ltac_lcall "proj" flds)
 
 
-let carg c = TacDynamic(dummy_loc,Pretyping.constr_in c)
+let carg c = TacDynamic(Loc.ghost,Pretyping.constr_in c)
 
 let dummy_goal env =
   let (gl,_,sigma) = 
-    Goal.V82.mk_goal Evd.empty (named_context_val env) mkProp Store.empty in
-  {Evd.it = gl;
-   Evd.sigma = sigma}
+    Goal.V82.mk_goal Evd.empty (named_context_val env) mkProp Evd.Store.empty in
+  {Evd.it = gl; Evd.sigma = sigma}
 
 let exec_tactic env n f args =
-  let lid = list_tabulate(fun i -> id_of_string("x"^string_of_int i)) n in
+  let lid = List.init n (fun i -> Id.of_string("x"^string_of_int i)) in
   let res = ref [||] in
   let get_res ist =
-    let l = List.map (fun id ->  List.assoc id ist.lfun) lid in
+    let l = List.map (fun id ->  Id.Map.find id ist.lfun) lid in
     res := Array.of_list l;
     TacId[] in
   let getter =
     Tacexp(TacFun(List.map(fun id -> Some id) lid,
-                  glob_tactic(tacticIn get_res))) in
+                  Tacintern.glob_tactic(tacticIn get_res))) in
   let _ =
-    Tacinterp.eval_tactic(ltac_call f (args@[getter])) (dummy_goal env) in
+    Proofview.V82.of_tactic (Tacinterp.eval_tactic(ltac_call f (args@[getter]))) (dummy_goal env) in
   !res
 
-let constr_of = function
-  | VConstr ([],c) -> c
-  | _ -> failwith "Ring.exec_tactic: anomaly"
+let constr_of v = match Value.to_constr v with
+  | Some c -> c
+  | None -> failwith "Ring.exec_tactic: anomaly"
 
 let stdlib_modules =
   [["Coq";"Setoids";"Setoid"];
@@ -257,13 +248,13 @@ let my_constant c =
   lazy (Coqlib.gen_constant_in_modules "Ring" plugin_modules c)
 
 let new_ring_path =
-  make_dirpath (List.map id_of_string ["Ring_tac";plugin_dir;"Coq"])
+  DirPath.make (List.map Id.of_string ["Ring_tac";plugin_dir;"Coq"])
 let ltac s =
-  lazy(make_kn (MPfile new_ring_path) (make_dirpath []) (mk_label s))
+  lazy(make_kn (MPfile new_ring_path) DirPath.empty (Label.make s))
 let znew_ring_path =
-  make_dirpath (List.map id_of_string ["InitialRing";plugin_dir;"Coq"])
+  DirPath.make (List.map Id.of_string ["InitialRing";plugin_dir;"Coq"])
 let zltac s =
-  lazy(make_kn (MPfile znew_ring_path) (make_dirpath []) (mk_label s))
+  lazy(make_kn (MPfile znew_ring_path) DirPath.empty (Label.make s))
 
 let mk_cst l s = lazy (Coqlib.gen_constant "newring" l s);;
 let pol_cst s = mk_cst [plugin_dir;"Ring_polynom"] s ;;
@@ -343,11 +334,11 @@ type ring_info =
       ring_pre_tac : glob_tactic_expr;
       ring_post_tac : glob_tactic_expr }
 
-module Cmap = Map.Make(struct type t = constr let compare = constr_ord end)
+module Cmap = Map.Make(Constr)
 
-let from_carrier = ref Cmap.empty
-let from_relation = ref Cmap.empty
-let from_name = ref Spmap.empty
+let from_carrier = Summary.ref Cmap.empty ~name:"ring-tac-carrier-table"
+let from_relation = Summary.ref Cmap.empty ~name:"ring-tac-rel-table"
+let from_name = Summary.ref Spmap.empty ~name:"ring-tac-name-table"
 
 let ring_for_carrier r = Cmap.find r !from_carrier
 let ring_for_relation rel = Cmap.find rel !from_relation
@@ -378,18 +369,6 @@ let find_ring_structure env sigma l =
             (str"cannot find a declared ring structure for equality"++
              spc()++str"\""++pr_constr req++str"\"")) *)
 
-let _ =
-  Summary.declare_summary "tactic-new-ring-table"
-    { Summary.freeze_function =
-        (fun () -> !from_carrier,!from_relation,!from_name);
-      Summary.unfreeze_function =
-        (fun (ct,rt,nt) ->
-          from_carrier := ct; from_relation := rt; from_name := nt);
-      Summary.init_function =
-        (fun () ->
-          from_carrier := Cmap.empty; from_relation := Cmap.empty;
-          from_name := Spmap.empty) }
-
 let add_entry (sp,_kn) e =
 (*  let _ = ty e.ring_lemma1 in
   let _ = ty e.ring_lemma2 in
@@ -408,10 +387,10 @@ let subst_th (subst,th) =
   let th' = subst_mps subst th.ring_th in
   let thm1' = subst_mps subst th.ring_lemma1 in
   let thm2' = subst_mps subst th.ring_lemma2 in
-  let tac'= subst_tactic subst th.ring_cst_tac in
-  let pow_tac'= subst_tactic subst th.ring_pow_tac in
-  let pretac'= subst_tactic subst th.ring_pre_tac in
-  let posttac'= subst_tactic subst th.ring_post_tac in
+  let tac'= Tacsubst.subst_tactic subst th.ring_cst_tac in
+  let pow_tac'= Tacsubst.subst_tactic subst th.ring_pow_tac in
+  let pretac'= Tacsubst.subst_tactic subst th.ring_pre_tac in
+  let posttac'= Tacsubst.subst_tactic subst th.ring_post_tac in
   if c' == th.ring_carrier &&
      eq' == th.ring_req &&
      eq_constr set' th.ring_setoid &&
@@ -443,7 +422,7 @@ let theory_to_obj : ring_info -> obj =
   let cache_th (name,th) = add_entry name th in
   declare_object
     {(default_object "tactic-new-ring-theory") with
-      open_function = (fun i o -> if i=1 then cache_th o);
+      open_function = (fun i o -> if Int.equal i 1 then cache_th o);
       cache_function = cache_th;
       subst_function = subst_th;
       classify_function = (fun x -> Substitute x)}
@@ -549,7 +528,7 @@ let ring_equality (r,add,mul,opp,req) =
 		let op_morph =
 		  op_morph r add mul opp req add_m_lem mul_m_lem opp_m_lem in
 		  Flags.if_verbose
-		    msgnl
+		    msg_info
 		    (str"Using setoid \""++pr_constr req++str"\""++spc()++
 			str"and morphisms \""++pr_constr add_m_lem ++
 			str"\","++spc()++ str"\""++pr_constr mul_m_lem++
@@ -558,7 +537,7 @@ let ring_equality (r,add,mul,opp,req) =
 		  op_morph)
             | None ->
 		(Flags.if_verbose
-		    msgnl
+		    msg_info
 		    (str"Using setoid \""++pr_constr req ++str"\"" ++ spc() ++
 			str"and morphisms \""++pr_constr add_m_lem ++
 			str"\""++spc()++str"and \""++
@@ -599,10 +578,10 @@ let dest_morph env sigma m_spec =
     | _ -> error "bad morphism structure"
 
 
-type coeff_spec =
-    Computational of constr (* equality test *)
+type 'constr coeff_spec =
+    Computational of 'constr (* equality test *)
   | Abstract (* coeffs = Z *)
-  | Morphism of constr (* general morphism *)
+  | Morphism of 'constr (* general morphism *)
 
 
 let reflect_coeff rkind =
@@ -618,30 +597,12 @@ type cst_tac_spec =
 
 let interp_cst_tac env sigma rk kind (zero,one,add,mul,opp) cst_tac =
   match cst_tac with
-      Some (CstTac t) -> Tacinterp.glob_tactic t
+      Some (CstTac t) -> Tacintern.glob_tactic t
     | Some (Closed lc) ->
         closed_term_ast (List.map Smartlocate.global_with_alias lc)
     | None ->
-        (match rk, opp, kind with
-            Abstract, None, _ ->
-              let t = ArgArg(dummy_loc,Lazy.force ltac_inv_morphN) in
-              TacArg(dummy_loc,TacCall(dummy_loc,t,List.map carg [zero;one;add;mul]))
-          | Abstract, Some opp, Some _ ->
-              let t = ArgArg(dummy_loc, Lazy.force ltac_inv_morphZ) in
-              TacArg(dummy_loc,TacCall(dummy_loc,t,List.map carg [zero;one;add;mul;opp]))
-          | Abstract, Some opp, None ->
-              let t = ArgArg(dummy_loc, Lazy.force ltac_inv_morphNword) in
-              TacArg
-                (dummy_loc,TacCall(dummy_loc,t,List.map carg [zero;one;add;mul;opp]))
-          | Computational _,_,_ ->
-              let t = ArgArg(dummy_loc, Lazy.force ltac_inv_morph_gen) in
-              TacArg
-                (dummy_loc,TacCall(dummy_loc,t,List.map carg [zero;one;zero;one]))
-          | Morphism mth,_,_ ->
-              let (_,czero,cone,_,_,_,_,_,_) = dest_morph env sigma mth in
-              let t = ArgArg(dummy_loc, Lazy.force ltac_inv_morph_gen) in
-              TacArg
-                (dummy_loc,TacCall(dummy_loc,t,List.map carg [zero;one;czero;cone])))
+        let t = ArgArg(Loc.ghost,Lazy.force ltac_inv_morph_nothing) in
+              TacArg(Loc.ghost,TacCall(Loc.ghost,t,[]))
 
 let make_hyp env c =
   let t = Retyping.get_type_of env Evd.empty c in
@@ -657,12 +618,12 @@ let interp_power env pow =
   let carrier = Lazy.force coq_hypo in
   match pow with
   | None ->
-      let t = ArgArg(dummy_loc, Lazy.force ltac_inv_morph_nothing) in
-      (TacArg(dummy_loc,TacCall(dummy_loc,t,[])), lapp coq_None [|carrier|])
+      let t = ArgArg(Loc.ghost, Lazy.force ltac_inv_morph_nothing) in
+      (TacArg(Loc.ghost,TacCall(Loc.ghost,t,[])), lapp coq_None [|carrier|])
   | Some (tac, spec) ->
       let tac =
         match tac with
-        | CstTac t -> Tacinterp.glob_tactic t
+        | CstTac t -> Tacintern.glob_tactic t
         | Closed lc ->
             closed_term_ast (List.map Smartlocate.global_with_alias lc) in
       let spec = make_hyp env (ic spec) in
@@ -702,17 +663,19 @@ let add_theory name rth eqth morphth cst_tac (pre,post) power sign div =
   let lemma1 = constr_of params.(3) in
   let lemma2 = constr_of params.(4) in
 
-  let lemma1 = decl_constant (string_of_id name^"_ring_lemma1") lemma1 in
-  let lemma2 = decl_constant (string_of_id name^"_ring_lemma2") lemma2 in
+  let lemma1 =
+    decl_constant (Id.to_string name^"_ring_lemma1") (Future.from_val ( lemma1,Declareops.no_seff)) in
+  let lemma2 =
+    decl_constant (Id.to_string name^"_ring_lemma2") (Future.from_val ( lemma2,Declareops.no_seff)) in
   let cst_tac =
     interp_cst_tac env sigma morphth kind (zero,one,add,mul,opp) cst_tac in
   let pretac =
     match pre with
-        Some t -> Tacinterp.glob_tactic t
+        Some t -> Tacintern.glob_tactic t
       | _ -> TacId [] in
   let posttac =
     match post with
-        Some t -> Tacinterp.glob_tactic t
+        Some t -> Tacintern.glob_tactic t
       | _ -> TacId [] in
   let _ =
     Lib.add_leaf name
@@ -731,22 +694,27 @@ let add_theory name rth eqth morphth cst_tac (pre,post) power sign div =
           ring_post_tac = posttac }) in
   ()
 
-type ring_mod =
-    Ring_kind of coeff_spec
+type 'constr ring_mod =
+    Ring_kind of 'constr coeff_spec
   | Const_tac of cst_tac_spec
   | Pre_tac of raw_tactic_expr
   | Post_tac of raw_tactic_expr
-  | Setoid of Topconstr.constr_expr * Topconstr.constr_expr
-  | Pow_spec of cst_tac_spec * Topconstr.constr_expr
+  | Setoid of Constrexpr.constr_expr * Constrexpr.constr_expr
+  | Pow_spec of cst_tac_spec * Constrexpr.constr_expr
            (* Syntaxification tactic , correctness lemma *)
-  | Sign_spec of Topconstr.constr_expr
-  | Div_spec of Topconstr.constr_expr
+  | Sign_spec of Constrexpr.constr_expr
+  | Div_spec of Constrexpr.constr_expr
+
+let ic_coeff_spec = function
+  | Computational t -> Computational (ic t)
+  | Morphism t -> Morphism (ic t)
+  | Abstract -> Abstract
 
 
 VERNAC ARGUMENT EXTEND ring_mod
-  | [ "decidable" constr(eq_test) ] -> [ Ring_kind(Computational (ic eq_test)) ]
+  | [ "decidable" constr(eq_test) ] -> [ Ring_kind(Computational eq_test) ]
   | [ "abstract" ] -> [ Ring_kind Abstract ]
-  | [ "morphism" constr(morph) ] -> [ Ring_kind(Morphism (ic morph)) ]
+  | [ "morphism" constr(morph) ] -> [ Ring_kind(Morphism morph) ]
   | [ "constants" "[" tactic(cst_tac) "]" ] -> [ Const_tac(CstTac cst_tac) ]
   | [ "closed" "[" ne_global_list(l) "]" ] -> [ Const_tac(Closed l) ]
   | [ "preprocess" "[" tactic(pre) "]" ] -> [ Pre_tac pre ]
@@ -761,7 +729,7 @@ VERNAC ARGUMENT EXTEND ring_mod
 END
 
 let set_once s r v =
-  if !r = None then r := Some v else error (s^" cannot be set twice")
+  if Option.is_empty !r then r := Some v else error (s^" cannot be set twice")
 
 let process_ring_mods l =
   let kind = ref None in
@@ -781,13 +749,21 @@ let process_ring_mods l =
     | Pow_spec(t,spec) -> set_once "power" power (t,spec)
     | Sign_spec t -> set_once "sign" sign t
     | Div_spec t -> set_once "div" div t) l;
-  let k = match !kind with Some k -> k | None -> Abstract in
+  let k = match !kind with Some k -> ic_coeff_spec k | None -> Abstract in
   (k, !set, !cst_tac, !pre, !post, !power, !sign, !div)
 
-VERNAC COMMAND EXTEND AddSetoidRing
+VERNAC COMMAND EXTEND AddSetoidRing CLASSIFIED AS SIDEFF
   | [ "Add" "Ring" ident(id) ":" constr(t) ring_mods(l) ] ->
     [ let (k,set,cst,pre,post,power,sign, div) = process_ring_mods l in
       add_theory id (ic t) set k cst (pre,post) power sign div]
+  | [ "Print" "Rings" ] => [Vernacexpr.VtQuery true, Vernacexpr.VtLater] -> [
+    msg_notice (strbrk "The following ring structures have been declared:");
+    Spmap.iter (fun fn fi ->
+      msg_notice (hov 2
+        (Ppconstr.pr_id (Libnames.basename fn)++spc()++
+          str"with carrier "++ pr_constr fi.ring_carrier++spc()++
+          str"and equivalence relation "++ pr_constr fi.ring_req))
+    ) !from_name ]
 END
 
 (*****************************************************************************)
@@ -819,19 +795,25 @@ let ltac_ring_structure e =
   [req;sth;ext;morph;th;cst_tac;pow_tac;
    lemma1;lemma2;pretac;posttac]
 
-let ring_lookup (f:glob_tactic_expr) lH rl t gl =
-  let env = pf_env gl in
-  let sigma = project gl in
-  let rl = make_args_list rl t in
-  let e = find_ring_structure env sigma rl in
-  let rl = carg (make_term_list e.ring_carrier rl) in
-  let lH = carg (make_hyp_list env lH) in
-  let ring = ltac_ring_structure e in
-  ltac_apply f (ring@[lH;rl]) gl
+open Proofview.Notations
+
+let ring_lookup (f:glob_tactic_expr) lH rl t =
+  Proofview.Goal.enter begin fun gl ->
+    let sigma = Proofview.Goal.sigma gl in
+    let env = Proofview.Goal.env gl in
+    try (* find_ring_strucure can raise an exception *)
+      let rl = make_args_list rl t in
+      let e = find_ring_structure env sigma rl in
+      let rl = carg (make_term_list e.ring_carrier rl) in
+      let lH = carg (make_hyp_list env lH) in
+      let ring = ltac_ring_structure e in
+      ltac_apply f (ring@[lH;rl])
+    with e when Proofview.V82.catchable_exception e -> Proofview.tclZERO e
+  end
 
 TACTIC EXTEND ring_lookup
 | [ "ring_lookup" tactic0(f) "[" constr_list(lH) "]" ne_constr_list(lrt) ] ->
-    [ let (t,lr) = list_sep_last lrt in ring_lookup f lH lr t]
+    [ let (t,lr) = List.sep_last lrt in ring_lookup f lH lr t]
 END
 
 
@@ -839,10 +821,10 @@ END
 (***********************************************************************)
 
 let new_field_path =
-  make_dirpath (List.map id_of_string ["Field_tac";plugin_dir;"Coq"])
+  DirPath.make (List.map Id.of_string ["Field_tac";plugin_dir;"Coq"])
 
 let field_ltac s =
-  lazy(make_kn (MPfile new_field_path) (make_dirpath []) (mk_label s))
+  lazy(make_kn (MPfile new_field_path) DirPath.empty (Label.make s))
 
 
 let _ = add_map "field"
@@ -873,8 +855,8 @@ let _ = add_map "field_cond"
      coq_nil, (function -1->Eval|_ -> Prot);
     (* PCond: evaluate morphism and denum list, protect ring
        operations and make recursive call on the var map *)
-     my_constant "PCond", (function -1|8|10|13->Eval|12->Rec|_->Prot)]);;
-(*                       (function -1|8|10->Eval|9->Rec|_->Prot)]);;*)
+     my_constant "PCond", (function -1|9|11|14->Eval|13->Rec|_->Prot)]);;
+(*                       (function -1|9|11->Eval|10->Rec|_->Prot)]);;*)
 
 
 let _ = Redexpr.declare_reduction "simpl_field_expr"
@@ -922,10 +904,9 @@ type field_info =
       field_pre_tac : glob_tactic_expr;
       field_post_tac : glob_tactic_expr }
 
-let field_from_carrier = ref Cmap.empty
-let field_from_relation = ref Cmap.empty
-let field_from_name = ref Spmap.empty
-
+let field_from_carrier = Summary.ref Cmap.empty ~name:"field-tac-carrier-table"
+let field_from_relation = Summary.ref Cmap.empty ~name:"field-tac-rel-table"
+let field_from_name = Summary.ref Spmap.empty ~name:"field-tac-name-table"
 
 let field_for_carrier r = Cmap.find r !field_from_carrier
 let field_for_relation rel = Cmap.find rel !field_from_relation
@@ -955,19 +936,6 @@ let find_field_structure env sigma l =
             (str"cannot find a declared field structure for equality"++
              spc()++str"\""++pr_constr req++str"\"")) *)
 
-let _ =
-  Summary.declare_summary "tactic-new-field-table"
-    { Summary.freeze_function =
-        (fun () -> !field_from_carrier,!field_from_relation,!field_from_name);
-      Summary.unfreeze_function =
-        (fun (ct,rt,nt) ->
-          field_from_carrier := ct; field_from_relation := rt;
-          field_from_name := nt);
-      Summary.init_function =
-        (fun () ->
-          field_from_carrier := Cmap.empty; field_from_relation := Cmap.empty;
-          field_from_name := Spmap.empty) }
-
 let add_field_entry (sp,_kn) e =
 (*
   let _ = ty e.field_ok in
@@ -987,10 +955,10 @@ let subst_th (subst,th) =
   let thm3' = subst_mps subst th.field_simpl_ok in
   let thm4' = subst_mps subst th.field_simpl_eq_in_ok in
   let thm5' = subst_mps subst th.field_cond in
-  let tac'= subst_tactic subst th.field_cst_tac in
-  let pow_tac' = subst_tactic subst th.field_pow_tac in
-  let pretac'= subst_tactic subst th.field_pre_tac in
-  let posttac'= subst_tactic subst th.field_post_tac in
+  let tac'= Tacsubst.subst_tactic subst th.field_cst_tac in
+  let pow_tac' = Tacsubst.subst_tactic subst th.field_pow_tac in
+  let pretac'= Tacsubst.subst_tactic subst th.field_pre_tac in
+  let posttac'= Tacsubst.subst_tactic subst th.field_post_tac in
   if c' == th.field_carrier &&
      eq' == th.field_req &&
      thm1' == th.field_ok &&
@@ -1019,7 +987,7 @@ let ftheory_to_obj : field_info -> obj =
   let cache_th (name,th) = add_field_entry name th in
   declare_object
     {(default_object "tactic-new-field-theory") with
-      open_function = (fun i o -> if i=1 then cache_th o);
+      open_function = (fun i o -> if Int.equal i 1 then cache_th o);
       cache_function = cache_th;
       subst_function = subst_th;
       classify_function = (fun x -> Substitute x) }
@@ -1062,20 +1030,20 @@ let add_field_theory name fth eqth morphth cst_tac inj (pre,post) power sign odi
     match inj with
       | Some thm -> mkApp(constr_of params.(8),[|thm|])
       | None -> constr_of params.(7) in
-  let lemma1 = decl_constant (string_of_id name^"_field_lemma1") lemma1 in
-  let lemma2 = decl_constant (string_of_id name^"_field_lemma2") lemma2 in
-  let lemma3 = decl_constant (string_of_id name^"_field_lemma3") lemma3 in
-  let lemma4 = decl_constant (string_of_id name^"_field_lemma4") lemma4 in
-  let cond_lemma = decl_constant (string_of_id name^"_lemma5") cond_lemma in
+  let lemma1 = decl_constant (Id.to_string name^"_field_lemma1") (Future.from_val (lemma1,Declareops.no_seff)) in
+  let lemma2 = decl_constant (Id.to_string name^"_field_lemma2") (Future.from_val (lemma2,Declareops.no_seff)) in
+  let lemma3 = decl_constant (Id.to_string name^"_field_lemma3") (Future.from_val (lemma3,Declareops.no_seff)) in
+  let lemma4 = decl_constant (Id.to_string name^"_field_lemma4") (Future.from_val (lemma4,Declareops.no_seff)) in
+  let cond_lemma = decl_constant (Id.to_string name^"_lemma5") (Future.from_val (cond_lemma,Declareops.no_seff)) in
   let cst_tac =
     interp_cst_tac env sigma morphth kind (zero,one,add,mul,opp) cst_tac in
   let pretac =
     match pre with
-        Some t -> Tacinterp.glob_tactic t
+        Some t -> Tacintern.glob_tactic t
       | _ -> TacId [] in
   let posttac =
     match post with
-        Some t -> Tacinterp.glob_tactic t
+        Some t -> Tacintern.glob_tactic t
       | _ -> TacId [] in
   let _ =
     Lib.add_leaf name
@@ -1092,9 +1060,9 @@ let add_field_theory name fth eqth morphth cst_tac inj (pre,post) power sign odi
           field_pre_tac = pretac;
           field_post_tac = posttac }) in  ()
 
-type field_mod =
-    Ring_mod of ring_mod
-  | Inject of Topconstr.constr_expr
+type 'constr field_mod =
+    Ring_mod of 'constr ring_mod
+  | Inject of Constrexpr.constr_expr
 
 VERNAC ARGUMENT EXTEND field_mod
   | [ ring_mod(m) ] -> [ Ring_mod m ]
@@ -1122,13 +1090,21 @@ let process_field_mods l =
     | Ring_mod(Sign_spec t) -> set_once "sign" sign t
     | Ring_mod(Div_spec t) -> set_once "div" div t
     | Inject i -> set_once "infinite property" inj (ic i)) l;
-  let k = match !kind with Some k -> k | None -> Abstract in
+  let k = match !kind with Some k -> ic_coeff_spec k | None -> Abstract in
   (k, !set, !inj, !cst_tac, !pre, !post, !power, !sign, !div)
 
-VERNAC COMMAND EXTEND AddSetoidField
+VERNAC COMMAND EXTEND AddSetoidField CLASSIFIED AS SIDEFF
 | [ "Add" "Field" ident(id) ":" constr(t) field_mods(l) ] ->
   [ let (k,set,inj,cst_tac,pre,post,power,sign,div) = process_field_mods l in
     add_field_theory id (ic t) set k cst_tac inj (pre,post) power sign div]
+| [ "Print" "Fields" ] => [Vernacexpr.VtQuery true, Vernacexpr.VtLater] -> [
+    msg_notice (strbrk "The following field structures have been declared:");
+    Spmap.iter (fun fn fi ->
+      msg_notice (hov 2
+        (Ppconstr.pr_id (Libnames.basename fn)++spc()++
+          str"with carrier "++ pr_constr fi.field_carrier++spc()++
+          str"and equivalence relation "++ pr_constr fi.field_req))
+    ) !field_from_name ]
 END
 
 
@@ -1146,18 +1122,22 @@ let ltac_field_structure e =
   [req;cst_tac;pow_tac;field_ok;field_simpl_ok;field_simpl_eq_ok;
    field_simpl_eq_in_ok;cond_ok;pretac;posttac]
 
-let field_lookup (f:glob_tactic_expr) lH rl t gl =
-  let env = pf_env gl in
-  let sigma = project gl in
-  let rl = make_args_list rl t in
-  let e = find_field_structure env sigma rl in
-  let rl = carg (make_term_list e.field_carrier rl) in
-  let lH = carg (make_hyp_list env lH) in
-  let field = ltac_field_structure e in
-  ltac_apply f (field@[lH;rl]) gl
+let field_lookup (f:glob_tactic_expr) lH rl t =
+  Proofview.Goal.enter begin fun gl ->
+    let sigma = Proofview.Goal.sigma gl in
+    let env = Proofview.Goal.env gl in
+    try
+      let rl = make_args_list rl t in
+      let e = find_field_structure env sigma rl in
+      let rl = carg (make_term_list e.field_carrier rl) in
+      let lH = carg (make_hyp_list env lH) in
+      let field = ltac_field_structure e in
+      ltac_apply f (field@[lH;rl])
+    with e when Proofview.V82.catchable_exception e -> Proofview.tclZERO e
+  end
 
 
 TACTIC EXTEND field_lookup
 | [ "field_lookup" tactic(f) "[" constr_list(lH) "]" ne_constr_list(lt) ] ->
-      [ let (t,l) = list_sep_last lt in field_lookup f lH l t ]
+      [ let (t,l) = List.sep_last lt in field_lookup f lH l t ]
 END

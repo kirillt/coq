@@ -7,25 +7,26 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
 open Names
 
-let pr_dirpath dp = str (string_of_dirpath dp)
-let default_root_prefix = make_dirpath []
+let pr_dirpath dp = str (DirPath.to_string dp)
+let default_root_prefix = DirPath.empty
 let split_dirpath d =
-  let l = repr_dirpath d in (make_dirpath (List.tl l), List.hd l)
-let extend_dirpath p id = make_dirpath (id :: repr_dirpath p)
+  let l = DirPath.repr d in (DirPath.make (List.tl l), List.hd l)
+let extend_dirpath p id = DirPath.make (id :: DirPath.repr p)
 
 type section_path = {
   dirpath : string list ;
   basename : string }
 let dir_of_path p =
-  make_dirpath (List.map id_of_string p.dirpath)
+  DirPath.make (List.map Id.of_string p.dirpath)
 let path_of_dirpath dir =
-  match repr_dirpath dir with
+  match DirPath.repr dir with
       [] -> failwith "path_of_dirpath"
     | l::dir ->
-        {dirpath=List.map string_of_id dir;basename=string_of_id l}
+        {dirpath=List.map Id.to_string dir;basename=Id.to_string l}
 let pr_dirlist dp =
   prlist_with_sep (fun _ -> str".") str (List.rev dp)
 let pr_path sp =
@@ -33,37 +34,25 @@ let pr_path sp =
       [] -> str sp.basename
     | sl -> pr_dirlist sl ++ str"." ++ str sp.basename
 
-type library_objects
-
-type compilation_unit_name = dir_path
-
-type library_disk = {
-  md_name : compilation_unit_name;
-  md_compiled : Safe_typing.LightenLibrary.lightened_compiled_library;
-  md_objects : library_objects;
-  md_deps : (compilation_unit_name * Digest.t) list;
-  md_imports : compilation_unit_name list }
-
 (************************************************************************)
-(*s Modules on disk contain the following informations (after the magic
-    number, and before the digest). *)
 
 (*s Modules loaded in memory contain the following informations. They are
     kept in the global table [libraries_table]. *)
 
 type library_t = {
-  library_name : compilation_unit_name;
-  library_filename : System.physical_path;
-  library_compiled : Safe_typing.compiled_library;
-  library_deps : (compilation_unit_name * Digest.t) list;
+  library_name : Cic.compilation_unit_name;
+  library_filename : CUnix.physical_path;
+  library_compiled : Cic.compiled_library;
+  library_opaques : Cic.opaque_table;
+  library_deps : Cic.library_deps;
   library_digest : Digest.t }
 
 module LibraryOrdered =
   struct
-    type t = dir_path
+    type t = DirPath.t
     let compare d1 d2 =
       Pervasives.compare
-        (List.rev (repr_dirpath d1)) (List.rev (repr_dirpath d2))
+        (List.rev (DirPath.repr d1)) (List.rev (DirPath.repr d2))
   end
 
 module LibrarySet = Set.Make(LibraryOrdered)
@@ -80,7 +69,7 @@ let find_library dir =
 let try_find_library dir =
   try find_library dir
   with Not_found ->
-    error ("Unknown library " ^ (string_of_dirpath dir))
+    error ("Unknown library " ^ (DirPath.to_string dir))
 
 let library_full_filename dir = (find_library dir).library_filename
 
@@ -90,6 +79,19 @@ let library_full_filename dir = (find_library dir).library_filename
 let register_loaded_library m =
   libraries_table := LibraryMap.add m.library_name m !libraries_table
 
+(* Map from library names to table of opaque terms *)
+let opaque_tables = ref LibraryMap.empty
+
+let access_opaque_table dp i =
+  let t =
+    try LibraryMap.find dp !opaque_tables
+    with Not_found -> assert false
+  in
+  assert (i < Array.length t);
+  t.(i)
+
+let _ = Declarations.indirect_opaque_access := access_opaque_table
+
 let check_one_lib admit (dir,m) =
   let file = m.library_filename in
   let md = m.library_compiled in
@@ -98,22 +100,23 @@ let check_one_lib admit (dir,m) =
      also check if it carries a validation certificate (yet to
      be implemented). *)
   if LibrarySet.mem dir admit then
-    (Flags.if_verbose msgnl
+    (Flags.if_verbose ppnl
       (str "Admitting library: " ++ pr_dirpath dir);
       Safe_typing.unsafe_import file md dig)
   else
-    (Flags.if_verbose msgnl
+    (Flags.if_verbose ppnl
       (str "Checking library: " ++ pr_dirpath dir);
       Safe_typing.import file md dig);
-  Flags.if_verbose msg(fnl());
+  Flags.if_verbose pp (fnl());
+  pp_flush ();
   register_loaded_library m
 
 (*************************************************************************)
 (*s Load path. Mapping from physical to logical paths etc.*)
 
-type logical_path = dir_path
+type logical_path = DirPath.t
 
-let load_paths = ref ([],[] : System.physical_path list * logical_path list)
+let load_paths = ref ([],[] : CUnix.physical_path list * logical_path list)
 
 let get_load_paths () = fst !load_paths
 
@@ -147,20 +150,23 @@ let canonical_path_name p =
 
 let find_logical_path phys_dir =
   let phys_dir = canonical_path_name phys_dir in
-  match list_filter2 (fun p d -> p = phys_dir) !load_paths with
+  let physical, logical = !load_paths in
+  match List.filter2 (fun p d -> p = phys_dir) physical logical with
   | _,[dir] -> dir
   | _,[] -> default_root_prefix
-  | _,l -> anomaly ("Two logical paths are associated to "^phys_dir)
+  | _,l -> anomaly (Pp.str ("Two logical paths are associated to "^phys_dir))
 
 let remove_load_path dir =
-  load_paths := list_filter2 (fun p d -> p <> dir) !load_paths
+  let physical, logical = !load_paths in
+  load_paths := List.filter2 (fun p d -> p <> dir) physical logical
 
 let add_load_path (phys_path,coq_path) =
   if !Flags.debug then
-    msgnl (str "path: " ++ pr_dirpath coq_path ++ str " ->" ++ spc() ++
+    ppnl (str "path: " ++ pr_dirpath coq_path ++ str " ->" ++ spc() ++
            str phys_path);
   let phys_path = canonical_path_name phys_path in
-    match list_filter2 (fun p d -> p = phys_path) !load_paths with
+  let physical, logical = !load_paths in
+    match List.filter2 (fun p d -> p = phys_path) physical logical with
       | _,[dir] ->
 	  if coq_path <> dir
             (* If this is not the default -I . to coqtop *)
@@ -171,7 +177,7 @@ let add_load_path (phys_path,coq_path) =
 	    begin
               (* Assume the user is concerned by library naming *)
 	      if dir <> default_root_prefix then
-		Flags.if_warn msg_warning
+		msg_warning
 		  (str phys_path ++ strbrk " was previously bound to " ++
 		   pr_dirpath dir ++ strbrk "; it is remapped to " ++
 		   pr_dirpath coq_path);
@@ -180,10 +186,11 @@ let add_load_path (phys_path,coq_path) =
 	    end
       | _,[] ->
 	  load_paths := (phys_path :: fst !load_paths, coq_path :: snd !load_paths)
-      | _ -> anomaly ("Two logical paths are associated to "^phys_path)
+      | _ -> anomaly (Pp.str ("Two logical paths are associated to "^phys_path))
 
 let load_paths_of_dir_path dir =
-  fst (list_filter2 (fun p d -> d = dir) !load_paths)
+  let physical, logical = !load_paths in
+  fst (List.filter2 (fun p d -> d = dir) physical logical)
 
 (************************************************************************)
 (*s Locate absolute or partially qualified library names in the path *)
@@ -197,7 +204,7 @@ let locate_absolute_library dir =
   let loadpath = load_paths_of_dir_path pref in
   if loadpath = [] then raise LibUnmappedDir;
   try
-    let name = string_of_id base^".vo" in
+    let name = Id.to_string base^".vo" in
     let _, file = System.where_in_path ~warn:false loadpath name in
     (dir, file)
   with Not_found ->
@@ -220,7 +227,7 @@ let locate_qualified_library qid =
     let name =  qid.basename^".vo" in
     let path, file = System.where_in_path loadpath name in
     let dir =
-      extend_dirpath (find_logical_path path) (id_of_string qid.basename) in
+      extend_dirpath (find_logical_path path) (Id.of_string qid.basename) in
     (* Look if loaded *)
     try
       (dir, library_full_filename dir)
@@ -228,28 +235,29 @@ let locate_qualified_library qid =
       (dir, file)
   with Not_found -> raise LibNotFound
 
-let explain_locate_library_error qid = function
-  | LibUnmappedDir ->
-      let prefix = qid.dirpath in
-      errorlabstrm "load_absolute_library_from"
-      (str "Cannot load " ++ pr_path qid ++ str ":" ++ spc () ++
-      str "no physical path bound to" ++ spc () ++ pr_dirlist prefix ++ fnl ())
-  | LibNotFound ->
-      errorlabstrm "load_absolute_library_from"
-      (str"Cannot find library " ++ pr_path qid ++ str" in loadpath")
-  | e -> raise e
+let error_unmapped_dir qid =
+  let prefix = qid.dirpath in
+  errorlabstrm "load_absolute_library_from"
+    (str "Cannot load " ++ pr_path qid ++ str ":" ++ spc () ++
+     str "no physical path bound to" ++ spc () ++ pr_dirlist prefix ++ fnl ())
+
+let error_lib_not_found qid =
+  errorlabstrm "load_absolute_library_from"
+    (str"Cannot find library " ++ pr_path qid ++ str" in loadpath")
 
 let try_locate_absolute_library dir =
   try
     locate_absolute_library dir
-  with e ->
-    explain_locate_library_error (path_of_dirpath dir) e
+  with
+    | LibUnmappedDir -> error_unmapped_dir (path_of_dirpath dir)
+    | LibNotFound -> error_lib_not_found (path_of_dirpath dir)
 
 let try_locate_qualified_library qid =
   try
     locate_qualified_library qid
-  with e ->
-    explain_locate_library_error qid e
+  with
+    | LibUnmappedDir -> error_unmapped_dir qid
+    | LibNotFound -> error_lib_not_found qid
 
 (************************************************************************)
 (*s Low-level interning/externing of libraries to files *)
@@ -257,7 +265,7 @@ let try_locate_qualified_library qid =
 (*s Loading from disk to cache (preparation phase) *)
 
 let raw_intern_library =
-  snd (System.raw_extern_intern Coq_config.vo_magic_number ".vo")
+  snd (System.raw_extern_intern Coq_config.vo_magic_number)
 
 let with_magic_number_check f a =
   try f a
@@ -270,10 +278,13 @@ let with_magic_number_check f a =
 (************************************************************************)
 (* Internalise libraries *)
 
+open Cic
+
 let mk_library md f table digest = {
   library_name = md.md_name;
   library_filename = f;
-  library_compiled = Safe_typing.LightenLibrary.load table md.md_compiled;
+  library_compiled = md.md_compiled;
+  library_opaques = table;
   library_deps = md.md_deps;
   library_digest = digest }
 
@@ -286,21 +297,32 @@ let name_clash_message dir mdir f =
 let depgraph = ref LibraryMap.empty
 
 let intern_from_file (dir, f) =
-  Flags.if_verbose msg (str"[intern "++str f++str" ...");
+  Flags.if_verbose pp (str"[intern "++str f++str" ..."); pp_flush ();
   let (md,table,digest) =
     try
       let ch = with_magic_number_check raw_intern_library f in
-      let (md:library_disk) = System.marshal_in f ch in
-      let digest = System.marshal_in f ch in
-      let table = (System.marshal_in f ch : Safe_typing.LightenLibrary.table) in
-      close_in ch;
+      let (md:Cic.library_disk) = System.marshal_in f ch in
+      let digest = System.digest_in f ch in
+      let (table:Cic.opaque_table) = System.marshal_in f ch in
+      (* Verification of the final checksum *)
+      let pos = pos_in ch in
+      let checksum = System.digest_in f ch in
+      let () = close_in ch in
+      let ch = open_in f in
+      if not (String.equal (Digest.channel ch pos) checksum) then
+        errorlabstrm "intern_from_file" (str "Checksum mismatch");
+      let () = close_in ch in
       if dir <> md.md_name then
-        errorlabstrm "load_physical_library"
+        errorlabstrm "intern_from_file"
           (name_clash_message dir md.md_name f);
-      Flags.if_verbose msgnl(str" done]");
+      (* Verification of the unmarshalled values *)
+      Validate.validate !Flags.debug Values.v_lib md;
+      Validate.validate !Flags.debug Values.v_opaques table;
+      Flags.if_verbose ppnl (str" done]"); pp_flush ();
       md,table,digest
-    with e -> Flags.if_verbose msgnl(str" failed!]"); raise e in
+    with e -> Flags.if_verbose ppnl (str" failed!]"); raise e in
   depgraph := LibraryMap.add md.md_name md.md_deps !depgraph;
+  opaque_tables := LibraryMap.add md.md_name table !opaque_tables;
   mk_library md f table digest
 
 let get_deps (dir, f) =
@@ -317,14 +339,15 @@ let rec intern_library seen (dir, f) needed =
   try let _ = find_library dir in needed
   with Not_found ->
   (* Look if already listed and consequently its dependencies too *)
-  if List.mem_assoc dir needed then needed
+  if List.mem_assoc_f DirPath.equal dir needed then needed
   else
     (* [dir] is an absolute name which matches [f] which must be in loadpath *)
     let m = intern_from_file (dir,f) in
     let seen' = LibrarySet.add dir seen in
     let deps =
-      List.map (fun (d,_) -> try_locate_absolute_library d) m.library_deps in
-    (dir,m) :: List.fold_right (intern_library seen') deps needed
+      Array.map (fun (d,_) -> try_locate_absolute_library d) m.library_deps
+    in
+    (dir,m) :: Array.fold_right (intern_library seen') deps needed
 
 (* Compute the reflexive transitive dependency closure *)
 let rec fold_deps seen ff (dir,f) (s,acc) =
@@ -332,9 +355,9 @@ let rec fold_deps seen ff (dir,f) (s,acc) =
   if LibrarySet.mem dir s then (s,acc)
   else
     let deps = get_deps (dir,f) in
-    let deps = List.map (fun (d,_) -> try_locate_absolute_library d) deps in
+    let deps = Array.map (fun (d,_) -> try_locate_absolute_library d) deps in
     let seen' = LibrarySet.add dir seen in
-    let (s',acc') = List.fold_right (fold_deps seen' ff) deps (s,acc) in
+    let (s',acc') = Array.fold_right (fold_deps seen' ff) deps (s,acc) in
     (LibrarySet.add dir s', ff dir acc')
 
 and fold_deps_list seen ff modl needed =
@@ -358,14 +381,14 @@ let recheck_library ~norec ~admit ~check =
   let nochk =
     List.fold_right LibrarySet.remove (List.map fst (nrl@ml)) nochk in
   (* *)
-  Flags.if_verbose msgnl (fnl()++hv 2 (str "Ordered list:" ++ fnl() ++
+  Flags.if_verbose ppnl (fnl()++hv 2 (str "Ordered list:" ++ fnl() ++
     prlist
     (fun (dir,_) -> pr_dirpath dir ++ fnl()) needed));
   List.iter (check_one_lib nochk) needed;
-  Flags.if_verbose msgnl(str"Modules were successfully checked")
+  Flags.if_verbose ppnl (str"Modules were successfully checked")
 
 open Printf
 
 let mem s =
   let m = try_find_library s in
-  h 0 (str (sprintf "%dk" (size_kb m)))
+  h 0 (str (sprintf "%dk" (CObj.size_kb m)))

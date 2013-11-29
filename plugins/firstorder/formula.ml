@@ -9,13 +9,12 @@
 open Hipattern
 open Names
 open Term
+open Vars
 open Termops
-open Reductionops
 open Tacmach
 open Util
 open Declarations
-open Libnames
-open Inductiveops
+open Globnames
 
 let qflag=ref true
 
@@ -23,11 +22,11 @@ let red_flags=ref Closure.betaiotazeta
 
 let (=?) f g i1 i2 j1 j2=
   let c=f i1 i2 in
-    if c=0 then g j1 j2 else c
+    if Int.equal c 0 then g j1 j2 else c
 
 let (==?) fg h i1 i2 j1 j2 k1 k2=
   let c=fg i1 i2 j1 j2 in
-    if c=0 then h k1 k2 else c
+    if Int.equal c 0 then h k1 k2 else c
 
 type ('a,'b) sum = Left of 'a | Right of 'b
 
@@ -52,12 +51,11 @@ let construct_nhyps ind gls =
 (* indhyps builds the array of arrays of constructor hyps for (ind largs)*)
 let ind_hyps nevar ind largs gls=
   let types= Inductiveops.arities_of_constructors (pf_env gls) ind in
-  let lp=Array.length types in
-  let myhyps i=
-    let t1=Term.prod_applist types.(i) largs in
+  let myhyps t =
+    let t1=prod_applist t largs in
     let t2=snd (decompose_prod_n_assum nevar t1) in
       fst (decompose_prod_assum t2) in
-    Array.init lp myhyps
+    Array.map myhyps types
 
 let special_nf gl=
   let infos=Closure.create_clos_infos !red_flags (pf_env gl) in
@@ -76,7 +74,7 @@ type kind_of_formula=
   | Forall of constr*constr
   | Atom of constr
 
-let rec kind_of_formula gl term =
+let kind_of_formula gl term =
   let normalize=special_nf gl in
   let cciterm=special_whd gl term in
     match match_with_imp_term cciterm with
@@ -90,20 +88,20 @@ let rec kind_of_formula gl term =
 		    let ind=destInd i in
 		    let (mib,mip) = Global.lookup_inductive ind in
 		    let nconstr=Array.length mip.mind_consnames in
-		      if nconstr=0 then
+		      if Int.equal nconstr 0 then
 			False(ind,l)
 		      else
 			let has_realargs=(n>0) in
 			let is_trivial=
 			  let is_constant c =
-			    nb_prod c = mib.mind_nparams in
-			    array_exists is_constant mip.mind_nf_lc in
+			    Int.equal (nb_prod c) mib.mind_nparams in
+			    Array.exists is_constant mip.mind_nf_lc in
 			  if Inductiveops.mis_is_recursive (ind,mib,mip) ||
 			    (has_realargs && not is_trivial)
 			  then
 			    Atom cciterm
 			  else
-			    if nconstr=1 then
+			    if Int.equal nconstr 1 then
 			      And(ind,l,is_trivial)
 			    else
 			      Or(ind,l,is_trivial)
@@ -118,7 +116,7 @@ type side = Hyp | Concl | Hint
 
 let no_atoms = (false,{positive=[];negative=[]})
 
-let dummy_id=VarRef (id_of_string "_") (* "_" cannot be parsed *)
+let dummy_id=VarRef (Id.of_string "_") (* "_" cannot be parsed *)
 
 let build_atoms gl metagen side cciterm =
   let trivial =ref false
@@ -144,9 +142,9 @@ let build_atoms gl metagen side cciterm =
 	  let g i _ (_,_,t) =
 	    build_rec env polarity (lift i t) in
 	  let f l =
-	    list_fold_left_i g (1-(List.length l)) () l in
+	    List.fold_left_i g (1-(List.length l)) () l in
 	    if polarity && (* we have a constant constructor *)
-	      array_exists (function []->true|_->false) v
+	      Array.exists (function []->true|_->false) v
 	    then trivial:=true;
 	    Array.iter f v
       | Exists(i,l)->
@@ -154,7 +152,7 @@ let build_atoms gl metagen side cciterm =
 	  let v =(ind_hyps 1 i l gl).(0) in
 	  let g i _ (_,_,t) =
 	    build_rec (var::env) polarity (lift i t) in
-	    list_fold_left_i g (2-(List.length l)) () v
+	    List.fold_left_i g (2-(List.length l)) () v
       | Forall(_,b)->
 	  let var=mkMeta (metagen true) in
 	    build_rec (var::env) polarity b
@@ -171,7 +169,7 @@ let build_atoms gl metagen side cciterm =
 	| Hyp      -> build_rec [] false cciterm
 	| Hint     ->
 	    let rels,head=decompose_prod cciterm in
-	    let env=List.rev (List.map (fun _->mkMeta (metagen true)) rels) in
+	    let env=List.rev_map (fun _->mkMeta (metagen true)) rels in
 	      build_rec env false head;trivial:=false (* special for hints *)
     end;
     (!trivial,
@@ -226,7 +224,7 @@ let build_formula side nam typ gl metagen=
 		  | And(_,_,_)        -> Rand
 		  | Or(_,_,_)         -> Ror
 		  | Exists (i,l) ->
-		      let (_,_,d)=list_last (ind_hyps 0 i l gl).(0) in
+		      let (_,_,d)=List.last (ind_hyps 0 i l gl).(0) in
 			Rexists(m,d,trivial)
 		  | Forall (_,a) -> Rforall
 		  | Arrow (a,b) -> Rarrow in

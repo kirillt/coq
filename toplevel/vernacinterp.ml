@@ -7,22 +7,12 @@
 (************************************************************************)
 
 open Pp
-open Util
-open Names
-open Libnames
-open Himsg
-open Proof_type
-open Tacinterp
-open Vernacexpr
-
-let disable_drop e =
-  if e <> Drop then e
-  else UserError("Vernac.disable_drop",(str"Drop is forbidden."))
+open Errors
 
 (* Table of vernac entries *)
 let vernac_tab =
   (Hashtbl.create 51 :
-    (string, Tacexpr.raw_generic_argument list -> unit -> unit) Hashtbl.t)
+    (string, Genarg.raw_generic_argument list -> unit -> unit) Hashtbl.t)
 
 let vinterp_add s f =
   try
@@ -50,17 +40,20 @@ let vinterp_init () = Hashtbl.clear vernac_tab
 
 (* Interpretation of a vernac command *)
 
-let call (opn,converted_args) =
+let call ?locality (opn,converted_args) =
   let loc = ref "Looking up command" in
   try
     let callback = vinterp_map opn in
     loc:= "Checking arguments";
     let hunk = callback converted_args in
     loc:= "Executing command";
-    hunk()
+    Locality.LocalityFixme.set locality;
+    hunk();
+    Locality.LocalityFixme.assert_consumed()
   with
     | Drop -> raise Drop
     | reraise ->
+        let reraise = Errors.push reraise in
         if !Flags.debug then
-	  msgnl (str"Vernac Interpreter " ++ str !loc);
+	  msg_debug (str"Vernac Interpreter " ++ str !loc);
         raise reraise

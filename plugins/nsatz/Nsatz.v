@@ -98,7 +98,7 @@ Definition PhiR : list R -> PolZ -> R :=
     (InitialRing.gen_phiZ ring0 ring1 add mul opp)).
 
 Definition PEevalR : list R -> PEZ -> R :=
-   PEeval ring0 add mul sub opp
+   PEeval ring0 ring1 add mul sub opp
     (gen_phiZ ring0 ring1 add mul opp)
          N.to_nat pow.
 
@@ -241,18 +241,20 @@ Fixpoint interpret3 t fv {struct t}: R :=
   | (PEpow t1 t2) =>
        let v1  := interpret3 t1 fv in pow v1 (N.to_nat t2)
   | (PEc t1) => (IZR1 t1)
-  | (PEX n) => List.nth (pred (Pos.to_nat n)) fv 0
+  | PEO => 0
+  | PEI => 1
+  | (PEX _ n) => List.nth (pred (Pos.to_nat n)) fv 0
   end.
 
 
 End nsatz1.
 
 Ltac equality_to_goal H x y:=
-  let h := fresh "nH" in
   (* eliminate trivial  hypotheses, but it takes time!:
+  let h := fresh "nH" in
     (assert (h:equality x y);
     [solve [cring] | clear H; clear h])
-  || *) (try generalize (@psos_r1 _ _ _ _ _ _ _ _ _ _ _ x y H); clear H)
+  || *) try (generalize (@psos_r1 _ _ _ _ _ _ _ _ _ _ _ x y H); clear H)
 .
 
 Ltac equalities_to_goal :=

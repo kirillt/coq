@@ -6,11 +6,12 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
-open Util
+open Loc
+open Pp
 open Names
 open Term
 open Tacmach
-open Genarg
+open Misctypes
 open Tacexpr
 open Glob_term
 
@@ -18,24 +19,24 @@ type inversion_status = Dep of constr option | NoDep
 
 val inv_gen :
   bool -> inversion_kind -> inversion_status ->
-    intro_pattern_expr located option -> quantified_hypothesis -> tactic
+    intro_pattern_expr located option -> quantified_hypothesis -> unit Proofview.tactic
 val invIn_gen :
-  inversion_kind -> intro_pattern_expr located option -> identifier list ->
-    quantified_hypothesis -> tactic
+  inversion_kind -> intro_pattern_expr located option -> Id.t list ->
+    quantified_hypothesis -> unit Proofview.tactic
 
 val inv_clause :
-  inversion_kind -> intro_pattern_expr located option -> identifier list ->
-    quantified_hypothesis -> tactic
+  inversion_kind -> intro_pattern_expr located option -> Id.t list ->
+    quantified_hypothesis -> unit Proofview.tactic
 
 val inv : inversion_kind -> intro_pattern_expr located option ->
-  quantified_hypothesis -> tactic
+  quantified_hypothesis -> unit Proofview.tactic
 
 val dinv : inversion_kind -> constr option ->
-  intro_pattern_expr located option -> quantified_hypothesis -> tactic
+  intro_pattern_expr located option -> quantified_hypothesis -> unit Proofview.tactic
 
-val half_inv_tac : identifier -> tactic
-val inv_tac : identifier -> tactic
-val inv_clear_tac : identifier -> tactic
-val half_dinv_tac : identifier -> tactic
-val dinv_tac : identifier -> tactic
-val dinv_clear_tac : identifier -> tactic
+val half_inv_tac : Id.t -> unit Proofview.tactic
+val inv_tac : Id.t -> unit Proofview.tactic
+val inv_clear_tac : Id.t -> unit Proofview.tactic
+val half_dinv_tac : Id.t -> unit Proofview.tactic
+val dinv_tac : Id.t -> unit Proofview.tactic
+val dinv_clear_tac : Id.t -> unit Proofview.tactic

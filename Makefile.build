@@ -13,11 +13,8 @@
 # Starting rule
 ###########################################################################
 
-# build and install the three subsystems: coq, coqide
+# build the different subsystems: coq, coqide
 world: revision coq coqide
-install: install-coq install-coqide
-
-.PHONY: world install
 
 ###########################################################################
 # Includes
@@ -26,10 +23,21 @@ install: install-coq install-coqide
 include Makefile.common
 include Makefile.doc
 
-ifeq ($(WITHDOC),all)
-world: doc
-install: install-doc
+ifeq ($(LOCAL),true)
+install:
+	@echo "Nothing to install in a local build!"
+else
+install: install-coq install-coqide install-doc-$(WITHDOC)
 endif
+
+install-doc-all: install-doc
+install-doc-no:
+
+world: doc-$(WITHDOC)
+doc-all: doc
+doc-no:
+
+.PHONY: world install install-doc-all install-doc-no doc-all doc-no
 
 # All dependency includes must be declared secondary, otherwise make will
 # delete them if it decided to build them by dependency instead of because
@@ -59,21 +67,31 @@ ALLDEPS:=$(addsuffix .d, \
 
 VERBOSE=
 NO_RECOMPILE_ML4=
-NO_RECOMPILE_LIB=
 NO_RECALC_DEPS=
 READABLE_ML4=	# non-empty means .ml of .ml4 will be ascii instead of binary
 VALIDATE=
 COQ_XML=	# is "-xml" when building XML library
 VM=		# is "-no-vm" to not use the vm"
-TIMECMD=	# is "'time -p'" to get compilation time of .v
 
-# NB: variable TIME, if set, is the formatting string for unix command 'time'.
-# For instance:
-# TIME="%C (%U user, %S sys, %e total, %M maxres)"
+TIMED=          # non-empty will activate a default time command
+                # when compiling .v (see $(STDTIME) below)
+
+TIMECMD=	# if you prefer a specific time command instead of $(STDTIME)
+                # e.g. "'time -p'"
+
+# NB: if you want to collect compilation timings of .v and import them
+# in a spreadsheet, I suggest something like:
+#   make TIMED=1 2> timings.csv
+
+# NB: do not use a variable named TIME, since this variable controls
+# the output format of the unix command time. For instance:
+#   TIME="%C (%U user, %S sys, %e total, %M maxres)"
+
+STDTIME=/usr/bin/time -f "$* (user: %U mem: %M ko)"
+TIMER=$(if $(TIMED), $(STDTIME), $(TIMECMD))
 
 COQOPTS=$(COQ_XML) $(VM)
-BOOTCOQTOP:=$(TIMECMD) $(BESTCOQTOP) -boot $(COQOPTS)
-BOOTCOQC:=$(BOOTCOQTOP) -compile
+BOOTCOQC=$(TIMER) $(COQTOPEXE) -boot $(COQOPTS) -compile
 
 # The SHOW and HIDE variables control whether make will echo complete commands 
 # or only abbreviated versions. 
@@ -85,22 +103,20 @@ HIDE := $(if $(VERBOSE),,@)
 LOCALINCLUDES=$(addprefix -I , $(SRCDIRS) )
 MLINCLUDES=$(LOCALINCLUDES) -I $(MYCAMLP4LIB)
 
-OCAMLC += $(CAMLFLAGS)
-OCAMLOPT += $(CAMLFLAGS)
+OCAMLC := $(TYPEREX) $(OCAMLC) $(CAMLFLAGS)
+OCAMLOPT := $(TYPEREX) $(OCAMLOPT) $(CAMLFLAGS)
 
-BAREBYTEFLAGS=$(CAMLDEBUG) $(USERFLAGS)
-BAREOPTFLAGS=$(CAMLDEBUGOPT) $(CAMLTIMEPROF) $(USERFLAGS)
-BYTEFLAGS=$(MLINCLUDES) $(BAREBYTEFLAGS)
-OPTFLAGS=$(MLINCLUDES) $(BAREOPTFLAGS)
+BYTEFLAGS=$(CAMLDEBUG) $(USERFLAGS) -thread
+OPTFLAGS=$(CAMLDEBUGOPT) $(CAMLTIMEPROF) $(USERFLAGS) -thread
 DEPFLAGS= -slash $(LOCALINCLUDES)
 
 define bestocaml
 $(if $(OPT),\
-$(OCAMLOPT) $(OPTFLAGS) -o $@ $(1) $(addsuffix .cmxa,$(2)) $^ && $(STRIP) $@,\
-$(OCAMLC) $(BYTEFLAGS) $(COQTOOLSBYTEFLAGS) -o $@ $(1) $(addsuffix .cma,$(2)) $^)
+$(OCAMLOPT) $(MLINCLUDES) $(OPTFLAGS) -o $@ $(1) $(addsuffix .cmxa,$(2)) $^ && $(STRIP) $@,\
+$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) $(COQTOOLSBYTEFLAGS) -o $@ $(1) $(addsuffix .cma,$(2)) $^)
 endef
 
-CAMLP4DEPS=`LC_ALL=C sed -n -e 's@^(\*.*camlp4deps: "\(.*\)".*@\1@p' $<`
+CAMLP4DEPS=$(shell LC_ALL=C sed -n -e 's@^(\*.*camlp4deps: "\(.*\)".*@\1@p' $(1) \#))
 ifeq ($(CAMLP4),camlp5)
 CAMLP4USE=pa_extend.cmo q_MLast.cmo pa_macro.cmo -D$(CAMLVERSION)
 else
@@ -109,14 +125,15 @@ endif
 
 PR_O := $(if $(READABLE_ML4),pr_o.cmo,pr_dump.cmo) # works also with new camlp4
 
-ifeq ($(CAMLP4),camlp5)
-SYSMOD:=str unix gramlib
-else
-SYSMOD:=str unix dynlink camlp4lib
-endif
-
+SYSMOD:=str unix dynlink threads
 SYSCMA:=$(addsuffix .cma,$(SYSMOD))
 SYSCMXA:=$(addsuffix .cmxa,$(SYSMOD))
+
+ifeq ($(CAMLP4),camlp5)
+P4CMA:=gramlib.cma
+else
+P4CMA:=dynlink.cma camlp4lib.cma
+endif
 
 
 ###########################################################################
@@ -135,19 +152,12 @@ ifndef ORDER_ONLY_SEP
 $(error This Makefile needs GNU Make 3.81 or later (that is a version that supports the order-only dependency feature without major bugs.))
 endif
 
-VO_TOOLS_DEP := $(BESTCOQTOP)
+VO_TOOLS_DEP := $(COQTOPEXE)
 ifdef COQ_XML
  VO_TOOLS_DEP += $(COQDOC)
 endif
 ifdef VALIDATE
- VO_TOOLS_DEP += $(BESTCHICKEN)
-endif
-ifdef NO_RECOMPILE_LIB
- VO_TOOLS_ORDER_ONLY:=$(VO_TOOLS_DEP)
- VO_TOOLS_STRICT:=
-else
- VO_TOOLS_ORDER_ONLY:=
- VO_TOOLS_STRICT:=$(VO_TOOLS_DEP)
+ VO_TOOLS_DEP += $(CHICKEN)
 endif
 
 ifdef NO_RECALC_DEPS
@@ -193,16 +203,6 @@ kernel/copcodes.ml: kernel/byterun/coq_instruct.h
 # Main targets (coqmktop, coqtop.opt, coqtop.byte)
 ###########################################################################
 
-## In Win32, cygwin provides an emulation of ln -s, but this emulation
-## won't work outside of cygwin shell (i.e. typically in a Sys.command).
-## So we just forget about it, and do a simple copy.
-
-ifeq ($(ARCH),win32)
-LN:=cp -f
-else
-LN:=ln -sf
-endif
-
 .PHONY: coqbinaries coq coqlib coqlight states
 
 coqbinaries:: ${COQBINARIES} ${CSDPCERT} ${FAKEIDE}
@@ -213,90 +213,77 @@ coqlib:: theories plugins
 
 coqlight: theories-light tools coqbinaries
 
-states:: states/initial.coq
+states: theories/Init/Prelude.vo
 
-$(COQTOPOPT): $(BESTCOQMKTOP) $(LINKCMX) $(LIBCOQRUN)
+miniopt: $(COQTOPEXE) pluginsopt
+minibyte: $(COQTOPBYTE) pluginsbyte
+
+ifeq ($(BEST),opt)
+$(COQTOPEXE): $(COQMKTOP) $(LINKCMX) $(LIBCOQRUN)
 	$(SHOW)'COQMKTOP -o $@'	
-	$(HIDE)$(BESTCOQMKTOP) -boot -opt $(BAREOPTFLAGS) -o $@
+	$(HIDE)$(COQMKTOP) -boot -opt $(OPTFLAGS) -o $@
 	$(STRIP) $@
+else
+$(COQTOPEXE): $(COQTOPBYTE)
+	cp $< $@
+endif
 
-$(COQTOPBYTE): $(BESTCOQMKTOP) $(LINKCMO) $(LIBCOQRUN)
+$(COQTOPBYTE): $(COQMKTOP) $(LINKCMO) $(LIBCOQRUN)
 	$(SHOW)'COQMKTOP -o $@'	
-	$(HIDE)$(BESTCOQMKTOP) -boot -top $(BAREBYTEFLAGS) -o $@
-
-$(COQTOPEXE): $(ORDER_ONLY_SEP) $(BESTCOQTOP)
-	cd bin && $(LN) coqtop.$(BEST)$(EXE) coqtop$(EXE)
+	$(HIDE)$(COQMKTOP) -boot -top $(BYTEFLAGS) -o $@
 
 LOCALCHKLIBS:=$(addprefix -I , $(CHKSRCDIRS) )
 CHKLIBS:=$(LOCALCHKLIBS) -I $(MYCAMLP4LIB)
-CHKBYTEFLAGS:=$(CHKLIBS) $(CAMLDEBUG) $(USERFLAGS)
-CHKOPTFLAGS:=$(CHKLIBS) $(CAMLDEBUGOPT) $(CAMLTIMEPROF) $(USERFLAGS)
 
-$(CHICKENOPT): checker/check.cmxa checker/main.ml
+ifeq ($(BEST),opt)
+$(CHICKEN): checker/check.cmxa checker/main.ml
 	$(SHOW)'OCAMLOPT -o $@'
-	$(HIDE)$(OCAMLOPT) $(CHKOPTFLAGS) -o $@ $(SYSCMXA) $^
+	$(HIDE)$(OCAMLOPT) $(CHKLIBS) $(OPTFLAGS) -o $@ $(SYSCMXA) $^
 	$(STRIP) $@
+else
+$(CHICKEN): $(CHICKENBYTE)
+	cp $< $@
+endif
 
 $(CHICKENBYTE): checker/check.cma checker/main.ml
 	$(SHOW)'OCAMLC -o $@'
-	$(HIDE)$(OCAMLC) $(CHKBYTEFLAGS) $(COQTOOLSBYTEFLAGS) -o $@ $(SYSCMA) $^
+	$(HIDE)$(OCAMLC) $(CHKLIBS) $(BYTEFLAGS) $(COQTOOLSBYTEFLAGS) -o $@ $(SYSCMA) $^
 
-$(CHICKEN): $(ORDER_ONLY_SEP) $(BESTCHICKEN)
-	cd bin && $(LN) coqchk.$(BEST)$(EXE) coqchk$(EXE)
+# coqmktop
+$(COQMKTOP): $(patsubst %.cma,%$(BESTLIB),$(COQMKTOPCMO:.cmo=$(BESTOBJ)))
+	$(SHOW)'OCAMLBEST -o $@'
+	$(HIDE)$(call bestocaml, $(OSDEPLIBS), $(SYSMOD))
 
-# coqmktop 
-
-$(COQMKTOPBYTE): $(COQMKTOPCMO)
-	$(SHOW)'OCAMLC -o $@'	
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) -o $@ $(SYSCMA) $^ $(OSDEPLIBS)
-
-$(COQMKTOPOPT): $(COQMKTOPCMO:.cmo=.cmx)
-	$(SHOW)'OCAMLOPT -o $@'	
-	$(HIDE)$(OCAMLOPT) $(OPTFLAGS) -o $@ $(SYSCMXA) $^ $(OSDEPLIBS)
-	$(STRIP) $@
-
-$(COQMKTOP): $(ORDER_ONLY_SEP) $(BESTCOQMKTOP)
-	cd bin && $(LN) coqmktop.$(BEST)$(EXE) coqmktop$(EXE)
-
-scripts/tolink.ml: Makefile.build Makefile.common
+tools/tolink.ml: Makefile.build Makefile.common
 	$(SHOW)"ECHO... >" $@
 	$(HIDE)echo "let copts = \"-cclib -lcoqrun\"" > $@
 	$(HIDE)echo "let core_libs = \""$(LINKCMO)"\"" >> $@
 	$(HIDE)echo "let core_objs = \""$(OBJSMOD)"\"" >> $@
 
 # coqc
-
-$(COQCBYTE): $(COQCCMO) | $(COQTOPBYTE)
-	$(SHOW)'OCAMLC -o $@'
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) -o $@ $(SYSCMA) $^ $(OSDEPLIBS)
-
-$(COQCOPT): $(COQCCMO:.cmo=.cmx) | $(COQTOPOPT)
-	$(SHOW)'OCAMLOPT -o $@'
-	$(HIDE)$(OCAMLOPT) $(OPTFLAGS) -o $@ $(SYSCMXA) $^ $(OSDEPLIBS)
-	$(STRIP) $@
-
-$(COQC): $(ORDER_ONLY_SEP) $(BESTCOQC) 
-	cd bin && $(LN) coqc.$(BEST)$(EXE) coqc$(EXE)
+$(COQC):  $(patsubst %.cma,%$(BESTLIB),$(COQCCMO:.cmo=$(BESTOBJ)))
+	$(SHOW)'OCAMLBEST -o $@'
+	$(HIDE)$(call bestocaml, $(OSDEPLIBS), $(SYSMOD))
 
 # target for libraries
 
 %.cma: | %.mllib.d
 	$(SHOW)'OCAMLC -a -o $@'
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) -a -o $@ $^
+	$(HIDE)$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) -a -o $@ $^
 
 %.cmxa: | %.mllib.d
 	$(SHOW)'OCAMLOPT -a -o $@'
-	$(HIDE)$(OCAMLOPT) $(OPTFLAGS) -a -o $@ $^
+	$(HIDE)$(OCAMLOPT) $(MLINCLUDES) $(OPTFLAGS) -a -o $@ $^
 
 # For the checker, different flags may be used
 
 checker/check.cma: | checker/check.mllib.d
 	$(SHOW)'OCAMLC -a -o $@'
-	$(HIDE)$(OCAMLC) $(CHKBYTEFLAGS) -a -o $@ $^
+	$(HIDE)$(OCAMLC) $(CHKLIBS) $(BYTEFLAGS) -a -o $@ $^
 
 checker/check.cmxa: | checker/check.mllib.d
 	$(SHOW)'OCAMLOPT -a -o $@'
-	$(HIDE)$(OCAMLOPT) $(CHKOPTFLAGS) -a -o $@ $^
+	$(HIDE)$(OCAMLOPT) $(CHKLIBS) $(OPTFLAGS) -a -o $@ $^
 
 ###########################################################################
 # Csdp to micromega special targets
@@ -313,62 +300,64 @@ plugins/micromega/csdpcert$(EXE): $(CSDPCERTCMO:.cmo=$(BESTOBJ))
 .PHONY: coqide coqide-binaries coqide-no coqide-byte coqide-opt coqide-files
 
 # target to build CoqIde
-coqide:: coqide-files coqide-binaries states
+coqide:: coqide-files coqide-binaries theories/Init/Prelude.vo
 
-COQIDEFLAGS=-thread $(COQIDEINCLUDES)
+COQIDEFLAGS=$(addprefix -I , $(IDESRCDIRS)) $(COQIDEINCLUDES)
 
 .SUFFIXES:.vo
 
-IDEFILES=ide/coq.png ide/coqide-gtk2rc ide/mac_default_accel_map
+IDEFILES=ide/coq.lang ide/coq_style.xml ide/coq.png ide/mac_default_accel_map
 
 coqide-binaries: coqide-$(HASCOQIDE)
 coqide-no:
 coqide-byte: $(COQIDEBYTE) $(COQIDE)
-coqide-opt:  $(COQIDEBYTE) $(COQIDEOPT) $(COQIDE)
+coqide-opt:  $(COQIDEBYTE) $(COQIDE)
 coqide-files: $(IDEFILES)
 
-$(COQIDEOPT): $(LINKIDEOPT) | $(COQTOPOPT)
+ifeq ($(HASCOQIDE),opt)
+$(COQIDE): $(LINKIDEOPT) | $(COQTOPEXE)
 	$(SHOW)'OCAMLOPT -o $@'
-	$(HIDE)$(OCAMLOPT) $(COQIDEFLAGS) $(OPTFLAGS) -o $@ unix.cmxa threads.cmxa \
-		lablgtk.cmxa $(IDEOPTFLAGS) gtkThread.cmx str.cmxa $(LINKIDEOPT)
+	$(HIDE)$(OCAMLOPT) $(COQIDEFLAGS) $(OPTFLAGS) -o $@ unix.cmxa \
+		lablgtk.cmxa lablgtksourceview2.cmxa $(IDEOPTFLAGS) \
+		str.cmxa $(LINKIDEOPT)
 	$(STRIP) $@
+else
+$(COQIDE): $(COQIDEBYTE)
+	cp $< $@
+endif
 
 $(COQIDEBYTE): $(LINKIDE) | $(COQTOPBYTE)
 	$(SHOW)'OCAMLC -o $@'
-	$(HIDE)$(OCAMLC) $(COQIDEFLAGS) $(BYTEFLAGS) -o $@ unix.cma threads.cma lablgtk.cma gtkThread.cmo\
-		str.cma $(COQRUNBYTEFLAGS) $(LINKIDE)
-
-$(COQIDE):
-	cd bin && $(LN) coqide.$(HASCOQIDE)$(EXE) coqide$(EXE)
+	$(HIDE)$(OCAMLC) $(COQIDEFLAGS) $(BYTEFLAGS) -o $@ unix.cma lablgtk.cma \
+	        lablgtksourceview2.cma str.cma $(LINKIDE)
 
 # install targets
 
 .PHONY: install-coqide install-ide-no install-ide-byte install-ide-opt
-.PHONY: install-ide-files install-ide-info install-im
+.PHONY: install-ide-files install-ide-info install-im install-ide-devfiles
 
-install-coqide:: install-ide-$(HASCOQIDE) install-ide-files install-ide-info
+ifeq ($(HASCOQIDE),no)
+install-coqide:
+else
+install-coqide: install-ide-bin install-ide-files install-ide-info install-ide-devfiles
+endif
 
-install-ide-no:
-
-install-ide-byte:
+install-ide-bin:
 	$(MKDIR) $(FULLBINDIR)
-	$(INSTALLBIN) $(COQIDEBYTE) $(FULLBINDIR)
+	$(INSTALLBIN) $(COQIDE) $(FULLBINDIR)
+
+install-ide-devfiles:
+	$(MKDIR) $(FULLCOQLIB)
 	$(INSTALLSH) $(FULLCOQLIB) $(IDECMA) \
 	  $(foreach lib,$(IDECMA:.cma=_MLLIB_DEPENDENCIES),$(addsuffix .cmi,$($(lib))))
-	cd $(FULLBINDIR) && $(LN) coqide.byte$(EXE) coqide$(EXE)
-
-install-ide-opt:
-	$(MKDIR) $(FULLBINDIR)
-	$(INSTALLBIN) $(COQIDEOPT) $(FULLBINDIR)
-	$(INSTALLSH) $(FULLCOQLIB) $(IDECMA) $(IDECMA:.cma=.cmxa) $(IDECMA:.cma=.a) \
-	  $(foreach lib,$(IDECMA:.cma=_MLLIB_DEPENDENCIES),$(addsuffix .cmi,$($(lib))))
-	cd $(FULLBINDIR) && $(LN) coqide.opt$(EXE) coqide$(EXE)
+ifeq ($(BEST),opt)
+	$(INSTALLSH) $(FULLCOQLIB) $(IDECMA:.cma=.cmxa) $(IDECMA:.cma=.a)
+endif
 
 install-ide-files:
 	$(MKDIR) $(FULLDATADIR)
-	$(INSTALLLIB) ide/coq.png $(FULLDATADIR)
+	$(INSTALLLIB) ide/coq.png ide/coq.lang ide/coq_style.xml $(FULLDATADIR)
 	$(MKDIR) $(FULLCONFIGDIR)
-	$(INSTALLLIB) ide/coqide-gtk2rc $(FULLCONFIGDIR)
 	if [ $(IDEOPTINT) = QUARTZ ] ; then $(INSTALLLIB) ide/mac_default_accel_map $(FULLCONFIGDIR)/coqide.keys ; fi
 
 install-ide-info:
@@ -379,19 +368,24 @@ install-ide-info:
 # tests
 ###########################################################################
 
-.PHONY: validate check test-suite $(ALLSTDLIB).v
+.PHONY: validate check test-suite $(ALLSTDLIB).v md5chk
 
-VALIDOPTS=-silent -o -m
+md5chk:
+	$(SHOW)'MD5SUM cic.mli'
+	$(HIDE)if grep -q `md5sum checker/cic.mli` checker/values.ml; \
+	       then true; else echo "Error: outdated checker/values.ml"; false; fi
 
-validate:: $(BESTCHICKEN) $(ALLVO)
+VALIDOPTS=$(if $(VERBOSE),,-silent) -o -m
+
+validate: $(CHICKEN) md5chk | $(ALLVO)
 	$(SHOW)'COQCHK <theories & plugins>'
-	$(HIDE)$(BESTCHICKEN) -boot $(VALIDOPTS) $(ALLMODS)
+	$(HIDE)$(CHICKEN) -boot $(VALIDOPTS) $(ALLMODS)
 
 $(ALLSTDLIB).v:
 	$(SHOW)'MAKE $(notdir $@)'
 	$(HIDE)echo "Require $(ALLMODS)." > $@
 
-MAKE_TSOPTS=-C test-suite -s BEST=$(BEST) VERBOSE=$(VERBOSE)
+MAKE_TSOPTS=-C test-suite -s VERBOSE=$(VERBOSE)
 
 check:: validate test-suite
 
@@ -407,7 +401,7 @@ test-suite: world $(ALLSTDLIB).v
 .PHONY: lib kernel byterun library proofs tactics interp parsing pretyping
 .PHONY: highparsing toplevel hightactics
 
-lib: lib/lib.cma
+lib: lib/clib.cma lib/lib.cma
 kernel: kernel/kernel.cma
 byterun: $(BYTERUN)
 library: library/library.cma
@@ -455,45 +449,40 @@ program: $(PROGRAMVO)
 structures: $(STRUCTURESVO)
 vectors: $(VECTORSVO)
 
-noreal: logic arith bool zarith qarith lists sets fsets relations \
-	wellfounded setoids sorting
+noreal: unicode logic arith bool zarith qarith lists sets fsets \
+	relations wellfounded setoids sorting
 
 ###########################################################################
 # 3) plugins
 ###########################################################################
 
-.PHONY: plugins omega micromega ring setoid_ring nsatz xml extraction
-.PHONY: field fourier funind cc subtac rtauto pluginsopt
+.PHONY: plugins omega micromega setoid_ring nsatz xml extraction
+.PHONY: fourier funind cc rtauto btauto pluginsopt pluginsbyte
 
 plugins: $(PLUGINSVO)
 omega: $(OMEGAVO) $(OMEGACMA) $(ROMEGAVO) $(ROMEGACMA)
 micromega: $(MICROMEGAVO) $(MICROMEGACMA) $(CSDPCERT)
-ring: $(RINGVO) $(RINGCMA)
-setoid_ring: $(NEWRINGVO) $(NEWRINGCMA)
+setoid_ring: $(RINGVO) $(RINGCMA)
 nsatz: $(NSATZVO) $(NSATZCMA)
 xml: $(XMLVO) $(XMLCMA)
 extraction: $(EXTRACTIONCMA)
-field: $(FIELDVO) $(FIELDCMA)
 fourier: $(FOURIERVO) $(FOURIERCMA)
 funind: $(FUNINDCMA) $(FUNINDVO)
 cc: $(CCVO) $(CCCMA)
-subtac: $(SUBTACCMA)
 rtauto: $(RTAUTOVO) $(RTAUTOCMA)
+btauto: $(BTAUTOVO) $(BTAUTOCMA)
 
 pluginsopt: $(PLUGINSOPT)
+pluginsbyte: $(PLUGINS)
 
 ###########################################################################
-# rules to make theories, plugins and states
+# rules to make theories and plugins
 ###########################################################################
 
-states/initial.coq: states/MakeInitial.v $(INITVO) $(VO_TOOLS_STRICT) | states/MakeInitial.v.d $(VO_TOOLS_ORDER_ONLY)
-	$(SHOW)'BUILD     $@'
-	$(HIDE)$(BOOTCOQTOP) -batch -notop -silent -nois -load-vernac-source states/MakeInitial.v -outputstate states/initial.coq
-
-theories/Init/%.vo theories/Init/%.glob: theories/Init/%.v $(VO_TOOLS_STRICT) | theories/Init/%.v.d $(VO_TOOLS_ORDER_ONLY)
-	$(SHOW)'COQC -nois $<'
+theories/Init/%.vo theories/Init/%.glob: theories/Init/%.v $(VO_TOOLS_DEP) | theories/Init/%.v.d
+	$(SHOW)'COQC -noinit $<'
 	$(HIDE)rm -f theories/Init/$*.glob
-	$(HIDE)$(BOOTCOQC) theories/Init/$* -nois
+	$(HIDE)$(BOOTCOQC) theories/Init/$* -noinit
 
 theories/Numbers/Natural/BigN/NMake_gen.v: theories/Numbers/Natural/BigN/NMake_gen.ml
 	$(OCAML) $< $(TOTARGET)
@@ -525,7 +514,7 @@ $(COQDEPBOOT): $(COQDEPBOOTSRC)
 
 # the full coqdep
 
-$(COQDEP): $(COQDEPCMO:.cmo=$(BESTOBJ))
+$(COQDEP): $(patsubst %.cma,%$(BESTLIB),$(COQDEPCMO:.cmo=$(BESTOBJ)))
 	$(SHOW)'OCAMLBEST -o $@'
 	$(HIDE)$(call bestocaml, $(OSDEPLIBS), $(SYSMOD))
 
@@ -533,7 +522,7 @@ $(GALLINA): $(addsuffix $(BESTOBJ), tools/gallina_lexer tools/gallina)
 	$(SHOW)'OCAMLBEST -o $@'
 	$(HIDE)$(call bestocaml,,)
 
-$(COQMAKEFILE): $(addsuffix $(BESTOBJ),config/coq_config ide/minilib ide/project_file tools/coq_makefile)
+$(COQMAKEFILE):  $(patsubst %.cma,%$(BESTLIB),$(COQMAKEFILECMO:.cmo=$(BESTOBJ)))
 	$(SHOW)'OCAMLBEST -o $@'
 	$(HIDE)$(call bestocaml,,str unix)
 
@@ -545,16 +534,26 @@ $(COQWC): tools/coqwc$(BESTOBJ)
 	$(SHOW)'OCAMLBEST -o $@'
 	$(HIDE)$(call bestocaml,,)
 
-$(COQDOC): $(COQDOCCMO:.cmo=$(BESTOBJ))
+$(COQDOC): $(patsubst %.cma,%$(BESTLIB),$(COQDOCCMO:.cmo=$(BESTOBJ)))
 	$(SHOW)'OCAMLBEST -o $@'
 	$(HIDE)$(call bestocaml,,str unix)
 
 # fake_ide : for debugging or test-suite purpose, a fake ide simulating
 # a connection to coqtop -ideslave
 
-$(FAKEIDE): lib/xml_lexer$(BESTOBJ) lib/xml_parser$(BESTOBJ) lib/xml_utils$(BESTOBJ) toplevel/ide_intf$(BESTOBJ) tools/fake_ide$(BESTOBJ)
+tools/fake_ide.cmo: COND_BYTEFLAGS+=-I ide
+
+tools/fake_ide.cmx: COND_OPTFLAGS+=-I ide
+
+$(FAKEIDE): lib/clib$(BESTLIB) lib/xml_lexer$(BESTOBJ) lib/xml_parser$(BESTOBJ) lib/xml_printer$(BESTOBJ) ide/document$(BESTOBJ) tools/fake_ide$(BESTOBJ)
 	$(SHOW)'OCAMLBEST -o $@'
-	$(HIDE)$(call bestocaml,,unix)
+	$(HIDE)$(call bestocaml,-I ide,str unix)
+
+# votour: a small vo explorer (based on the checker)
+
+bin/votour: lib/cObj$(BESTOBJ) checker/values$(BESTOBJ) checker/votour.ml
+	$(SHOW)'OCAMLBEST -o $@'
+	$(HIDE)$(call bestocaml, -I checker,)
 
 # Special rule for the compatibility-with-camlp5 extension for camlp4
 
@@ -602,23 +601,15 @@ FULLDOCDIR=$(DOCDIR)
 endif
 
 .PHONY: install-coq install-coqlight install-binaries install-byte install-opt
-.PHONY: install-tools install-library install-library-light
+.PHONY: install-tools install-library install-library-light install-devfiles
 .PHONY: install-coq-info install-coq-manpages install-emacs install-latex
 
-install-coq: install-binaries install-library install-coq-info
+install-coq: install-binaries install-library install-coq-info install-devfiles
 install-coqlight: install-binaries install-library-light
 
-install-binaries:: install-$(BEST)  install-tools
-
-install-byte::
+install-binaries: install-tools
 	$(MKDIR) $(FULLBINDIR)
-	$(INSTALLBIN) $(COQMKTOP) $(COQC) $(COQTOPBYTE) $(CHICKEN) $(FULLBINDIR)
-	cd $(FULLBINDIR); $(LN) coqtop.byte$(EXE) coqtop$(EXE); $(LN) coqchk.byte$(EXE) coqchk$(EXE)
-
-install-opt::
-	$(MKDIR) $(FULLBINDIR)
-	$(INSTALLBIN) $(COQMKTOP) $(COQC) $(COQTOPBYTE) $(COQTOPOPT) $(CHICKEN) $(CHICKENOPT) $(FULLBINDIR)
-	cd $(FULLBINDIR); $(LN) coqtop.opt$(EXE) coqtop$(EXE); $(LN) coqchk.opt$(EXE) coqchk$(EXE)
+	$(INSTALLBIN) $(COQC) $(COQTOPBYTE) $(COQTOPEXE) $(CHICKEN) $(FULLBINDIR)
 
 install-tools::
 	$(MKDIR) $(FULLBINDIR)
@@ -632,24 +623,29 @@ install-tools::
 # from .mli without .ml, and the ones obtained from .ml without .mli
 
 INSTALLCMI = $(sort \
-	$(CONFIG:.cmo=.cmi) \
 	$(filter-out checker/% ide/% tools/%, $(MLIFILES:.mli=.cmi)) \
 	$(foreach lib,$(CORECMA) $(PLUGINSCMA), $(addsuffix .cmi,$($(lib:.cma=_MLLIB_DEPENDENCIES)))))
+
+install-devfiles:
+	$(MKDIR) $(FULLBINDIR)
+	$(INSTALLBIN) $(COQMKTOP) $(FULLBINDIR)
+	$(MKDIR) $(FULLCOQLIB)
+	$(INSTALLSH)  $(FULLCOQLIB) $(LINKCMO) $(GRAMMARCMA)
+	$(INSTALLSH)  $(FULLCOQLIB) $(INSTALLCMI)
+ifeq ($(BEST),opt)
+	$(INSTALLSH)  $(FULLCOQLIB) $(LINKCMX) $(CORECMA:.cma=.a) $(STATICPLUGINS:.cma=.a)
+endif
 
 install-library:
 	$(MKDIR) $(FULLCOQLIB)
 	$(INSTALLSH) $(FULLCOQLIB) $(LIBFILES) $(PLUGINS)
-	$(MKDIR) $(FULLCOQLIB)/states
-	$(INSTALLLIB) states/*.coq $(FULLCOQLIB)/states
 	$(MKDIR) $(FULLCOQLIB)/user-contrib
 ifneq ($(COQRUNBYTEFLAGS),"-custom")
 	$(INSTALLLIB) $(DLLCOQRUN) $(FULLCOQLIB)
 endif
-	$(INSTALLSH)  $(FULLCOQLIB) $(CONFIG) $(LINKCMO) $(GRAMMARCMA)
-	$(INSTALLSH)  $(FULLCOQLIB) $(INSTALLCMI)
 ifeq ($(BEST),opt)
 	$(INSTALLLIB) $(LIBCOQRUN) $(FULLCOQLIB)
-	$(INSTALLSH)  $(FULLCOQLIB) $(CONFIG:.cmo=.cmx) $(CONFIG:.cmo=.o) $(LINKCMO:.cma=.cmxa) $(LINKCMO:.cma=.a) $(PLUGINSOPT)
+	$(INSTALLSH) $(FULLCOQLIB) $(PLUGINSOPT)
 endif
 # csdpcert is not meant to be directly called by the user; we install
 # it with libraries
@@ -661,8 +657,6 @@ endif
 install-library-light:
 	$(MKDIR) $(FULLCOQLIB)
 	$(INSTALLSH) $(FULLCOQLIB) $(LIBFILESLIGHT) $(INITPLUGINS)
-	$(MKDIR) $(FULLCOQLIB)/states
-	$(INSTALLLIB) states/*.coq $(FULLCOQLIB)/states
 	rm -f $(FULLCOQLIB)/revision
 	-$(INSTALLLIB) revision $(FULLCOQLIB)
 ifeq ($(BEST),opt)
@@ -706,6 +700,10 @@ mli-doc:: $(DOCMLIS:.mli=.cmi)
 	-t "Coq mlis documentation" -intro $(OCAMLDOCDIR)/docintro \
 	-css-style style.css
 
+ml-dot:: $(MLEXTRAFILES)
+	$(OCAMLDOC) -dot -dot-reduce -rectypes -I $(CAMLLIB) -I $(MYCAMLP4LIB) $(MLINCLUDES)\
+	$(filter $(addsuffix /%.ml,$(CORESRCDIRS)),$(MLFILES)) -o $(OCAMLDOCDIR)/coq.dot
+
 %_dep.png: %.dot
 	$(DOT) -Tpng $< -o $@
 
@@ -724,6 +722,9 @@ ml-doc:
 parsing/parsing.dot : | parsing/parsing.mllib.d parsing/highparsing.mllib.d
 	$(OCAMLDOC_MLLIBD)
 
+grammar/grammar.dot : | grammar/grammar.mllib.d
+	$(OCAMLDOC_MLLIBD)
+
 tactics/tactics.dot: | tactics/tactics.mllib.d tactics/hightactics.mllib.d
 	$(OCAMLDOC_MLLIBD)
 
@@ -739,46 +740,26 @@ $(OCAMLDOCDIR)/%.pdf: $(OCAMLDOCDIR)/%.tex
 
 dev/printers.cma: | dev/printers.mllib.d
 	$(SHOW)'Testing $@'
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) $(SYSCMA) $^ -o test-printer
+	$(HIDE)$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) $(SYSCMA) $(P4CMA) $^ -o test-printer
 	@rm -f test-printer
 	$(SHOW)'OCAMLC -a $@'   
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) $^ -linkall -a -o $@
+	$(HIDE)$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) $(SYSCMA) $^ -linkall -a -o $@
 
-parsing/grammar.cma: | parsing/grammar.mllib.d
+grammar/grammar.cma: | grammar/grammar.mllib.d
 	$(SHOW)'Testing $@'
 	@touch test.ml4
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) -pp '$(CAMLP4O) -I $(CAMLLIB) $^ -impl' -impl test.ml4 -o test-grammar
+	$(HIDE)$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) -pp '$(CAMLP4O) -I $(CAMLLIB) $^ -impl' -impl test.ml4 -o test-grammar
 	@rm -f test-grammar test.*
 	$(SHOW)'OCAMLC -a $@'   
-	$(HIDE)$(OCAMLC) $(BYTEFLAGS) $^ -linkall -a -o $@
-
-# toplevel/mltop.ml4 (ifdef Byte)
-
-## NB: mltop.ml correspond to the byte version (and hence need no special rules)
-## while the opt version is in mltop.optml. Since mltop.optml uses mltop.ml.d
-## as dependency file, be sure to import the same modules in the different sections
-## of the ml4
-
-toplevel/mltop.cmx: toplevel/mltop.optml | toplevel/mltop.ml.d toplevel/mltop.ml4.d
-	$(SHOW)'OCAMLOPT  $<'
-	$(HIDE)$(OCAMLOPT) $(OPTFLAGS) -c -impl $< -o $@
-
-toplevel/mltop.ml: toplevel/mltop.ml4 config/Makefile # no camlp4deps here
-	$(SHOW)'CAMLP4O   $<'
-	$(HIDE)$(CAMLP4O) $(PR_O) $(CAMLP4USE) -DByte -DHasDynlink -impl $< -o $@
-
-toplevel/mltop.optml: toplevel/mltop.ml4 config/Makefile # no camlp4deps here
-	$(SHOW)'CAMLP4O   $<'
-	$(HIDE)$(CAMLP4O) $(PR_O) $(CAMLP4USE) $(NATDYNLINKDEF) -impl $< -o $@
+	$(HIDE)$(OCAMLC) $(MLINCLUDES) $(BYTEFLAGS) $^ -linkall -a -o $@
 
 ide/coqide_main.ml: ide/coqide_main.ml4
 	$(SHOW)'CAMLP4O   $<'
-	$(HIDE)$(CAMLP4O) $(CAMLP4USE) -impl $< -o $@
+	$(HIDE)$(CAMLP4O) $(PR_O) $(CAMLP4USE) -impl $< -o $@
 
 ide/coqide_main_opt.ml: ide/coqide_main.ml4 config/Makefile # no camlp4deps here
 	$(SHOW)'CAMLP4O   $<'
-	$(HIDE)$(CAMLP4O) $(CAMLP4USE) -D$(IDEOPTINT) -impl $< -o $@
-
+	$(HIDE)$(CAMLP4O) $(PR_O) $(CAMLP4USE) -D$(IDEOPTINT) -impl $< -o $@
 
 # pretty printing of the revision number when compiling a checked out
 # source tree
@@ -834,12 +815,14 @@ endif
 ## Three flavor of flags: checker/* ide/* and normal files
 
 COND_BYTEFLAGS= \
- $(if $(filter checker/%,$<), $(CHKBYTEFLAGS), \
-   $(if $(filter ide/%,$<),$(COQIDEFLAGS),) $(BYTEFLAGS))
+ $(if $(filter checker/%,$<), $(CHKLIBS), \
+   $(if $(filter ide/%,$<), $(COQIDEFLAGS), \
+     $(if $(filter tools/coq_makefile%,$<), -I ide,) $(MLINCLUDES))) $(BYTEFLAGS)
 
 COND_OPTFLAGS= \
- $(if $(filter checker/%,$<), $(CHKOPTFLAGS), \
-   $(if $(filter ide/%,$<),$(COQIDEFLAGS),) $(OPTFLAGS))
+ $(if $(filter checker/%,$<), $(CHKLIBS), \
+   $(if $(filter ide/%,$<), $(COQIDEFLAGS), \
+     $(if $(filter tools/coq_makefile%,$<), -I ide,) $(MLINCLUDES))) $(OPTFLAGS)
 
 %.o: %.c
 	$(SHOW)'OCAMLC    $<'
@@ -911,18 +894,18 @@ plugins/%_mod.ml: plugins/%.mllib
 %.ml: %.ml4 | %.ml4.d tools/compat5.cmo tools/compat5b.cmo
 	$(SHOW)'CAMLP4O   $<'
 	$(HIDE)\
-	DEPS=$(CAMLP4DEPS); \
+	DEPS="$(call CAMLP4DEPS,$<)"; \
 	if ls $${DEPS} > /dev/null 2>&1; then \
 	$(CAMLP4O) $(PR_O) -I $(CAMLLIB) tools/compat5.cmo $${DEPS} $(CAMLP4USE) $(CAMLP4COMPAT) -impl $< -o $@; \
 	else echo $< : Dependency $${DEPS} not ready yet; false; fi
 
-%.vo %.glob: %.v states/initial.coq $(INITPLUGINSBEST) $(VO_TOOLS_STRICT) | %.v.d  $(VO_TOOLS_ORDER_ONLY)
+%.vo %.glob: %.v theories/Init/Prelude.vo $(VO_TOOLS_DEP) | %.v.d
 	$(SHOW)'COQC      $<'
 	$(HIDE)rm -f $*.glob 
 	$(HIDE)$(BOOTCOQC) $*
 ifdef VALIDATE
 	$(SHOW)'COQCHK    $(call vo_to_mod,$@)'
-	$(HIDE)$(BESTCHICKEN) -boot -silent -norec $(call vo_to_mod,$@) \
+	$(HIDE)$(CHICKEN) -boot -silent -norec $(call vo_to_mod,$@) \
 	  || ( RV=$$?; rm -f "$@"; exit $${RV} )
 endif
 
@@ -935,7 +918,7 @@ endif
 
 %.ml4.d: $(D_DEPEND_BEFORE_SRC) %.ml4
 	$(SHOW)'CAMLP4DEPS $<'
-	$(HIDE)echo "$*.ml: $(if $(NO_RECOMPILE_ML4),$(ORDER_ONLY_SEP)) $(CAMLP4DEPS)" $(TOTARGET)
+	$(HIDE)echo "$*.ml: $(if $(NO_RECOMPILE_ML4),$(ORDER_ONLY_SEP)) $(call CAMLP4DEPS,$<)" $(TOTARGET)
 
 # We now use coqdep_boot to wrap around ocamldep -modules, since it is aware
 # of .ml4 files
@@ -982,8 +965,13 @@ checker/%.mllib.d: $(D_DEPEND_BEFORE_SRC) checker/%.mllib $(D_DEPEND_AFTER_SRC) 
 # this sets up developper supporting stuff
 ###########################################################################
 
-.PHONY: devel
+.PHONY: devel otags
 devel: $(DEBUGPRINTERS)
+
+otags:
+	otags $(MLIFILES) $(MLSTATICFILES) \
+	$(foreach i,$(ML4FILES),-pc -pa tools/compat5.cmo -pa op -pa g -pa m -pa rq $(patsubst %,-pa %,$(call CAMLP4DEPS,$i)) -impl $i)
+
 
 ###########################################################################
 

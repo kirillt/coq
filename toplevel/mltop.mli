@@ -43,8 +43,8 @@ val add_ml_dir : string -> unit
 val add_rec_ml_dir : string -> unit
 
 (** Adds a path to the Coq and ML paths *)
-val add_path : unix_path:string -> coq_root:Names.dir_path -> unit
-val add_rec_path : unix_path:string -> coq_root:Names.dir_path -> unit
+val add_path : unix_path:string -> coq_root:Names.DirPath.t -> unit
+val add_rec_path : unix_path:string -> coq_root:Names.DirPath.t -> unit
 
 (** List of modules linked to the toplevel *)
 val add_known_module : string -> unit
@@ -63,6 +63,6 @@ val init_known_plugins : unit -> unit
 
 val declare_ml_modules : Vernacexpr.locality_flag -> string list -> unit
 
-val print_ml_path : unit -> unit
-
-val print_ml_modules : unit -> unit
+val print_ml_path : unit -> Pp.std_ppcmds
+val print_ml_modules : unit -> Pp.std_ppcmds
+val print_gc : unit -> Pp.std_ppcmds

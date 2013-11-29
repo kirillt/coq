@@ -7,23 +7,27 @@
 (************************************************************************)
 
 open Libobject
-open Proof_type
 open Pp
 
 let declare_tactic_option ?(default=Tacexpr.TacId []) name =
-  let default_tactic_expr : Tacexpr.glob_tactic_expr ref = ref default in
-  let default_tactic : Proof_type.tactic ref = ref (Tacinterp.eval_tactic !default_tactic_expr) in
-  let locality = ref false in
-  let set_default_tactic local t = 
+  let locality = Summary.ref false ~name:(name^"-locality") in
+  let default_tactic_expr : Tacexpr.glob_tactic_expr ref =
+    Summary.ref default ~name:(name^"-default-tacexpr")
+  in
+  let default_tactic : Tacexpr.glob_tactic_expr ref =
+    Summary.ref !default_tactic_expr ~name:(name^"-default-tactic")
+  in
+  let set_default_tactic local t =
     locality := local;
-    default_tactic_expr := t; default_tactic := Tacinterp.eval_tactic t 
+    default_tactic_expr := t;
+    default_tactic := t
   in
   let cache (_, (local, tac)) = set_default_tactic local tac in
   let load (_, (local, tac)) =
     if not local then set_default_tactic local tac
   in
   let subst (s, (local, tac)) =
-    (local, Tacinterp.subst_tactic s tac)
+    (local, Tacsubst.subst_tactic s tac)
   in
   let input : bool * Tacexpr.glob_tactic_expr -> obj =
     declare_object
@@ -39,17 +43,9 @@ let declare_tactic_option ?(default=Tacexpr.TacId []) name =
     set_default_tactic local tac;
     Lib.add_anonymous_leaf (input (local, tac))
   in
-  let get () = !locality, !default_tactic in
+  let get () = !locality, Tacinterp.eval_tactic !default_tactic in
   let print () = 
     Pptactic.pr_glob_tactic (Global.env ()) !default_tactic_expr ++
       (if !locality then str" (locally defined)" else str" (globally defined)")
   in
-  let freeze () = !locality, !default_tactic_expr in
-  let unfreeze (local, t) = set_default_tactic local t in
-  let init () = () in
-    Summary.declare_summary name
-      { Summary.freeze_function = freeze;
-        Summary.unfreeze_function = unfreeze;
-        Summary.init_function = init };
-    put, get, print
-      
+  put, get, print

@@ -6,27 +6,31 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Compat
 open Pp
+open Errors
 open Util
 open Names
-open Term
 open Pcoq
 open Glob_term
-open Genarg
 open Tacexpr
 open Libnames
+open Globnames
 
 open Nametab
 open Detyping
 open Tok
+open Misctypes
+open Decl_kinds
+open Genredexpr
 
 (* Generic xml parser without raw data *)
 
-type attribute = string * (loc * string)
-type xml = XmlTag of loc * string * attribute list * xml list
+type attribute = string * (Loc.t * string)
+type xml = XmlTag of Loc.t * string * attribute list * xml list
 
 let check_tags loc otag ctag =
-  if otag <> ctag then
+  if not (String.equal otag ctag) then
     user_err_loc (loc,"",str "closing xml tag " ++ str ctag ++
       str "does not match open xml tag " ++ str otag ++ str ".")
 
@@ -41,14 +45,14 @@ GEXTEND Gram
   xml:
     [ [ "<"; otag = IDENT; attrs = LIST0 attr; ">"; l = LIST1 xml;
         "<"; "/"; ctag = IDENT; ">"  ->
-	  check_tags loc otag ctag;
-	  XmlTag (loc,ctag,attrs,l)
+	  check_tags (!@loc) otag ctag;
+	  XmlTag (!@loc,ctag,attrs,l)
       | "<"; tag = IDENT; attrs = LIST0 attr; "/"; ">" ->
-	  XmlTag (loc,tag,attrs,[])
+	  XmlTag (!@loc,tag,attrs,[])
     ] ]
   ;
   attr:
-    [ [ name = IDENT; "="; data = STRING -> (name, (loc, data)) ] ]
+    [ [ name = IDENT; "="; data = STRING -> (name, (!@loc, data)) ] ]
   ;
 END
 
@@ -70,18 +74,22 @@ let nmtoken (loc,a) =
   with Failure _ -> user_err_loc (loc,"",str "nmtoken expected.")
 
 let get_xml_attr s al =
-  try List.assoc s al
+  try String.List.assoc s al
   with Not_found -> error ("No attribute "^s)
 
 (* Interpreting specific attributes *)
 
-let ident_of_cdata (loc,a) = id_of_string a
+let ident_of_cdata (loc,a) = Id.of_string a
 
 let uri_of_data s =
   let n = String.index s ':' in
   let p = String.index s '.' in
   let s = String.sub s (n+2) (p-n-2) in
-  for i=0 to String.length s - 1 do if s.[i]='/' then s.[i]<-'.' done;
+  for i = 0 to String.length s - 1 do
+    match s.[i] with
+    | '/' -> s.[i] <- '.'
+    | _ -> ()
+  done;
   qualid_of_string s
 
 let constant_of_cdata (loc,a) = Nametab.locate_constant (uri_of_data a)
@@ -90,13 +98,13 @@ let global_of_cdata (loc,a) = Nametab.locate (uri_of_data a)
 
 let inductive_of_cdata a = match global_of_cdata a with
     | IndRef (kn,_) -> kn
-    | _ -> anomaly "XML parser: not an inductive"
+    | _ -> anomaly ~label:"XML parser" (str "not an inductive")
 
 let ltacref_of_cdata (loc,a) = (loc,locate_tactic (uri_of_data a))
 
 let sort_of_cdata (loc,a) = match a with
-  | "Prop" -> GProp Null
-  | "Set" -> GProp Pos
+  | "Prop" -> GProp
+  | "Set" -> GSet
   | "Type" -> GType None
   | _ -> user_err_loc (loc,"",str "sort expected.")
 
@@ -105,7 +113,7 @@ let get_xml_sort al = sort_of_cdata (get_xml_attr "value" al)
 let get_xml_inductive_kn al =
   inductive_of_cdata (* uriType apparent synonym of uri *)
     (try get_xml_attr "uri" al
-     with e when Errors.noncritical e -> get_xml_attr "uriType" al)
+     with UserError _ -> get_xml_attr "uriType" al)
 
 let get_xml_constant al = constant_of_cdata (get_xml_attr "uri" al)
 
@@ -116,7 +124,7 @@ let get_xml_constructor al =
   (get_xml_inductive al, nmtoken (get_xml_attr "noConstr" al))
 
 let get_xml_binder al =
-  try Name (ident_of_cdata (List.assoc "binder" al))
+  try Name (ident_of_cdata (String.List.assoc "binder" al))
   with Not_found -> Anonymous
 
 let get_xml_ident al = ident_of_cdata (get_xml_attr "binder" al)
@@ -125,7 +133,7 @@ let get_xml_name al = ident_of_cdata (get_xml_attr "name" al)
 
 let get_xml_noFun al = nmtoken (get_xml_attr "noFun" al)
 
-let get_xml_no al = nmtoken (get_xml_attr "no" al)
+let get_xml_no al = Evar.unsafe_of_int (nmtoken (get_xml_attr "no" al))
 
 (* A leak in the xml dtd: arities of constructor need to know global env *)
 
@@ -134,7 +142,7 @@ let compute_branches_lengths ind =
   mip.Declarations.mind_consnrealdecls
 
 let compute_inductive_nargs ind =
-  Inductiveops.inductive_nargs (Global.env()) ind
+  Inductiveops.inductive_nargs ind
 
 (* Interpreting constr as a glob_constr *)
 
@@ -144,17 +152,17 @@ let rec interp_xml_constr = function
   | XmlTag (loc,"VAR",al,[]) ->
       error "XML parser: unable to interp free variables"
   | XmlTag (loc,"LAMBDA",al,(_::_ as xl)) ->
-      let body,decls = list_sep_last xl in
+      let body,decls = List.sep_last xl in
       let ctx = List.map interp_xml_decl decls in
       List.fold_right (fun (na,t) b -> GLambda (loc, na, Explicit, t, b))
 	ctx (interp_xml_target body)
   | XmlTag (loc,"PROD",al,(_::_ as xl)) ->
-      let body,decls = list_sep_last xl in
+      let body,decls = List.sep_last xl in
       let ctx = List.map interp_xml_decl decls in
       List.fold_right (fun (na,t) b -> GProd (loc, na, Explicit, t, b))
 	ctx (interp_xml_target body)
   | XmlTag (loc,"LETIN",al,(_::_ as xl)) ->
-      let body,defs = list_sep_last xl in
+      let body,defs = List.sep_last xl in
       let ctx = List.map interp_xml_def defs in
       List.fold_right (fun (na,t) b -> GLetIn (loc, na, t, b))
         ctx (interp_xml_target body)
@@ -172,11 +180,11 @@ let rec interp_xml_constr = function
       let p = interp_xml_patternsType x in
       let tm = interp_xml_inductiveTerm y in
       let vars = compute_branches_lengths ind in
-      let brs = list_map_i (fun i c -> (i,vars.(i),interp_xml_pattern c)) 0 yl
+      let brs = List.map_i (fun i c -> (i,vars.(i),interp_xml_pattern c)) 0 yl
       in
       let mat = simple_cases_matrix_of_branches ind brs in
       let nparams,n = compute_inductive_nargs ind in
-      let nal,rtn = return_type_of_predicate ind nparams n p in
+      let nal,rtn = return_type_of_predicate ind n p in
       GCases (loc,RegularStyle,rtn,[tm,nal],mat)
   | XmlTag (loc,"MUTIND",al,[]) ->
       GRef (loc, IndRef (get_xml_inductive al))
@@ -184,21 +192,21 @@ let rec interp_xml_constr = function
       GRef (loc, ConstructRef (get_xml_constructor al))
   | XmlTag (loc,"FIX",al,xl) ->
       let li,lnct = List.split (List.map interp_xml_FixFunction xl) in
-      let ln,lc,lt = list_split3 lnct in
+      let ln,lc,lt = List.split3 lnct in
       let lctx = List.map (fun _ -> []) ln in
       GRec (loc, GFix (Array.of_list li, get_xml_noFun al), Array.of_list ln, Array.of_list lctx, Array.of_list lc, Array.of_list lt)
   | XmlTag (loc,"COFIX",al,xl) ->
-      let ln,lc,lt = list_split3 (List.map interp_xml_CoFixFunction xl) in
+      let ln,lc,lt = List.split3 (List.map interp_xml_CoFixFunction xl) in
       GRec (loc, GCoFix (get_xml_noFun al), Array.of_list ln, [||], Array.of_list lc, Array.of_list lt)
   | XmlTag (loc,"CAST",al,[x1;x2]) ->
-      GCast (loc, interp_xml_term x1, CastConv (DEFAULTcast, interp_xml_type x2))
+      GCast (loc, interp_xml_term x1, CastConv (interp_xml_type x2))
   | XmlTag (loc,"SORT",al,[]) ->
       GSort (loc, get_xml_sort al)
   | XmlTag (loc,s,_,_) ->
       user_err_loc (loc,"", str "Unexpected tag " ++ str s ++ str ".")
 
 and interp_xml_tag s = function
-  | XmlTag (loc,tag,al,xl) when tag=s -> (loc,al,xl)
+  | XmlTag (loc,tag,al,xl) when String.equal tag s -> (loc,al,xl)
   | XmlTag (loc,tag,_,_) -> user_err_loc (loc, "",
     str "Expect tag " ++ str s ++ str " but find " ++ str s ++ str ".")
 

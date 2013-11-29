@@ -8,132 +8,32 @@
 
 (* This module instantiates the structure of generic deBruijn terms to Coq *)
 
+open Errors
 open Util
-open Pp
 open Names
 open Univ
 open Esubst
-open Validate
 
-(* Coq abstract syntax with deBruijn variables; 'a is the type of sorts *)
-
-type existential_key = int
-type metavariable = int
-
-(* This defines the strategy to use for verifiying a Cast *)
-
-(* This defines Cases annotations *)
-type case_style = LetStyle | IfStyle | LetPatternStyle | MatchStyle |
-  RegularStyle
-type case_printing =
-  { ind_nargs : int; (* length of the arity of the inductive type *)
-    style     : case_style }
-type case_info =
-  { ci_ind         : inductive;
-    ci_npar        : int;
-    ci_cstr_ndecls : int array; (* number of pattern var of each constructor *)
-    ci_pp_info     : case_printing (* not interpreted by the kernel *)
-  }
-let val_ci =
-  let val_cstyle = val_enum "case_style" 5 in
-  let val_cprint = val_tuple ~name:"case_printing" [|val_int;val_cstyle|] in
-  val_tuple ~name:"case_info" [|val_ind;val_int;val_array val_int;val_cprint|]
+open Cic
 
 (* Sorts. *)
-
-type contents = Pos | Null
-
-type sorts =
-  | Prop of contents                      (* proposition types *)
-  | Type of universe
-
-type sorts_family = InProp | InSet | InType
 
 let family_of_sort = function
   | Prop Null -> InProp
   | Prop Pos -> InSet
   | Type _ -> InType
 
-let val_sort = val_sum "sort" 0 [|[|val_enum "cnt" 2|];[|val_univ|]|]
-let val_sortfam = val_enum "sorts_family" 3
+let family_equal = (==)
 
 (********************************************************************)
 (*       Constructions as implemented                               *)
 (********************************************************************)
 
-(* [constr array] is an instance matching definitional [named_context] in
-   the same order (i.e. last argument first) *)
-type 'constr pexistential = existential_key * 'constr array
-type 'constr prec_declaration =
-    name array * 'constr array * 'constr array
-type 'constr pfixpoint =
-    (int array * int) * 'constr prec_declaration
-type 'constr pcofixpoint =
-    int * 'constr prec_declaration
-
-let val_evar f = val_tuple ~name:"pexistential" [|val_int;val_array f|]
-let val_prec f =
-  val_tuple ~name:"prec_declaration"
-    [|val_array val_name; val_array f; val_array f|]
-let val_fix f =
-  val_tuple ~name:"pfixpoint"
-    [|val_tuple~name:"fix2"[|val_array val_int;val_int|];val_prec f|]
-let val_cofix f = val_tuple ~name:"pcofixpoint"[|val_int;val_prec f|]
-
-type cast_kind = VMcast | DEFAULTcast
-let val_cast = val_enum "cast_kind" 2
-
-(*s*******************************************************************)
-(* The type of constructions *)
-
-type constr =
-  | Rel       of int
-  | Var       of identifier
-  | Meta      of metavariable
-  | Evar      of constr pexistential
-  | Sort      of sorts
-  | Cast      of constr * cast_kind * constr
-  | Prod      of name * constr * constr
-  | Lambda    of name * constr * constr
-  | LetIn     of name * constr * constr * constr
-  | App       of constr * constr array
-  | Const     of constant
-  | Ind       of inductive
-  | Construct of constructor
-  | Case      of case_info * constr * constr * constr array
-  | Fix       of constr pfixpoint
-  | CoFix     of constr pcofixpoint
-
-let val_constr = val_rec_sum "constr" 0 (fun val_constr -> [|
-  [|val_int|]; (* Rel *)
-  [|val_id|]; (* Var *)
-  [|val_int|]; (* Meta *)
-  [|val_evar val_constr|]; (* Evar *)
-  [|val_sort|]; (* Sort *)
-  [|val_constr;val_cast;val_constr|]; (* Cast *)
-  [|val_name;val_constr;val_constr|]; (* Prod *)
-  [|val_name;val_constr;val_constr|]; (* Lambda *)
-  [|val_name;val_constr;val_constr;val_constr|]; (* LetIn *)
-  [|val_constr;val_array val_constr|]; (* App *)
-  [|val_con|]; (* Const *)
-  [|val_ind|]; (* Ind *)
-  [|val_cstr|]; (* Construct *)
-  [|val_ci;val_constr;val_constr;val_array val_constr|]; (* Case *)
-  [|val_fix val_constr|]; (* Fix *)
-  [|val_cofix val_constr|] (* CoFix *)
-|])
-
-type existential = constr pexistential
-type rec_declaration = constr prec_declaration
-type fixpoint = constr pfixpoint
-type cofixpoint = constr pcofixpoint
-
-
 let rec strip_outer_cast c = match c with
   | Cast (c,_,_) -> strip_outer_cast c
   | _ -> c
 
-let rec collapse_appl c = match c with
+let collapse_appl c = match c with
   | App (f,cl) ->
       let rec collapse_rec f cl2 =
         match (strip_outer_cast f) with
@@ -197,7 +97,7 @@ let closed0 = closedn 0
 
 let noccurn n term =
   let rec occur_rec n c = match c with
-    | Rel m -> if m = n then raise LocalOccur
+    | Rel m -> if Int.equal m n then raise LocalOccur
     | _ -> iter_constr_with_binders succ occur_rec n c
   in
   try occur_rec n term; true with LocalOccur -> false
@@ -221,7 +121,7 @@ let noccur_between n m term =
 
 let noccur_with_meta n m term =
   let rec occur_rec n c = match c with
-    | Rel p -> if n<=p & p<n+m then raise LocalOccur
+    | Rel p -> if n<=p && p<n+m then raise LocalOccur
     | App(f,cl) ->
 	(match f with
            | (Cast (Meta _,_,_)| Meta _) -> ()
@@ -291,7 +191,7 @@ let make_substituend c = { sinfo=Unknown; sit=c }
 
 let substn_many lamv n c =
   let lv = Array.length lamv in
-  if lv = 0 then c
+  if Int.equal lv 0 then c
   else
     let rec substrec depth c = match c with
       | Rel k     ->
@@ -311,23 +211,6 @@ let subst1 lam = substl [lam]
 (*     Type of assumptions and contexts                                    *)
 (***************************************************************************)
 
-let val_ndecl =
-  val_tuple ~name:"named_declaration"[|val_id;val_opt val_constr;val_constr|]
-let val_rdecl =
-  val_tuple ~name:"rel_declaration"[|val_name;val_opt val_constr;val_constr|]
-let val_nctxt = val_list val_ndecl
-let val_rctxt = val_list val_rdecl
-
-type named_declaration = identifier * constr option * constr
-type rel_declaration = name * constr option * constr
-
-type named_context = named_declaration list
-let empty_named_context = []
-let fold_named_context f l ~init = List.fold_right f l init
-
-type section_context = named_context
-
-type rel_context = rel_declaration list
 let empty_rel_context = []
 let rel_context_length = List.length
 let rel_context_nhyps hyps =
@@ -338,16 +221,14 @@ let rel_context_nhyps hyps =
   nhyps 0 hyps
 let fold_rel_context f l ~init = List.fold_right f l init
 
-let map_context f l =
+let map_rel_context f l =
   let map_decl (n, body_o, typ as decl) =
     let body_o' = Option.smartmap f body_o in
     let typ' = f typ in
       if body_o' == body_o && typ' == typ then decl else
 	(n, body_o', typ')
   in
-    list_smartmap map_decl l
-
-let map_rel_context = map_context
+    List.smartmap map_decl l
 
 let extended_rel_list n hyps =
   let rec reln l p = function
@@ -383,7 +264,7 @@ let decompose_lam_n_assum n =
   if n < 0 then
     error "decompose_lam_n_assum: integer parameter must be positive";
   let rec lamdec_rec l n c =
-    if n=0 then l,c
+    if Int.equal n 0 then l,c
     else match c with
     | Lambda (x,t,c)  -> lamdec_rec ((x,None,t) :: l) (n-1) c
     | LetIn (x,b,t,c) -> lamdec_rec ((x,Some b,t) :: l) n c
@@ -416,7 +297,7 @@ let decompose_prod_n_assum n =
   if n < 0 then
     error "decompose_prod_n_assum: integer parameter must be positive";
   let rec prodec_rec l n c =
-    if n=0 then l,c
+    if Int.equal n 0 then l,c
     else match c with
     | Prod (x,t,c)    -> prodec_rec ((x,None,t) :: l) (n-1) c
     | LetIn (x,b,t,c) -> prodec_rec ((x,Some b,t) :: l) (n-1) c
@@ -441,7 +322,7 @@ let destArity =
     | LetIn (x,b,t,c) -> prodec_rec ((x,Some b,t)::l) c
     | Cast (c,_,_)    -> prodec_rec l c
     | Sort s          -> l,s
-    | _               -> anomaly "destArity: not an arity"
+    | _               -> anomaly ~label:"destArity" (Pp.str "not an arity")
   in
   prodec_rec []
 
@@ -459,40 +340,52 @@ let rec isArity c =
 
 (* alpha conversion : ignore print names and casts *)
 
+let compare_sorts s1 s2 = match s1, s2 with
+| Prop c1, Prop c2 ->
+  begin match c1, c2 with
+  | Pos, Pos | Null, Null -> true
+  | Pos, Null -> false
+  | Null, Pos -> false
+  end
+| Type u1, Type u2 -> Universe.equal u1 u2
+| Prop _, Type _ -> false
+| Type _, Prop _ -> false
+
 let compare_constr f t1 t2 =
   match t1, t2 with
-  | Rel n1, Rel n2 -> n1 = n2
-  | Meta m1, Meta m2 -> m1 = m2
-  | Var id1, Var id2 -> id1 = id2
-  | Sort s1, Sort s2 -> s1 = s2
+  | Rel n1, Rel n2 -> Int.equal n1 n2
+  | Meta m1, Meta m2 -> Int.equal m1 m2
+  | Var id1, Var id2 -> Id.equal id1 id2
+  | Sort s1, Sort s2 -> compare_sorts s1 s2
   | Cast (c1,_,_), _ -> f c1 t2
   | _, Cast (c2,_,_) -> f t1 c2
-  | Prod (_,t1,c1), Prod (_,t2,c2) -> f t1 t2 & f c1 c2
-  | Lambda (_,t1,c1), Lambda (_,t2,c2) -> f t1 t2 & f c1 c2
-  | LetIn (_,b1,t1,c1), LetIn (_,b2,t2,c2) -> f b1 b2 & f t1 t2 & f c1 c2
+  | Prod (_,t1,c1), Prod (_,t2,c2) -> f t1 t2 && f c1 c2
+  | Lambda (_,t1,c1), Lambda (_,t2,c2) -> f t1 t2 && f c1 c2
+  | LetIn (_,b1,t1,c1), LetIn (_,b2,t2,c2) -> f b1 b2 && f t1 t2 && f c1 c2
   | App (c1,l1), App (c2,l2) ->
-      if Array.length l1 = Array.length l2 then
-        f c1 c2 & array_for_all2 f l1 l2
+      if Int.equal (Array.length l1) (Array.length l2) then
+        f c1 c2 && Array.for_all2 f l1 l2
       else
         let (h1,l1) = decompose_app t1 in
         let (h2,l2) = decompose_app t2 in
-        if List.length l1 = List.length l2 then
-          f h1 h2 & List.for_all2 f l1 l2
+        if Int.equal (List.length l1) (List.length l2) then
+          f h1 h2 && List.for_all2 f l1 l2
         else false
-  | Evar (e1,l1), Evar (e2,l2) -> e1 = e2 & array_for_all2 f l1 l2
+  | Evar (e1,l1), Evar (e2,l2) -> Int.equal e1 e2 && Array.equal f l1 l2
   | Const c1, Const c2 -> eq_con_chk c1 c2
   | Ind c1, Ind c2 -> eq_ind_chk c1 c2
-  | Construct (c1,i1), Construct (c2,i2) -> i1=i2 && eq_ind_chk c1 c2
+  | Construct (c1,i1), Construct (c2,i2) -> Int.equal i1 i2 && eq_ind_chk c1 c2
   | Case (_,p1,c1,bl1), Case (_,p2,c2,bl2) ->
-      f p1 p2 & f c1 c2 & array_for_all2 f bl1 bl2
-  | Fix (ln1,(_,tl1,bl1)), Fix (ln2,(_,tl2,bl2)) ->
-      ln1 = ln2 & array_for_all2 f tl1 tl2 & array_for_all2 f bl1 bl2
+      f p1 p2 && f c1 c2 && Array.equal f bl1 bl2
+  | Fix ((ln1, i1),(_,tl1,bl1)), Fix ((ln2, i2),(_,tl2,bl2)) ->
+      Int.equal i1 i2 && Array.equal Int.equal ln1 ln2 &&
+      Array.equal f tl1 tl2 && Array.equal f bl1 bl2
   | CoFix(ln1,(_,tl1,bl1)), CoFix(ln2,(_,tl2,bl2)) ->
-      ln1 = ln2 & array_for_all2 f tl1 tl2 & array_for_all2 f bl1 bl2
+      Int.equal ln1 ln2 && Array.equal f tl1 tl2 && Array.equal f bl1 bl2
   | _ -> false
 
 let rec eq_constr m n =
-  (m==n) or
+  (m == n) ||
   compare_constr eq_constr m n
 
 let eq_constr m n = eq_constr m n (* to avoid tracing a recursive fun *)

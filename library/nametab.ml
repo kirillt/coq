@@ -6,13 +6,12 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
-open Compat
 open Pp
 open Names
 open Libnames
-open Nameops
-open Declarations
+open Globnames
 
 
 exception GlobalizationError of qualid
@@ -43,14 +42,20 @@ type visibility = Until of int | Exactly of int
 (* Data structure for nametabs *******************************************)
 
 
-(* This module type will be instantiated by [full_path] of [dir_path] *)
+(* This module type will be instantiated by [full_path] of [DirPath.t] *)
 (* The [repr] function is assumed to return the reversed list of idents. *)
 module type UserName = sig
   type t
+  val equal : t -> t -> bool
   val to_string : t -> string
-  val repr : t -> identifier * module_ident list
+  val repr : t -> Id.t * module_ident list
 end
 
+module type EqualityType =
+sig
+  type t
+  val equal : t -> t -> bool
+end
 
 (* A ['a t] is a map from [user_name] to ['a], with possible lookup by
    partially qualified names of type [qualid]. The mapping of
@@ -62,68 +67,74 @@ end
    the same object.
 *)
 module type NAMETREE = sig
-  type 'a t
+  type elt
+  type t
   type user_name
 
-  val empty : 'a t
-  val push : visibility -> user_name -> 'a -> 'a t -> 'a t
-  val locate : qualid -> 'a t -> 'a
-  val find : user_name -> 'a t -> 'a
-  val exists : user_name -> 'a t -> bool
-  val user_name : qualid -> 'a t -> user_name
-  val shortest_qualid : Idset.t -> user_name -> 'a t -> qualid
-  val find_prefixes : qualid -> 'a t -> 'a list
+  val empty : t
+  val push : visibility -> user_name -> elt -> t -> t
+  val locate : qualid -> t -> elt
+  val find : user_name -> t -> elt
+  val exists : user_name -> t -> bool
+  val user_name : qualid -> t -> user_name
+  val shortest_qualid : Id.Set.t -> user_name -> t -> qualid
+  val find_prefixes : qualid -> t -> elt list
 end
 
-module Make(U:UserName) : NAMETREE with type user_name = U.t
-				     =
+module Make (U : UserName) (E : EqualityType) : NAMETREE
+  with type user_name = U.t and type elt = E.t =
 struct
+  type elt = E.t
 
   type user_name = U.t
 
-  type 'a path_status =
+  type path_status =
       Nothing
-    | Relative of user_name * 'a
-    | Absolute of user_name * 'a
+    | Relative of user_name * elt
+    | Absolute of user_name * elt
 
   (* Dictionaries of short names *)
-  type 'a nametree = ('a path_status * 'a nametree ModIdmap.t)
+  type nametree =
+      { path : path_status;
+	map : nametree ModIdmap.t }
 
-  type 'a t = 'a nametree Idmap.t
+  let mktree p m = { path=p; map=m }
+  let empty_tree = mktree Nothing ModIdmap.empty
 
-  let empty = Idmap.empty
+  type t = nametree Id.Map.t
+
+  let empty = Id.Map.empty
 
   (* [push_until] is used to register [Until vis] visibility and
      [push_exactly] to [Exactly vis] and [push_tree] chooses the right one*)
 
-  let rec push_until uname o level (current,dirmap) = function
+  let rec push_until uname o level tree = function
     | modid :: path ->
 	let mc =
-	  try ModIdmap.find modid dirmap
-	  with Not_found -> (Nothing, ModIdmap.empty)
+	  try ModIdmap.find modid tree.map
+	  with Not_found -> empty_tree
 	in
 	let this =
           if level <= 0 then
-	    match current with
+	    match tree.path with
 	      | Absolute (n,_) ->
 		  (* This is an absolute name, we must keep it
 		     otherwise it may become unaccessible forever *)
-		  Flags.if_warn
 		    msg_warning (str ("Trying to mask the absolute name \""
 			     ^ U.to_string n ^ "\"!"));
-		  current
+		  tree.path
 	      | Nothing
 	      | Relative _ -> Relative (uname,o)
-          else current
+          else tree.path
 	in
 	let ptab' = push_until uname o (level-1) mc path in
-	  (this, ModIdmap.add modid ptab' dirmap)
+	mktree this (ModIdmap.add modid ptab' tree.map)
     | [] ->
-	match current with
+	match tree.path with
 	  | Absolute (uname',o') ->
-	      if o'=o then begin
-		assert (uname=uname');
-		current, dirmap
+	      if E.equal o' o then begin
+		assert (U.equal uname uname');
+		tree
 		  (* we are putting the same thing for the second time :) *)
 	      end
 	      else
@@ -133,56 +144,55 @@ struct
 		error ("Cannot mask the absolute name \""
 		       ^ U.to_string uname' ^ "\"!")
 	  | Nothing
-	  | Relative _ -> Absolute (uname,o), dirmap
+	  | Relative _ -> mktree (Absolute (uname,o)) tree.map
 
 
-let rec push_exactly uname o level (current,dirmap) = function
+let rec push_exactly uname o level tree = function
   | modid :: path ->
       let mc =
-	try ModIdmap.find modid dirmap
-	with Not_found -> (Nothing, ModIdmap.empty)
+	try ModIdmap.find modid tree.map
+	with Not_found -> empty_tree
       in
-        if level = 0 then
+        if Int.equal level 0 then
 	  let this =
-	    match current with
+	    match tree.path with
 	      | Absolute (n,_) ->
 		  (* This is an absolute name, we must keep it
 		     otherwise it may become unaccessible forever *)
-		  Flags.if_warn
 		    msg_warning (str ("Trying to mask the absolute name \""
 			     ^ U.to_string n ^ "\"!"));
-		  current
+		  tree.path
 	      | Nothing
 	      | Relative _ -> Relative (uname,o)
 	  in
-	    (this, dirmap)
+	  mktree this tree.map
 	else (* not right level *)
 	  let ptab' = push_exactly uname o (level-1) mc path in
-	    (current, ModIdmap.add modid ptab' dirmap)
+	  mktree tree.path (ModIdmap.add modid ptab' tree.map)
   | [] ->
-      anomaly "Prefix longer than path! Impossible!"
+      anomaly (Pp.str "Prefix longer than path! Impossible!")
 
 
 let push visibility uname o tab =
   let id,dir = U.repr uname in
   let ptab =
-    try Idmap.find id tab
-    with Not_found -> (Nothing, ModIdmap.empty)
+    try Id.Map.find id tab
+    with Not_found -> empty_tree
   in
   let ptab' = match visibility with
     | Until i -> push_until uname o (i-1) ptab dir
     | Exactly i -> push_exactly uname o (i-1) ptab dir
   in
-    Idmap.add id ptab' tab
+    Id.Map.add id ptab' tab
 
 
-let rec search (current,modidtab) = function
-  | modid :: path -> search (ModIdmap.find modid modidtab) path
-  | [] -> current
+let rec search tree = function
+  | modid :: path -> search (ModIdmap.find modid tree.map) path
+  | [] -> tree.path
 
 let find_node qid tab =
   let (dir,id) = repr_qualid qid in
-    search (Idmap.find id tab) (repr_dirpath dir)
+    search (Id.Map.find id tab) (DirPath.repr dir)
 
 let locate qid tab =
   let o = match find_node qid tab with
@@ -200,7 +210,7 @@ let user_name qid tab =
 
 let find uname tab =
   let id,l = U.repr uname in
-    match search (Idmap.find id tab) l with
+    match search (Id.Map.find id tab) l with
 	Absolute (_,o) -> o
       | _ -> raise Not_found
 
@@ -213,36 +223,38 @@ let exists uname tab =
 
 let shortest_qualid ctx uname tab =
   let id,dir = U.repr uname in
-  let hidden = Idset.mem id ctx in
-  let rec find_uname pos dir (path,tab) = match path with
+  let hidden = Id.Set.mem id ctx in
+  let rec find_uname pos dir tree =
+    let is_empty = match pos with [] -> true | _ -> false in
+    match tree.path with
     | Absolute (u,_) | Relative (u,_)
-          when u=uname && not(pos=[] && hidden) -> List.rev pos
+          when U.equal u uname && not (is_empty && hidden) -> List.rev pos
     | _ ->
 	match dir with
 	    [] -> raise Not_found
-	  | id::dir -> find_uname (id::pos) dir (ModIdmap.find id tab)
+	  | id::dir -> find_uname (id::pos) dir (ModIdmap.find id tree.map)
   in
-  let ptab = Idmap.find id tab in
+  let ptab = Id.Map.find id tab in
   let found_dir = find_uname [] dir ptab in
-    make_qualid (make_dirpath found_dir) id
+    make_qualid (DirPath.make found_dir) id
 
 let push_node node l =
   match node with
-  | Absolute (_,o) | Relative (_,o) when not (List.mem o l) -> o::l
+  | Absolute (_,o) | Relative (_,o) when not (List.mem_f E.equal o l) -> o::l
   | _ -> l
 
 let rec flatten_idmap tab l =
-  ModIdmap.fold (fun _ (current,idtab) l ->
-    flatten_idmap idtab (push_node current l)) tab l
+  let f _ tree l = flatten_idmap tree.map (push_node tree.path l) in
+  ModIdmap.fold f tab l
 
-let rec search_prefixes (current,modidtab) = function
-  | modid :: path -> search_prefixes (ModIdmap.find modid modidtab) path
-  | [] -> List.rev (flatten_idmap  modidtab (push_node current []))
+let rec search_prefixes tree = function
+  | modid :: path -> search_prefixes (ModIdmap.find modid tree.map) path
+  | [] -> List.rev (flatten_idmap tree.map (push_node tree.path []))
 
 let find_prefixes qid tab =
   try
     let (dir,id) = repr_qualid qid in
-    search_prefixes (Idmap.find id tab) (repr_dirpath dir)
+    search_prefixes (Id.Map.find id tab) (DirPath.repr dir)
   with Not_found -> []
 
 end
@@ -251,36 +263,58 @@ end
 
 (* Global name tables *************************************************)
 
-module SpTab = Make (struct
-		       type t = full_path
-		       let to_string = string_of_path
-		       let repr sp =
-			 let dir,id = repr_path sp in
-			   id, (repr_dirpath dir)
-		     end)
+module FullPath =
+struct
+  type t = full_path
+  let equal = eq_full_path
+  let to_string = string_of_path
+  let repr sp =
+    let dir,id = repr_path sp in
+      id, (DirPath.repr dir)
+end
 
+module ExtRefEqual =
+struct
+  type t = extended_global_reference
+  let equal e1 e2 = Int.equal (ExtRefOrdered.compare e1 e2) 0
+end
 
-type ccitab = extended_global_reference SpTab.t
-let the_ccitab = ref (SpTab.empty : ccitab)
+module KnEqual = Names.KerName
 
-type kntab = kernel_name SpTab.t
-let the_tactictab = ref (SpTab.empty : kntab)
+module MPEqual = Names.ModPath
 
-type mptab = module_path SpTab.t
-let the_modtypetab = ref (SpTab.empty : mptab)
+module ExtRefTab = Make(FullPath)(ExtRefEqual)
+module KnTab = Make(FullPath)(KnEqual)
+module MPTab = Make(FullPath)(MPEqual)
 
+type ccitab = ExtRefTab.t
+let the_ccitab = ref (ExtRefTab.empty : ccitab)
 
-module DirTab = Make(struct
-		       type t = dir_path
-		       let to_string = string_of_dirpath
-		       let repr dir = match repr_dirpath dir with
-			 | [] -> anomaly "Empty dirpath"
-			 | id::l -> (id,l)
-		     end)
+type kntab = KnTab.t
+let the_tactictab = ref (KnTab.empty : kntab)
+
+type mptab = MPTab.t
+let the_modtypetab = ref (MPTab.empty : mptab)
+
+module DirPath' =
+struct
+  include DirPath
+  let repr dir = match DirPath.repr dir with
+    | [] -> anomaly (Pp.str "Empty dirpath")
+    | id :: l -> (id, l)
+end
+
+module GlobDir =
+struct
+  type t = global_dir_reference
+  let equal = eq_global_dir_reference
+end
+
+module DirTab = Make(DirPath')(GlobDir)
 
 (* If we have a (closed) module M having a submodule N, than N does not
    have the entry in [the_dirtab]. *)
-type dirtab = global_dir_reference DirTab.t
+type dirtab = DirTab.t
 let the_dirtab = ref (DirTab.empty : dirtab)
 
 
@@ -293,7 +327,7 @@ type globrevtab = full_path Globrevtab.t
 let the_globrevtab = ref (Globrevtab.empty : globrevtab)
 
 
-type mprevtab = dir_path MPmap.t
+type mprevtab = DirPath.t MPmap.t
 let the_modrevtab = ref (MPmap.empty : mprevtab)
 
 type mptrevtab = full_path MPmap.t
@@ -312,19 +346,19 @@ let the_tacticrevtab = ref (KNmap.empty : knrevtab)
 let push_xref visibility sp xref =
   match visibility with
     | Until _ ->
-	the_ccitab := SpTab.push visibility sp xref !the_ccitab;
+	the_ccitab := ExtRefTab.push visibility sp xref !the_ccitab;
 	the_globrevtab := Globrevtab.add xref sp !the_globrevtab
     | _ ->
 	begin
-	  if SpTab.exists sp !the_ccitab then
-	    match SpTab.find sp !the_ccitab with
+	  if ExtRefTab.exists sp !the_ccitab then
+	    match ExtRefTab.find sp !the_ccitab with
 	      | TrueGlobal( ConstRef _) | TrueGlobal( IndRef _) |
 		    TrueGlobal( ConstructRef _) as xref ->
-		  the_ccitab := SpTab.push visibility sp xref !the_ccitab;
+		  the_ccitab := ExtRefTab.push visibility sp xref !the_ccitab;
 	      | _ -> 
-		  the_ccitab := SpTab.push visibility sp xref !the_ccitab;
+		  the_ccitab := ExtRefTab.push visibility sp xref !the_ccitab;
 	    else
-	      the_ccitab := SpTab.push visibility sp xref !the_ccitab;
+	      the_ccitab := ExtRefTab.push visibility sp xref !the_ccitab;
 	end
 
 let push_cci visibility sp ref =
@@ -337,13 +371,13 @@ let push_syndef visibility sp kn =
 let push = push_cci
 
 let push_modtype vis sp kn =
-  the_modtypetab := SpTab.push vis sp kn !the_modtypetab;
+  the_modtypetab := MPTab.push vis sp kn !the_modtypetab;
   the_modtyperevtab := MPmap.add kn sp !the_modtyperevtab
 
 (* This is for tactic definition names *)
 
 let push_tactic vis sp kn =
-  the_tactictab := SpTab.push vis sp kn !the_tactictab;
+  the_tactictab := KnTab.push vis sp kn !the_tactictab;
   the_tacticrevtab := KNmap.add kn sp !the_tacticrevtab
 
 
@@ -359,22 +393,22 @@ let push_dir vis dir dir_ref =
 
 
 (* This should be used when syntactic definitions are allowed *)
-let locate_extended qid = SpTab.locate qid !the_ccitab
+let locate_extended qid = ExtRefTab.locate qid !the_ccitab
 
 (* This should be used when no syntactic definitions is expected *)
 let locate qid = match locate_extended qid with
   | TrueGlobal ref -> ref
   | SynDef _ -> raise Not_found
-let full_name_cci qid = SpTab.user_name qid !the_ccitab
+let full_name_cci qid = ExtRefTab.user_name qid !the_ccitab
 
 let locate_syndef qid = match locate_extended qid with
   | TrueGlobal _ -> raise Not_found
   | SynDef kn -> kn
 
-let locate_modtype qid = SpTab.locate qid !the_modtypetab
-let full_name_modtype qid = SpTab.user_name qid !the_modtypetab
+let locate_modtype qid = MPTab.locate qid !the_modtypetab
+let full_name_modtype qid = MPTab.user_name qid !the_modtypetab
 
-let locate_tactic qid = SpTab.locate qid !the_tactictab
+let locate_tactic qid = KnTab.locate qid !the_tactictab
 
 let locate_dir qid = DirTab.locate qid !the_dirtab
 
@@ -396,9 +430,9 @@ let locate_section qid =
 
 let locate_all qid =
   List.fold_right (fun a l -> match a with TrueGlobal a -> a::l | _ -> l)
-    (SpTab.find_prefixes qid !the_ccitab) []
+    (ExtRefTab.find_prefixes qid !the_ccitab) []
 
-let locate_extended_all qid = SpTab.find_prefixes qid !the_ccitab
+let locate_extended_all qid = ExtRefTab.find_prefixes qid !the_ccitab
 
 (* Derived functions *)
 
@@ -408,11 +442,11 @@ let locate_constant qid =
     | _ -> raise Not_found
 
 let global_of_path sp =
-  match SpTab.find sp !the_ccitab with
+  match ExtRefTab.find sp !the_ccitab with
     | TrueGlobal ref -> ref
     | _ -> raise Not_found
 
-let extended_global_of_path sp = SpTab.find sp !the_ccitab
+let extended_global_of_path sp = ExtRefTab.find sp !the_ccitab
 
 let global r =
   let (loc,qid) = qualid_of_reference r in
@@ -427,7 +461,7 @@ let global r =
 
 (* Exists functions ********************************************************)
 
-let exists_cci sp = SpTab.exists sp !the_ccitab
+let exists_cci sp = ExtRefTab.exists sp !the_ccitab
 
 let exists_dir dir = DirTab.exists dir !the_dirtab
 
@@ -435,13 +469,13 @@ let exists_section = exists_dir
 
 let exists_module = exists_dir
 
-let exists_modtype sp = SpTab.exists sp !the_modtypetab
+let exists_modtype sp = MPTab.exists sp !the_modtypetab
 
 (* Reverse locate functions ***********************************************)
 
 let path_of_global ref =
   match ref with
-    | VarRef id -> make_path empty_dirpath id
+    | VarRef id -> make_path DirPath.empty id
     | _ -> Globrevtab.find (TrueGlobal ref) !the_globrevtab
 
 let dirpath_of_global ref =
@@ -463,33 +497,33 @@ let path_of_tactic kn =
 
 let shortest_qualid_of_global ctx ref =
   match ref with
-    | VarRef id -> make_qualid empty_dirpath id
+    | VarRef id -> make_qualid DirPath.empty id
     | _ ->
         let sp = Globrevtab.find (TrueGlobal ref) !the_globrevtab in
-        SpTab.shortest_qualid ctx sp !the_ccitab
+        ExtRefTab.shortest_qualid ctx sp !the_ccitab
 
 let shortest_qualid_of_syndef ctx kn =
   let sp = path_of_syndef kn in
-    SpTab.shortest_qualid ctx sp !the_ccitab
+    ExtRefTab.shortest_qualid ctx sp !the_ccitab
 
 let shortest_qualid_of_module mp =
   let dir = MPmap.find mp !the_modrevtab in
-    DirTab.shortest_qualid Idset.empty dir !the_dirtab
+    DirTab.shortest_qualid Id.Set.empty dir !the_dirtab
 
 let shortest_qualid_of_modtype kn =
   let sp = MPmap.find kn !the_modtyperevtab in
-    SpTab.shortest_qualid Idset.empty sp !the_modtypetab
+    MPTab.shortest_qualid Id.Set.empty sp !the_modtypetab
 
 let shortest_qualid_of_tactic kn =
   let sp = KNmap.find kn !the_tacticrevtab in
-    SpTab.shortest_qualid Idset.empty sp !the_tactictab
+    KnTab.shortest_qualid Id.Set.empty sp !the_tactictab
 
 let pr_global_env env ref =
   (* Il est important de laisser le let-in, car les streams s'évaluent
   paresseusement : il faut forcer l'évaluation pour capturer
   l'éventuelle levée d'une exception (le cas échoit dans le debugger) *)
-  let s = string_of_qualid (shortest_qualid_of_global env ref) in
-  (str s)
+  try str (string_of_qualid (shortest_qualid_of_global env ref))
+  with Not_found as e -> prerr_endline "pr_global_env not found"; raise e
 
 let global_inductive r =
   match global r with
@@ -504,22 +538,10 @@ let global_inductive r =
 (********************************************************************)
 (* Registration of tables as a global table and rollback            *)
 
-type frozen = ccitab * dirtab * kntab * kntab
-    * globrevtab * mprevtab * knrevtab * knrevtab
+type frozen = ccitab * dirtab * mptab * kntab
+    * globrevtab * mprevtab * mptrevtab * knrevtab
 
-let init () =
-  the_ccitab := SpTab.empty;
-  the_dirtab := DirTab.empty;
-  the_modtypetab := SpTab.empty;
-  the_tactictab := SpTab.empty;
-  the_globrevtab := Globrevtab.empty;
-  the_modrevtab := MPmap.empty;
-  the_modtyperevtab := MPmap.empty;
-  the_tacticrevtab := KNmap.empty
-
-
-
-let freeze () =
+let freeze _ : frozen =
   !the_ccitab,
   !the_dirtab,
   !the_modtypetab,
@@ -543,7 +565,7 @@ let _ =
   Summary.declare_summary "names"
     { Summary.freeze_function = freeze;
       Summary.unfreeze_function = unfreeze;
-      Summary.init_function = init }
+      Summary.init_function = Summary.nop }
 
 (* Deprecated synonyms *)
 

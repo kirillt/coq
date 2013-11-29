@@ -6,9 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Errors
 open Util
 open Names
 open Univ
+open Cic
 open Term
 open Inductive
 open Reduction
@@ -18,21 +20,21 @@ open Declarations
 open Environ
 
 let rec debug_string_of_mp = function
-  | MPfile sl -> string_of_dirpath sl
-  | MPbound uid -> "bound("^string_of_mbid uid^")"
-  | MPdot (mp,l) -> debug_string_of_mp mp ^ "." ^ string_of_label l
+  | MPfile sl -> DirPath.to_string sl
+  | MPbound uid -> "bound("^MBId.to_string uid^")"
+  | MPdot (mp,l) -> debug_string_of_mp mp ^ "." ^ Label.to_string l
 
 let rec string_of_mp = function
-  | MPfile sl -> string_of_dirpath sl
-  | MPbound uid -> string_of_mbid uid
-  | MPdot (mp,l) -> string_of_mp mp ^ "." ^ string_of_label l
+  | MPfile sl -> DirPath.to_string sl
+  | MPbound uid -> MBId.to_string uid
+  | MPdot (mp,l) -> string_of_mp mp ^ "." ^ Label.to_string l
 
 let string_of_mp mp =
   if !Flags.debug then debug_string_of_mp mp else string_of_mp mp
 
 let prkn kn =
   let (mp,_,l) = repr_kn kn in
-  str(string_of_mp mp ^ "." ^ string_of_label l)
+  str(string_of_mp mp ^ "." ^ Label.to_string l)
 let prcon c =
   let ck = canonical_con c in
   let uk = user_con c in
@@ -75,10 +77,10 @@ type inductive_error =
   | NotEnoughArgs of env * constr * constr
   | NotConstructor of env * constr * constr
   | NonPar of env * constr * int * constr * constr
-  | SameNamesTypes of identifier
-  | SameNamesConstructors of identifier
-  | SameNamesOverlap of identifier list
-  | NotAnArity of identifier
+  | SameNamesTypes of Id.t
+  | SameNamesConstructors of Id.t
+  | SameNamesOverlap of Id.t list
+  | NotAnArity of Id.t
   | BadEntry
 
 exception InductiveError of inductive_error
@@ -99,7 +101,7 @@ let rec sorts_of_constr_args env t =
         let env1 = push_rel (name,Some def,ty) env in
 	sorts_of_constr_args env1 c
     | _ when is_constructor_head t -> []
-    | _ -> anomaly "infos_and_sort: not a positive constructor"
+    | _ -> anomaly ~label:"infos_and_sort" (Pp.str "not a positive constructor")
 
 
 (* Prop and Set are small *)
@@ -126,7 +128,7 @@ let is_unit constrsinfos =
    | _ -> false
 
 let small_unit constrsinfos =
-  let issmall = array_for_all is_small_constr constrsinfos
+  let issmall = Array.for_all is_small_constr constrsinfos
   and isunit = is_unit constrsinfos in
   issmall, isunit
 
@@ -176,9 +178,9 @@ let check_predicativity env s small level =
       Type u, _ ->
         let u' = fresh_local_univ () in
         let cst =
-          merge_constraints (enforce_geq u' u empty_constraint)
+          merge_constraints (enforce_leq u u' empty_constraint)
             (universes env) in
-        if not (check_geq cst u' level) then
+        if not (check_leq cst level u') then
           failwith "impredicative Type inductive type"
     | Prop Pos, Some ImpredicativeSet -> ()
     | Prop Pos, _ ->
@@ -242,17 +244,18 @@ let typecheck_one_inductive env params mib mip =
   let _ = Array.map (infer_type env) mip.mind_user_lc in
   (* mind_nf_lc *)
   let _ = Array.map (infer_type env) mip.mind_nf_lc in
-  array_iter2 (conv env) mip.mind_nf_lc mip.mind_user_lc;
+  Array.iter2 (conv env) mip.mind_nf_lc mip.mind_user_lc;
   (* mind_consnrealdecls *)
   let check_cons_args c n =
     let ctx,_ = decompose_prod_assum c in
     if n <> rel_context_length ctx - rel_context_length params then
       failwith "bad number of real constructor arguments" in
-  array_iter2 check_cons_args mip.mind_nf_lc mip.mind_consnrealdecls;
+  Array.iter2 check_cons_args mip.mind_nf_lc mip.mind_consnrealdecls;
   (* mind_kelim: checked by positivity criterion ? *)
   let sorts =
     compute_elim_sorts env params mib mip.mind_arity mip.mind_nf_lc in
-  if List.exists (fun s -> not (List.mem s sorts)) mip.mind_kelim then
+  let reject_sort s = not (List.mem_f family_equal s sorts) in
+  if List.exists reject_sort mip.mind_kelim then
     failwith "elimination not allowed";
   (* mind_recargs: checked by positivity criterion *)
   ()
@@ -298,11 +301,11 @@ let failwith_non_pos n ntypes c =
 
 let failwith_non_pos_vect n ntypes v =
   Array.iter (failwith_non_pos n ntypes) v;
-  anomaly "failwith_non_pos_vect: some k in [n;n+ntypes-1] should occur"
+  anomaly ~label:"failwith_non_pos_vect" (Pp.str "some k in [n;n+ntypes-1] should occur")
 
 let failwith_non_pos_list n ntypes l =
   List.iter (failwith_non_pos n ntypes) l;
-  anomaly "failwith_non_pos_list: some k in [n;n+ntypes-1] should occur"
+  anomaly ~label:"failwith_non_pos_list" (Pp.str "some k in [n;n+ntypes-1] should occur")
 
 (* Conclusion of constructors: check the inductive type is called with
    the expected parameters *)
@@ -311,7 +314,7 @@ let check_correct_par (env,n,ntypes,_) hyps l largs =
   let largs = Array.of_list largs in
   if Array.length largs < nparams then
     raise (IllFormedInd (LocalNotEnoughArgs l));
-  let (lpar,largs') = array_chop nparams largs in
+  let (lpar,largs') = Array.chop nparams largs in
   let nhyps = List.length hyps in
   let rec check k index = function
     | [] -> ()
@@ -321,7 +324,7 @@ let check_correct_par (env,n,ntypes,_) hyps l largs =
 	  | Rel w when w = index -> check (k-1) (index+1) hyps
 	  | _ -> raise (IllFormedInd (LocalNonPar (k+1,l)))
   in check (nparams-1) (n-nhyps) hyps;
-  if not (array_for_all (noccur_between n ntypes) largs') then
+  if not (Array.for_all (noccur_between n ntypes) largs') then
     failwith_non_pos_vect n ntypes largs'
 
 (* Arguments of constructor: check the number of recursive parameters nrecp.
@@ -330,7 +333,7 @@ let check_correct_par (env,n,ntypes,_) hyps l largs =
     recursive parameters *)
 
 let check_rec_par (env,n,_,_) hyps nrecp largs =
-  let (lpar,_) = list_chop nrecp largs in
+  let (lpar,_) = List.chop nrecp largs in
   let rec find index =
     function
       | ([],_) -> ()
@@ -354,8 +357,8 @@ let abstract_mind_lc env ntyps npars lc =
     lc
   else
     let make_abs =
-      list_tabulate
-	(function i -> lambda_implicit_lift npars (Rel (i+1))) ntyps
+      List.init ntyps
+	(function i -> lambda_implicit_lift npars (Rel (i+1)))
     in
     Array.map (substl make_abs) lc
 
@@ -431,7 +434,7 @@ let check_positivity_one (env, _,ntypes,_ as ienv) hyps nrecp (_,i as ind) indlc
     let auxnpar = mib.mind_nparams_rec in
     let nonrecpar = mib.mind_nparams - auxnpar in
     let (lpar,auxlargs) =
-      try list_chop auxnpar largs
+      try List.chop auxnpar largs
       with Failure _ -> raise (IllFormedInd (LocalNonPos n)) in
       (* If the inductive appears in the args (non params) then the
 	 definition is not positive. *)
@@ -496,13 +499,10 @@ let check_positivity_one (env, _,ntypes,_ as ienv) hyps nrecp (_,i as ind) indlc
       indlc
   in mk_paths (Mrec ind) irecargs
 
-let check_subtree (t1:'a) (t2:'a) =
-  if not (Rtree.compare_rtree (fun t1 t2 ->
-    let l1 = fst(Rtree.dest_node t1) in
-    let l2 = fst(Rtree.dest_node t2) in
-    if l1 = Norec || l1 = l2 then 0 else -1)
-    t1 t2) then
-    failwith "bad recursive trees"
+let check_subtree t1 t2 =
+  let cmp_labels l1 l2 = l1 == Norec || eq_recarg l1 l2 in
+  if not (Rtree.equiv eq_recarg cmp_labels t1 t2)
+  then failwith "bad recursive trees"
 (* if t1=t2 then () else msg_warning (str"TODO: check recursive positions")*)
 
 let check_positivity env_ar mind params nrecp inds =
@@ -513,19 +513,19 @@ let check_positivity env_ar mind params nrecp inds =
   let lparams = rel_context_length params in
   let check_one i mip =
     let ra_env =
-      list_tabulate (fun _ -> (Norec,mk_norec)) lparams @ lra_ind in
+      List.init lparams (fun _ -> (Norec,mk_norec)) @ lra_ind in
     let ienv = (env_ar, 1+lparams, ntypes, ra_env) in
       check_positivity_one ienv params nrecp (mind,i) mip.mind_nf_lc
   in
   let irecargs = Array.mapi check_one inds in
   let wfp = Rtree.mk_rec irecargs in
-  array_iter2 (fun ind wfpi -> check_subtree ind.mind_recargs wfpi) inds wfp
+  Array.iter2 (fun ind wfpi -> check_subtree ind.mind_recargs wfpi) inds wfp
 
 (************************************************************************)
 (************************************************************************)
 
 let check_inductive env kn mib =
-  Flags.if_verbose msgnl (str "  checking ind: " ++ pr_mind kn);
+  Flags.if_verbose ppnl (str "  checking ind: " ++ pr_mind kn); pp_flush ();
   (* check mind_constraints: should be consistent with env *)
   let env = add_constraints mib.mind_constraints env in
   (* check mind_record : TODO ? check #constructor = 1 ? *)
@@ -533,9 +533,6 @@ let check_inductive env kn mib =
   (* check mind_ntypes *)
   if Array.length mib.mind_packets <> mib.mind_ntypes then
     error "not the right number of packets";
-  (* check mind_hyps: should be empty *)
-  if mib.mind_hyps <> empty_named_context then
-    error "section context not empty";
   (* check mind_params_ctxt *)
   let params = mib.mind_params_ctxt in
   let _ = check_ctxt env params in

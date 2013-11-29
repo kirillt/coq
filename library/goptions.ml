@@ -9,17 +9,15 @@
 (* This module manages customization parameters at the vernacular level     *)
 
 open Pp
+open Errors
 open Util
 open Libobject
-open Names
 open Libnames
-open Term
-open Nametab
 open Mod_subst
 
-open Goptionstyp
+open Interface
 
-type option_name = Goptionstyp.option_name
+type option_name = Interface.option_name
 
 (****************************************************************************)
 (* 0- Common things                                                         *)
@@ -62,29 +60,22 @@ module MakeTable =
     let nick = nickname A.key
 
     let _ =
-      if List.mem_assoc nick !A.table then
+      if String.List.mem_assoc nick !A.table then
 	error "Sorry, this table name is already used."
 
     module MySet = Set.Make (struct type t = A.t let compare = compare end)
 
-    let t = ref (MySet.empty : MySet.t)
-
-    let _ =
-      if A.synchronous then
-	let freeze () = !t in
-	let unfreeze c = t := c in
-	let init () = t := MySet.empty in
-	Summary.declare_summary nick
-          { Summary.freeze_function = freeze;
-            Summary.unfreeze_function = unfreeze;
-            Summary.init_function = init }
+    let t =
+      if A.synchronous
+      then Summary.ref MySet.empty ~name:nick
+      else ref MySet.empty
 
     let (add_option,remove_option) =
       if A.synchronous then
         let cache_options (_,(f,p)) = match f with
           | GOadd -> t := MySet.add p !t
           | GOrmv -> t := MySet.remove p !t in
-        let load_options i o = if i=1 then cache_options o in
+        let load_options i o = if Int.equal i 1 then cache_options o in
 	let subst_options (subst,(f,p as obj)) = 
 	  let p' = A.subst subst p in
 	    if p' == p then obj else
@@ -105,12 +96,12 @@ module MakeTable =
          (fun c -> t := MySet.remove c !t))
 
     let print_table table_name printer table =
-      msg (str table_name ++
+      pp (str table_name ++
 	   (hov 0
-	      (if MySet.is_empty table then str "None" ++ fnl ()
+	      (if MySet.is_empty table then str " None" ++ fnl ()
                else MySet.fold
-		 (fun a b -> printer a ++ spc () ++ b)
-		 table (mt ()) ++ fnl ())))
+		 (fun a b -> spc () ++ printer a ++ b)
+		 table (mt ()) ++ str "." ++ fnl ())))
 
     class table_of_A () =
     object
@@ -119,7 +110,7 @@ module MakeTable =
       method mem x =
 	let y = A.encode x in
         let answer = MySet.mem y !t in
-        msg (A.member_message y answer ++ fnl ())
+        msg_info (A.member_message y answer)
       method print = print_table A.title A.printer !t
     end
 
@@ -130,7 +121,7 @@ module MakeTable =
 
 let string_table = ref []
 
-let get_string_table k = List.assoc (nickname k) !string_table
+let get_string_table k = String.List.assoc (nickname k) !string_table
 
 module type StringConvertArg =
 sig
@@ -159,7 +150,7 @@ module MakeStringTable =
 
 let ref_table = ref []
 
-let get_ref_table k = List.assoc (nickname k) !ref_table
+let get_ref_table k = String.List.assoc (nickname k) !ref_table
 
 module type RefConvertArg =
 sig
@@ -201,10 +192,13 @@ type 'a option_sig = {
   optread  : unit -> 'a;
   optwrite : 'a -> unit }
 
-type option_type = bool * (unit -> option_value) -> (option_value -> unit)
+module OptionOrd =
+struct
+  type t = option_name
+  let compare opt1 opt2 = List.compare String.compare opt1 opt2
+end
 
-module OptionMap =
-  Map.Make (struct  type t = option_name let compare = compare end)
+module OptionMap = Map.Make(OptionOrd)
 
 let value_tab = ref OptionMap.empty
 
@@ -216,11 +210,10 @@ let check_key key = try
   let _ = get_option key in
   error "Sorry, this option name is already used."
 with Not_found ->
-  if List.mem_assoc (nickname key) !string_table
-    or List.mem_assoc (nickname key) !ref_table
+  if String.List.mem_assoc (nickname key) !string_table
+    || String.List.mem_assoc (nickname key) !ref_table
   then error "Sorry, this option name is already used."
 
-open Summary
 open Libobject
 open Lib
 
@@ -251,10 +244,10 @@ let declare_option cast uncast
 		       discharge_function = (fun (_,v) -> Some v);
 		       load_function = (fun _ (_,v) -> write v)}
     in
-    let _ = declare_summary (nickname key)
-	     { freeze_function = read;
-	       unfreeze_function = write;
-	       init_function = (fun () -> write default) }
+    let _ = Summary.declare_summary (nickname key)
+	     { Summary.freeze_function = (fun _ -> read ());
+	       Summary.unfreeze_function = write;
+	       Summary.init_function = (fun () -> write default) }
     in
     begin fun v -> add_anonymous_leaf (decl_obj v) end ,
     begin fun v -> add_anonymous_leaf (ldecl_obj v) end ,
@@ -273,15 +266,15 @@ type 'a write_function = 'a -> unit
 let declare_int_option =
   declare_option
     (fun v -> IntValue v)
-    (function IntValue v -> v | _ -> anomaly "async_option")
+    (function IntValue v -> v | _ -> anomaly (Pp.str "async_option"))
 let declare_bool_option =
   declare_option
     (fun v -> BoolValue v)
-    (function BoolValue v -> v | _ -> anomaly "async_option")
+    (function BoolValue v -> v | _ -> anomaly (Pp.str "async_option"))
 let declare_string_option =
   declare_option
     (fun v -> StringValue v)
-    (function StringValue v -> v | _ -> anomaly "async_option")
+    (function StringValue v -> v | _ -> anomaly (Pp.str "async_option"))
 
 (* 3- User accessible commands *)
 
@@ -326,12 +319,12 @@ let set_int_option_value_gen locality =
   set_option_value locality check_int_value
 let set_bool_option_value_gen locality key v =
   try set_option_value locality check_bool_value key v
-  with UserError (_,s) -> Flags.if_warn msg_warning s
+  with UserError (_,s) -> msg_warning s
 let set_string_option_value_gen locality =
   set_option_value locality check_string_value
 let unset_option_value_gen locality key =
   try set_option_value locality check_unset_value key ()
-  with UserError (_,s) -> Flags.if_warn msg_warning s
+  with UserError (_,s) -> msg_warning s
 
 let set_int_option_value = set_int_option_value_gen None
 let set_bool_option_value = set_bool_option_value_gen None
@@ -346,18 +339,16 @@ let msg_option_value (name,v) =
     | IntValue (Some n) -> int n
     | IntValue None   -> str "undefined"
     | StringValue s   -> str s
-(*     | IdentValue r    -> pr_global_env Idset.empty r *)
+(*     | IdentValue r    -> pr_global_env Id.Set.empty r *)
 
 let print_option_value key =
   let (name, depr, (_,read,_,_,_)) = get_option key in
   let s = read () in
   match s with
     | BoolValue b ->
-	msg (str ("The "^name^" mode is "^(if b then "on" else "off")) ++
-	     fnl ())
+	msg_info (str ("The "^name^" mode is "^(if b then "on" else "off")))
     | _ ->
-	msg (str ("Current value of "^name^" is ") ++
-	     msg_option_value (name,s) ++ fnl ())
+	msg_info (str ("Current value of "^name^" is ") ++ msg_option_value (name, s))
 
 
 let get_tables () =
@@ -379,27 +370,26 @@ let print_tables () =
     if depr then msg ++ str " [DEPRECATED]" ++ fnl ()
     else msg ++ fnl ()
   in
-  msg
-    (str "Synchronous options:" ++ fnl () ++
-     OptionMap.fold
-       (fun key (name, depr, (sync,read,_,_,_)) p ->
-	  if sync then p ++ print_option key name (read ()) depr
-	  else p)
-       !value_tab (mt ()) ++
-     str "Asynchronous options:" ++ fnl () ++
-     OptionMap.fold
-       (fun key (name, depr, (sync,read,_,_,_)) p ->
-	  if sync then p
-	  else p ++ print_option key name (read ()) depr)
-       !value_tab (mt ()) ++
-     str "Tables:" ++ fnl () ++
-     List.fold_right
-       (fun (nickkey,_) p -> p ++ str ("  "^nickkey) ++ fnl ())
-       !string_table (mt ()) ++
-     List.fold_right
-       (fun (nickkey,_) p -> p ++ str ("  "^nickkey) ++ fnl ())
-       !ref_table (mt ()) ++
-     fnl ()
-    )
+  str "Synchronous options:" ++ fnl () ++
+    OptionMap.fold
+      (fun key (name, depr, (sync,read,_,_,_)) p ->
+        if sync then p ++ print_option key name (read ()) depr
+        else p)
+      !value_tab (mt ()) ++
+  str "Asynchronous options:" ++ fnl () ++
+    OptionMap.fold
+      (fun key (name, depr, (sync,read,_,_,_)) p ->
+        if sync then p
+        else p ++ print_option key name (read ()) depr)
+      !value_tab (mt ()) ++
+  str "Tables:" ++ fnl () ++
+    List.fold_right
+      (fun (nickkey,_) p -> p ++ str ("  "^nickkey) ++ fnl ())
+      !string_table (mt ()) ++
+    List.fold_right
+      (fun (nickkey,_) p -> p ++ str ("  "^nickkey) ++ fnl ())
+      !ref_table (mt ()) ++
+    fnl ()
+
 
 

@@ -19,11 +19,12 @@
 (* This file implements a lazy reduction for the Calculus of Inductive
    Constructions *)
 
+open Errors
 open Util
 open Pp
-open Term
 open Names
-open Declarations
+open Term
+open Vars
 open Environ
 open Esubst
 
@@ -33,6 +34,7 @@ let share = ref true
 (* Profiling *)
 let beta = ref 0
 let delta = ref 0
+let eta = ref 0
 let zeta = ref 0
 let evar = ref 0
 let iota = ref 0
@@ -43,9 +45,10 @@ let reset () =
   prune := 0
 
 let stop() =
-  msgnl (str "[Reds: beta=" ++ int !beta ++ str" delta=" ++ int !delta ++
-	 str" zeta=" ++ int !zeta ++ str" evar=" ++ int !evar ++
-         str" iota=" ++ int !iota ++ str" prune=" ++ int !prune ++ str"]")
+  msg_debug (str "[Reds: beta=" ++ int !beta ++ str" delta=" ++ int !delta ++
+	 str " eta=" ++ int !eta ++ str" zeta=" ++ int !zeta ++ str" evar=" ++
+	 int !evar ++ str" iota=" ++ int !iota ++ str" prune=" ++ int !prune ++
+	 str"]")
 
 let incr_cnt red cnt =
   if red then begin
@@ -63,10 +66,10 @@ let with_stats c =
   end else
     Lazy.force c
 
-let all_opaque = (Idpred.empty, Cpred.empty)
-let all_transparent = (Idpred.full, Cpred.full)
+let all_opaque = (Id.Pred.empty, Cpred.empty)
+let all_transparent = (Id.Pred.full, Cpred.full)
 
-let is_transparent_variable (ids, _) id = Idpred.mem id ids
+let is_transparent_variable (ids, _) id = Id.Pred.mem id ids
 let is_transparent_constant (_, csts) cst = Cpred.mem cst csts
 
 module type RedFlagsSig = sig
@@ -74,10 +77,11 @@ module type RedFlagsSig = sig
   type red_kind
   val fBETA : red_kind
   val fDELTA : red_kind
+  val fETA : red_kind
   val fIOTA : red_kind
   val fZETA : red_kind
   val fCONST : constant -> red_kind
-  val fVAR : identifier -> red_kind
+  val fVAR : Id.t -> red_kind
   val no_red : reds
   val red_add : reds -> red_kind -> reds
   val red_sub : reds -> red_kind -> reds
@@ -95,14 +99,16 @@ module RedFlags = (struct
   type reds = {
     r_beta : bool;
     r_delta : bool;
+    r_eta : bool;
     r_const : transparent_state;
     r_zeta : bool;
     r_iota : bool }
 
-  type red_kind = BETA | DELTA | IOTA | ZETA
-	      | CONST of constant | VAR of identifier
+  type red_kind = BETA | DELTA | ETA | IOTA | ZETA
+	      | CONST of constant | VAR of Id.t
   let fBETA = BETA
   let fDELTA = DELTA
+  let fETA = ETA
   let fIOTA = IOTA
   let fZETA = ZETA
   let fCONST kn  = CONST kn
@@ -110,12 +116,14 @@ module RedFlags = (struct
   let no_red = {
     r_beta = false;
     r_delta = false;
+    r_eta = false;
     r_const = all_opaque;
     r_zeta = false;
     r_iota = false }
 
   let red_add red = function
     | BETA -> { red with r_beta = true }
+    | ETA -> { red with r_eta = true }
     | DELTA -> { red with r_delta = true; r_const = all_transparent }
     | CONST kn ->
 	let (l1,l2) = red.r_const in
@@ -124,10 +132,11 @@ module RedFlags = (struct
     | ZETA -> { red with r_zeta = true }
     | VAR id ->
 	let (l1,l2) = red.r_const in
-	{ red with r_const = Idpred.add id l1, l2 }
+	{ red with r_const = Id.Pred.add id l1, l2 }
 
   let red_sub red = function
     | BETA -> { red with r_beta = false }
+    | ETA -> { red with r_eta = false }
     | DELTA -> { red with r_delta = false }
     | CONST kn ->
  	let (l1,l2) = red.r_const in
@@ -136,7 +145,7 @@ module RedFlags = (struct
     | ZETA -> { red with r_zeta = false }
     | VAR id ->
 	let (l1,l2) = red.r_const in
-	{ red with r_const = Idpred.remove id l1, l2 }
+	{ red with r_const = Id.Pred.remove id l1, l2 }
 
   let red_add_transparent red tr =
     { red with r_const = tr }
@@ -145,13 +154,14 @@ module RedFlags = (struct
 
   let red_set red = function
     | BETA -> incr_cnt red.r_beta beta
+    | ETA -> incr_cnt red.r_eta eta
     | CONST kn ->
 	let (_,l) = red.r_const in
 	let c = Cpred.mem kn l in
 	incr_cnt c delta
     | VAR id -> (* En attendant d'avoir des kn pour les Var *)
 	let (l,_) = red.r_const in
-	let c = Idpred.mem id l in
+	let c = Id.Pred.mem id l in
 	incr_cnt c delta
     | ZETA -> incr_cnt red.r_zeta zeta
     | IOTA -> incr_cnt red.r_iota iota
@@ -185,8 +195,8 @@ let unfold_red kn =
  *  * i_repr is the function to get the representation from the current
  *         state of the cache and the body of the constant. The result
  *         is stored in the table.
- *  * i_rels = (4,[(1,c);(3,d)]) means there are 4 free rel variables
- *    and only those with index 1 and 3 have bodies which are c and d resp.
+ *  * i_rels is the array of free rel variables together with their optional
+ *    body
  *  * i_vars is the list of _defined_ named variables.
  *
  * ref_value_cache searchs in the tab, otherwise uses i_repr to
@@ -199,6 +209,19 @@ let unfold_red kn =
 
 type table_key = id_key
 
+module IdKeyHash =
+struct
+  type t = id_key
+  let equal = Names.eq_id_key
+  open Hashset.Combine
+  let hash = function
+  | ConstKey c -> combinesmall 1 (Constant.hash c)
+  | VarKey id -> combinesmall 2 (Id.hash id)
+  | RelKey i -> combinesmall 3 (Int.hash i)
+end
+
+module KeyTable = Hashtbl.Make(IdKeyHash)
+
 let eq_table_key = Names.eq_id_key
 
 type 'a infos = {
@@ -206,26 +229,32 @@ type 'a infos = {
   i_repr : 'a infos -> constr -> 'a;
   i_env : env;
   i_sigma : existential -> constr option;
-  i_rels : int * (int * constr) list;
-  i_vars : (identifier * constr) list;
-  i_tab : (table_key, 'a) Hashtbl.t }
+  i_rels : constr option array;
+  i_vars : (Id.t * constr) list;
+  i_tab : 'a KeyTable.t }
 
 let info_flags info = info.i_flags
 
 let ref_value_cache info ref =
   try
-    Some (Hashtbl.find info.i_tab ref)
+    Some (KeyTable.find info.i_tab ref)
   with Not_found ->
   try
     let body =
       match ref with
 	| RelKey n ->
-	    let (s,l) = info.i_rels in lift n (List.assoc (s-n) l)
-	| VarKey id -> List.assoc id info.i_vars
+            let len = Array.length info.i_rels in
+            let i = n - 1 in
+            let () = if i < 0 || len <= i then raise Not_found in
+            begin match Array.unsafe_get info.i_rels i with
+            | None -> raise Not_found
+            | Some t -> lift n t
+            end
+	| VarKey id -> Id.List.assoc id info.i_vars
 	| ConstKey cst -> constant_value info.i_env cst
     in
     let v = info.i_repr info body in
-    Hashtbl.add info.i_tab ref v;
+    KeyTable.add info.i_tab ref v;
     Some v
   with
     | Not_found (* List.assoc *)
@@ -237,7 +266,7 @@ let evar_value info ev =
 
 let defined_vars flags env =
 (*  if red_local_const (snd flags) then*)
-    Sign.fold_named_context
+    Context.fold_named_context
       (fun (id,b,_) e ->
 	 match b with
 	   | None -> e
@@ -247,12 +276,15 @@ let defined_vars flags env =
 
 let defined_rels flags env =
 (*  if red_local_const (snd flags) then*)
-  Sign.fold_rel_context
-      (fun (id,b,t) (i,subs) ->
-	 match b with
-	   | None -> (i+1, subs)
-	   | Some body -> (i+1, (i,body) :: subs))
-      (rel_context env) ~init:(0,[])
+  let ctx = rel_context env in
+  let len = List.length ctx in
+  let ans = Array.make len None in
+  let iter i (_, b, _) = match b with
+  | None -> ()
+  | Some _ -> Array.unsafe_set ans i b
+  in
+  let () = List.iteri iter ctx in
+  ans
 (*  else (0,[])*)
 
 let create mk_cl flgs env evars =
@@ -262,7 +294,7 @@ let create mk_cl flgs env evars =
     i_sigma = evars;
     i_rels = defined_rels flgs env;
     i_vars = defined_vars flgs env;
-    i_tab = Hashtbl.create 17 }
+    i_tab = KeyTable.create 17 }
 
 
 (**********************************************************************)
@@ -308,9 +340,9 @@ and fterm =
   | FFix of fixpoint * fconstr subs
   | FCoFix of cofixpoint * fconstr subs
   | FCases of case_info * fconstr * fconstr * fconstr array
-  | FLambda of int * (name * constr) list * constr * fconstr subs
-  | FProd of name * fconstr * fconstr
-  | FLetIn of name * fconstr * fconstr * constr * fconstr subs
+  | FLambda of int * (Name.t * constr) list * constr * fconstr subs
+  | FProd of Name.t * fconstr * fconstr
+  | FLetIn of Name.t * fconstr * fconstr * constr * fconstr subs
   | FEvar of existential * fconstr subs
   | FLIFT of int * fconstr
   | FCLOS of constr * fconstr subs
@@ -318,13 +350,13 @@ and fterm =
 
 let fterm_of v = v.term
 let set_norm v = v.norm <- Norm
-let is_val v = v.norm = Norm
+let is_val v = match v.norm with Norm -> true | _ -> false
 
 let mk_atom c = {norm=Norm;term=FAtom c}
 
 (* Could issue a warning if no is still Red, pointing out that we loose
    sharing. *)
-let update v1 (no,t) =
+let update v1 no t =
   if !share then
     (v1.norm <- no;
      v1.term <- t;
@@ -345,7 +377,7 @@ and stack = stack_member list
 
 let empty_stack = []
 let append_stack v s =
-  if Array.length v = 0 then s else
+  if Int.equal (Array.length v) 0 then s else
   match s with
   | Zapp l :: s -> Zapp (Array.append v l) :: s
   | _ -> Zapp v :: s
@@ -389,7 +421,7 @@ let rec stack_assign s p c = match s with
          Zapp nargs :: s)
   | _ -> s
 let rec stack_tail p s =
-  if p = 0 then s else
+  if Int.equal p 0 then s else
     match s with
       | Zapp args :: s ->
 	  let q = Array.length args in
@@ -417,9 +449,9 @@ let rec lft_fconstr n ft =
     | FLOCKED -> assert false
     | _ -> {norm=ft.norm; term=FLIFT(n,ft)}
 let lift_fconstr k f =
-  if k=0 then f else lft_fconstr k f
+  if Int.equal k 0 then f else lft_fconstr k f
 let lift_fconstr_vect k v =
-  if k=0 then v else Array.map (fun f -> lft_fconstr k f) v
+  if Int.equal k 0 then v else CArray.Fun1.map lft_fconstr k v
 
 let clos_rel e i =
   match expand_rel i e with
@@ -436,14 +468,14 @@ let compact_stack head stk =
         (* Be sure to create a new cell otherwise sharing would be
            lost by the update operation *)
         let h' = lft_fconstr depth head in
-        let _ = update m (h'.norm,h'.term) in
+        let _ = update m h'.norm h'.term in
         strip_rec depth s
     | stk -> zshift depth stk in
   strip_rec 0 stk
 
 (* Put an update mark in the stack, only if needed *)
 let zupdate m s =
-  if !share & m.norm = Red
+  if !share && begin match m.norm with Red -> true | _ -> false end
   then
     let s' = compact_stack m s in
     let _ = m.term <- FLOCKED in
@@ -455,7 +487,7 @@ let rec compact_constr (lg, subs as s) c k =
   match kind_of_term c with
       Rel i ->
         if i < k then c,s else
-          (try mkRel (k + lg - list_index (i-k+1) subs), (lg,subs)
+          (try mkRel (k + lg - List.index Int.equal (i-k+1) subs), (lg,subs)
           with Not_found -> mkRel (k+lg), (lg+1, (i-k+1)::subs))
     | (Sort _|Var _|Meta _|Ind _|Const _|Construct _) -> c,s
     | Evar(ev,v) ->
@@ -495,14 +527,16 @@ let rec compact_constr (lg, subs as s) c k =
         let (a',s) = compact_constr s a k in
         let (br',s) = compact_vect s br k in
         if p==p' && a==a' && br==br' then c,s else mkCase(ci,p',a',br'),s
-and compact_vect s v k = compact_v [] s v k (Array.length v - 1)
-and compact_v acc s v k i =
-  if i < 0 then
-    let v' = Array.of_list acc in
-    if array_for_all2 (==) v v' then v,s else v',s
-  else
-    let (a',s') = compact_constr s v.(i) k in
-    compact_v (a'::acc) s' v k (i-1)
+and compact_vect s v k =
+  let rs = ref s in
+  let map a =
+    let (a, s) = compact_constr !rs a k in
+    let () = rs := s in
+    a
+  in
+  (** Do we really rely on execution order in the smartmap ? *)
+  let v' = Array.smartmap map v in
+  (v', !rs)
 
 (* Computes the minimal environment of a closure.
    Idea: if the subs is not identity, the term will have to be
@@ -512,8 +546,7 @@ and compact_v acc s v k i =
 let optimise_closure env c =
   if is_subs_id env then (env,c) else
     let (c',(_,s)) = compact_constr (0,[]) c 1 in
-    let env' =
-      Array.map (fun i -> clos_rel env i) (Array.of_list s) in
+    let env' = Array.map_of_list (fun i -> clos_rel env i) s in
     (subs_cons (env', subs_id 0),c')
 
 let mk_lambda env t =
@@ -542,7 +575,7 @@ let mk_clos e t =
     | (CoFix _|Lambda _|Fix _|Prod _|Evar _|App _|Case _|Cast _|LetIn _) ->
         {norm = Red; term = FCLOS(t,e)}
 
-let mk_clos_vect env v = Array.map (mk_clos env) v
+let mk_clos_vect env v = CArray.Fun1.map mk_clos env v
 
 (* Translate the head constructor of t from constr to fconstr. This
    function is parameterized by the function to apply on the direct
@@ -557,11 +590,11 @@ let mk_clos_deep clos_fun env t =
           term = FCast (clos_fun env a, k, clos_fun env b)}
     | App (f,v) ->
         { norm = Red;
-	  term = FApp (clos_fun env f, Array.map (clos_fun env) v) }
+	  term = FApp (clos_fun env f, CArray.Fun1.map clos_fun env v) }
     | Case (ci,p,c,v) ->
         { norm = Red;
 	  term = FCases (ci, clos_fun env p, clos_fun env c,
-			 Array.map (clos_fun env) v) }
+			 CArray.Fun1.map clos_fun env v) }
     | Fix fx ->
         { norm = Cstr; term = FFix (fx, env) }
     | CoFix cfx ->
@@ -595,24 +628,24 @@ let rec to_constr constr_fun lfts v =
     | FCases (ci,p,c,ve) ->
 	mkCase (ci, constr_fun lfts p,
                 constr_fun lfts c,
-		Array.map (constr_fun lfts) ve)
+		CArray.Fun1.map constr_fun lfts ve)
     | FFix ((op,(lna,tys,bds)),e) ->
         let n = Array.length bds in
-        let ftys = Array.map (mk_clos e) tys in
-        let fbds = Array.map (mk_clos (subs_liftn n e)) bds in
+        let ftys = CArray.Fun1.map mk_clos e tys in
+        let fbds = CArray.Fun1.map mk_clos (subs_liftn n e) bds in
 	let lfts' = el_liftn n lfts in
-	mkFix (op, (lna, Array.map (constr_fun lfts) ftys,
-		         Array.map (constr_fun lfts') fbds))
+	mkFix (op, (lna, CArray.Fun1.map constr_fun lfts ftys,
+		         CArray.Fun1.map constr_fun lfts' fbds))
     | FCoFix ((op,(lna,tys,bds)),e) ->
         let n = Array.length bds in
-        let ftys = Array.map (mk_clos e) tys in
-        let fbds = Array.map (mk_clos (subs_liftn n e)) bds in
+        let ftys = CArray.Fun1.map mk_clos e tys in
+        let fbds = CArray.Fun1.map mk_clos (subs_liftn n e) bds in
 	let lfts' = el_liftn (Array.length bds) lfts in
-	mkCoFix (op, (lna, Array.map (constr_fun lfts) ftys,
-		           Array.map (constr_fun lfts') fbds))
+	mkCoFix (op, (lna, CArray.Fun1.map constr_fun lfts ftys,
+		           CArray.Fun1.map constr_fun lfts' fbds))
     | FApp (f,ve) ->
 	mkApp (constr_fun lfts f,
-	       Array.map (constr_fun lfts) ve)
+	       CArray.Fun1.map constr_fun lfts ve)
     | FLambda _ ->
         let (na,ty,bd) = destFLambda mk_clos2 v in
 	mkLambda (na, constr_fun lfts ty,
@@ -630,9 +663,9 @@ let rec to_constr constr_fun lfts v =
     | FLIFT (k,a) -> to_constr constr_fun (el_shft k lfts) a
     | FCLOS (t,env) ->
         let fr = mk_clos2 env t in
-        let unfv = update v (fr.norm,fr.term) in
+        let unfv = update v fr.norm fr.term in
         to_constr constr_fun lfts unfv
-    | FLOCKED -> assert false (*mkVar(id_of_string"_LOCK_")*)
+    | FLOCKED -> assert false (*mkVar(Id.of_string"_LOCK_")*)
 
 (* This function defines the correspondance between constr and
    fconstr. When we find a closure whose substitution is the identity,
@@ -641,11 +674,11 @@ let rec to_constr constr_fun lfts v =
 let term_of_fconstr =
   let rec term_of_fconstr_lift lfts v =
     match v.term with
-      | FCLOS(t,env) when is_subs_id env & is_lift_id lfts -> t
-      | FLambda(_,tys,f,e) when is_subs_id e & is_lift_id lfts ->
+      | FCLOS(t,env) when is_subs_id env && is_lift_id lfts -> t
+      | FLambda(_,tys,f,e) when is_subs_id e && is_lift_id lfts ->
           compose_lam (List.rev tys) f
-      | FFix(fx,e) when is_subs_id e & is_lift_id lfts -> mkFix fx
-      | FCoFix(cfx,e) when is_subs_id e & is_lift_id lfts -> mkCoFix cfx
+      | FFix(fx,e) when is_subs_id e && is_lift_id lfts -> mkFix fx
+      | FCoFix(cfx,e) when is_subs_id e && is_lift_id lfts -> mkCoFix cfx
       | _ -> to_constr term_of_fconstr_lift lfts v in
   term_of_fconstr_lift el_id
 
@@ -658,19 +691,24 @@ let rec fstrong unfreeze_fun lfts v =
   to_constr (fstrong unfreeze_fun) lfts (unfreeze_fun v)
 *)
 
-let rec zip m stk =
-  match stk with
-    | [] -> m
-    | Zapp args :: s -> zip {norm=neutr m.norm; term=FApp(m, args)} s
-    | Zcase(ci,p,br)::s ->
-        let t = FCases(ci, p, m, br) in
-        zip {norm=neutr m.norm; term=t} s
-    | Zfix(fx,par)::s ->
-        zip fx (par @ append_stack [|m|] s)
-    | Zshift(n)::s ->
-        zip (lift_fconstr n m) s
-    | Zupdate(rf)::s ->
-        zip (update rf (m.norm,m.term)) s
+let rec zip m stk rem = match stk with
+| [] ->
+  begin match rem with
+  | [] -> m
+  | stk :: rem -> zip m stk rem
+  end
+| Zapp args :: s -> zip {norm=neutr m.norm; term=FApp(m, args)} s rem
+| Zcase(ci,p,br)::s ->
+  let t = FCases(ci, p, m, br) in
+  zip {norm=neutr m.norm; term=t} s rem
+| Zfix(fx,par)::s ->
+  zip fx par ((Zapp [|m|] :: s) :: rem)
+| Zshift(n)::s ->
+  zip (lift_fconstr n m) s rem
+| Zupdate(rf)::s ->
+  zip (update rf m.norm m.term) s rem
+
+let zip m stk = zip m stk []
 
 let fapp_stack (m,stk) = zip m stk
 
@@ -683,7 +721,7 @@ let fapp_stack (m,stk) = zip m stk
 
 (* optimised for the case where there are no shifts... *)
 let strip_update_shift_app head stk =
-  assert (head.norm <> Red);
+  assert (match head.norm with Red -> false | _ -> true);
   let rec strip_rec rstk h depth = function
     | Zshift(k) as e :: s ->
         strip_rec (e::rstk) (lift_fconstr k h) (depth+k) s
@@ -691,13 +729,13 @@ let strip_update_shift_app head stk =
         strip_rec (Zapp args :: rstk)
           {norm=h.norm;term=FApp(h,args)} depth s
     | Zupdate(m)::s ->
-        strip_rec rstk (update m (h.norm,h.term)) depth s
+        strip_rec rstk (update m h.norm h.term) depth s
     | stk -> (depth,List.rev rstk, stk) in
   strip_rec [] head 0 stk
 
 
 let get_nth_arg head n stk =
-  assert (head.norm <> Red);
+  assert (match head.norm with Red -> false | _ -> true);
   let rec strip_rec rstk h n = function
     | Zshift(k) as e :: s ->
         strip_rec (e::rstk) (lift_fconstr k h) n s
@@ -710,10 +748,10 @@ let get_nth_arg head n stk =
           let bef = Array.sub args 0 n in
           let aft = Array.sub args (n+1) (q-n-1) in
           let stk' =
-            List.rev (if n = 0 then rstk else (Zapp bef :: rstk)) in
+            List.rev (if Int.equal n 0 then rstk else (Zapp bef :: rstk)) in
           (Some (stk', args.(n)), append_stack aft s')
     | Zupdate(m)::s ->
-        strip_rec rstk (update m (h.norm,h.term)) n s
+        strip_rec rstk (update m h.norm h.term) n s
     | s -> (None, List.rev rstk @ s) in
   strip_rec [] head n stk
 
@@ -722,7 +760,7 @@ let get_nth_arg head n stk =
 let rec get_args n tys f e stk =
   match stk with
       Zupdate r :: s ->
-        let _hd = update r (Cstr,FLambda(n,tys,f,e)) in
+        let _hd = update r Cstr (FLambda(n,tys,f,e)) in
         get_args n tys f e s
     | Zshift k :: s ->
         get_args n tys f (subs_shft (k,e)) s
@@ -734,7 +772,7 @@ let rec get_args n tys f e stk =
           let eargs = Array.sub l n (na-n) in
           (Inl (subs_cons(args,e)), Zapp eargs :: s)
         else (* more lambdas *)
-          let etys = list_skipn na tys in
+          let etys = List.skipn na tys in
           get_args (n-na) etys f (subs_cons(l,e)) s
     | _ -> (Inr {norm=Cstr;term=FLambda(n,tys,f,e)}, stk)
 
@@ -751,26 +789,26 @@ let rec reloc_rargs_rec depth stk =
   match stk with
       Zapp args :: s ->
         Zapp (lift_fconstr_vect depth args) :: reloc_rargs_rec depth s
-    | Zshift(k)::s -> if k=depth then s else reloc_rargs_rec (depth-k) s
+    | Zshift(k)::s -> if Int.equal k depth then s else reloc_rargs_rec (depth-k) s
     | _ -> stk
 
 let reloc_rargs depth stk =
-  if depth = 0 then stk else reloc_rargs_rec depth stk
+  if Int.equal depth 0 then stk else reloc_rargs_rec depth stk
 
 let rec drop_parameters depth n argstk =
   match argstk with
       Zapp args::s ->
         let q = Array.length args in
         if n > q then drop_parameters depth (n-q) s
-        else if n = q then reloc_rargs depth s
+        else if Int.equal n q then reloc_rargs depth s
         else
           let aft = Array.sub args n (q-n) in
           reloc_rargs depth (append_stack aft s)
     | Zshift(k)::s -> drop_parameters (depth-k) n s
     | [] -> (* we know that n < stack_args_size(argstk) (if well-typed term) *)
-	if n=0 then []
+	if Int.equal n 0 then []
 	else anomaly
-	  "ill-typed term: found a match on a partially applied constructor"
+	  (Pp.str "ill-typed term: found a match on a partially applied constructor")
     | _ -> assert false
 	(* strip_update_shift_app only produces Zapp and Zshift items *)
 
@@ -940,15 +978,15 @@ and norm_head info m =
       | FProd(na,dom,rng) ->
           mkProd(na, kl info dom, kl info rng)
       | FCoFix((n,(na,tys,bds)),e) ->
-          let ftys = Array.map (mk_clos e) tys in
+          let ftys = CArray.Fun1.map mk_clos e tys in
           let fbds =
-            Array.map (mk_clos (subs_liftn (Array.length na) e)) bds in
-          mkCoFix(n,(na, Array.map (kl info) ftys, Array.map (kl info) fbds))
+            CArray.Fun1.map mk_clos (subs_liftn (Array.length na) e) bds in
+          mkCoFix(n,(na, CArray.Fun1.map kl info ftys, CArray.Fun1.map kl info fbds))
       | FFix((n,(na,tys,bds)),e) ->
-          let ftys = Array.map (mk_clos e) tys in
+          let ftys = CArray.Fun1.map mk_clos e tys in
           let fbds =
-            Array.map (mk_clos (subs_liftn (Array.length na) e)) bds in
-          mkFix(n,(na, Array.map (kl info) ftys, Array.map (kl info) fbds))
+            CArray.Fun1.map mk_clos (subs_liftn (Array.length na) e) bds in
+          mkFix(n,(na, CArray.Fun1.map kl info ftys, CArray.Fun1.map kl info fbds))
       | FEvar((i,args),env) ->
           mkEvar(i, Array.map (fun a -> kl info (mk_clos env a)) args)
       | t -> term_of_fconstr m
@@ -963,7 +1001,7 @@ let whd_val info v =
 let norm_val info v =
   with_stats (lazy (kl info v))
 
-let inject = mk_clos (subs_id 0)
+let inject c = mk_clos (subs_id 0) c
 
 let whd_stack infos m stk =
   let k = kni infos m stk in
@@ -975,5 +1013,6 @@ type clos_infos = fconstr infos
 
 let create_clos_infos ?(evars=fun _ -> None) flgs env =
   create (fun _ -> inject) flgs env evars
+let oracle_of_infos { i_env } = Environ.oracle i_env
 
 let unfold_reference = ref_value_cache

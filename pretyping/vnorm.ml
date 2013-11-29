@@ -6,9 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Util
 open Names
 open Declarations
 open Term
+open Vars
 open Environ
 open Inductive
 open Reduction
@@ -22,8 +24,9 @@ let crazy_type =  mkSet
 
 let decompose_prod env t =
   let (name,dom,codom as res) = destProd (whd_betadeltaiota env t) in
-  if name = Anonymous then (Name (id_of_string "x"),dom,codom)
-  else res
+  match name with
+  | Anonymous -> (Name (Id.of_string "x"), dom, codom)
+  | Name _ -> res
 
 exception Find_at of int
 
@@ -34,7 +37,8 @@ let invert_tag cst tag reloc_tbl =
   try
     for j = 0 to Array.length reloc_tbl - 1 do
       let tagj,arity = reloc_tbl.(j) in
-      if tag = tagj && (cst && arity = 0 || not(cst || arity = 0)) then
+      let no_arity = Int.equal arity 0 in
+      if Int.equal tag tagj && (cst && no_arity || not (cst || no_arity)) then
 	raise (Find_at j)
       else ()
     done;raise Not_found
@@ -44,7 +48,7 @@ let invert_tag cst tag reloc_tbl =
 let find_rectype_a env c =
   let (t, l) =
     let t = whd_betadeltaiota env c in
-    try destApp t with e when Errors.noncritical e -> (t,[||]) in
+    try destApp t with DestKO -> (t,[||]) in
   match kind_of_term t with
   | Ind ind -> (ind, l)
   | _ -> raise Not_found
@@ -55,10 +59,10 @@ let type_constructor mind mib typ params =
   let s = ind_subst mind mib in
   let ctyp = substl s typ in
   let nparams = Array.length params in
-  if nparams = 0 then ctyp
+  if Int.equal nparams 0 then ctyp
   else
     let _,ctyp = decompose_prod_n nparams ctyp in
-    substl (List.rev (Array.to_list params)) ctyp
+    substl (Array.rev_to_list params) ctyp
 
 
 
@@ -141,7 +145,7 @@ and nf_whd env whd typ =
   | Vsort s -> mkSort s
   | Vprod p ->
       let dom = nf_vtype env (dom p) in
-      let name = Name (id_of_string "x") in
+      let name = Name (Id.of_string "x") in
       let vc = body_of_vfun (nb_rel env) (codom p) in
       let codom = nf_vtype (push_rel (name,None,dom) env) vc  in
       mkProd(name,dom,codom)
@@ -176,16 +180,13 @@ and nf_stk env c t stk  =
       nf_stk env (mkApp(c,args)) t stk
   | Zfix (f,vargs) :: stk ->
       let fa, typ = nf_fix_app env f vargs in
-      let _,_,codom =
-        try decompose_prod env typ
-        with e when Errors.noncritical e -> exit 120
-      in
+      let _,_,codom = try decompose_prod env typ with DestKO -> exit 120 in
       nf_stk env (mkApp(fa,[|c|])) (subst1 c codom) stk
   | Zswitch sw :: stk ->
       let (mind,_ as ind),allargs = find_rectype_a env t in
       let (mib,mip) = Inductive.lookup_mind_specif env ind in
       let nparams = mib.mind_nparams in
-      let params,realargs = Util.array_chop nparams allargs in
+      let params,realargs = Util.Array.chop nparams allargs in
       let pT =
 	hnf_prod_applist env (type_of_ind env ind) (Array.to_list params) in
       let pT = whd_betadeltaiota env pT in
@@ -209,20 +210,17 @@ and nf_predicate env ind mip params v pT =
   | Vfun f, Prod _ ->
       let k = nb_rel env in
       let vb = body_of_vfun k f in
-      let name,dom,codom =
-        try decompose_prod env pT
-        with e when Errors.noncritical e -> exit 121
-      in
+      let name,dom,codom = try decompose_prod env pT with DestKO -> exit 121 in
       let dep,body =
 	nf_predicate (push_rel (name,None,dom) env) ind mip params vb codom in
       dep, mkLambda(name,dom,body)
   | Vfun f, _ ->
       let k = nb_rel env in
       let vb = body_of_vfun k f in
-      let name = Name (id_of_string "c") in
+      let name = Name (Id.of_string "c") in
       let n = mip.mind_nrealargs in
       let rargs = Array.init n (fun i -> mkRel (n-i)) in
-      let params = if n=0 then params else Array.map (lift n) params in
+      let params = if Int.equal n 0 then params else Array.map (lift n) params in
       let dom = mkApp(mkInd ind,Array.append params rargs) in
       let body = nf_vtype (push_rel (name,None,dom) env) vb in
       true, mkLambda(name,dom,body)
@@ -234,10 +232,7 @@ and nf_args env vargs t =
   let args =
     Array.init len
       (fun i ->
-	let _,dom,codom =
-          try decompose_prod env !t
-          with e when Errors.noncritical e -> exit 123
-        in
+	let _,dom,codom = try decompose_prod env !t with DestKO -> exit 123 in
 	let c = nf_val env (arg vargs i) dom in
 	t := subst1 c codom; c) in
   !t,args
@@ -248,10 +243,7 @@ and nf_bargs env b t =
   let args =
     Array.init len
       (fun i ->
-	let _,dom,codom =
-          try decompose_prod env !t
-          with e when Errors.noncritical e -> exit 124
-        in
+	let _,dom,codom = try decompose_prod env !t with DestKO -> exit 124 in
 	let c = nf_val env (bfield b i) dom in
 	t := subst1 c codom; c) in
   args
@@ -261,8 +253,10 @@ and nf_fun env f typ =
   let vb = body_of_vfun k f in
   let name,dom,codom =
     try decompose_prod env typ
-    with e when Errors.noncritical e ->
-      raise (Type_errors.TypeError(env,Type_errors.ReferenceVariables typ))
+    with DestKO ->
+      (* 27/2/13: Turned this into an anomaly *)
+      Errors.anomaly
+        (Pp.strbrk "Returned a functional value in a type not recognized as a product type.")
   in
   let body = nf_val (push_rel (name,None,dom) env) vb codom in
   mkLambda(name,dom,body)
@@ -274,9 +268,9 @@ and nf_fix env f =
   let vb, vt = reduce_fix k f in
   let ndef = Array.length vt in
   let ft = Array.map (fun v -> nf_val env v crazy_type) vt in
-  let name = Array.init ndef (fun _ -> (Name (id_of_string "Ffix"))) in
+  let name = Array.init ndef (fun _ -> (Name (Id.of_string "Ffix"))) in
   let env = push_rec_types (name,ft,ft) env in
-  let fb = Util.array_map2 (fun v t -> nf_fun env v t) vb ft in
+  let fb = Util.Array.map2 (fun v t -> nf_fun env v t) vb ft in
   mkFix ((rec_args,init),(name,ft,fb))
 
 and nf_fix_app env f vargs =
@@ -292,9 +286,9 @@ and nf_cofix env cf =
   let vb,vt = reduce_cofix k cf in
   let ndef = Array.length vt in
   let cft = Array.map (fun v -> nf_val env v crazy_type) vt in
-  let name = Array.init ndef (fun _ -> (Name (id_of_string "Fcofix"))) in
+  let name = Array.init ndef (fun _ -> (Name (Id.of_string "Fcofix"))) in
   let env = push_rec_types (name,cft,cft) env in
-  let cfb = Util.array_map2 (fun v t -> nf_val env v t) vb cft in
+  let cfb = Util.Array.map2 (fun v t -> nf_val env v t) vb cft in
   mkCoFix (init,(name,cft,cfb))
 
 let cbv_vm env c t  =

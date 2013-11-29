@@ -30,9 +30,10 @@ Require Import Logic.
 Open Scope nat_scope.
 
 Definition eq_S := f_equal S.
+Definition f_equal_nat := f_equal (A:=nat).
 
-Hint Resolve (f_equal S): v62.
-Hint Resolve (f_equal (A:=nat)): core.
+Hint Resolve eq_S: v62.
+Hint Resolve f_equal_nat: core.
 
 (** The predecessor function *)
 
@@ -40,7 +41,8 @@ Definition pred (n:nat) : nat := match n with
                                  | O => n
                                  | S u => u
                                  end.
-Hint Resolve (f_equal pred): v62.
+Definition f_equal_pred := f_equal pred.
+Hint Resolve f_equal_pred: v62.
 
 Theorem pred_Sn : forall n:nat, n = pred (S n).
 Proof.
@@ -88,8 +90,10 @@ Fixpoint plus (n m:nat) : nat :=
 
 where "n + m" := (plus n m) : nat_scope.
 
-Hint Resolve (f_equal2 plus): v62.
-Hint Resolve (f_equal2 (A1:=nat) (A2:=nat)): core.
+Definition f_equal2_plus := f_equal2 plus.
+Hint Resolve f_equal2_plus: v62.
+Definition f_equal2_nat := f_equal2 (A1:=nat) (A2:=nat). 
+Hint Resolve f_equal2_nat: core.
 
 Lemma plus_n_O : forall n:nat, n = n + 0.
 Proof.
@@ -127,8 +131,8 @@ Fixpoint mult (n m:nat) : nat :=
   end
 
 where "n * m" := (mult n m) : nat_scope.
-
-Hint Resolve (f_equal2 mult): core.
+Definition f_equal2_mult := f_equal2 mult.
+Hint Resolve f_equal2_mult: core.
 
 Lemma mult_n_O : forall n:nat, 0 = n * 0.
 Proof.
@@ -262,35 +266,16 @@ induction n; destruct m; simpl; auto. inversion 1.
 intros. apply f_equal. apply IHn. apply le_S_n. trivial.
 Qed.
 
-(** [n]th iteration of the function [f] *)
-
-Fixpoint nat_iter (n:nat) {A} (f:A->A) (x:A) : A :=
-  match n with
-    | O => x
-    | S n' => f (nat_iter n' f x)
-  end.
-
-Lemma nat_iter_succ_r n {A} (f:A->A) (x:A) :
-  nat_iter (S n) f x = nat_iter n f (f x).
+Lemma nat_rect_succ_r {A} (f: A -> A) (x:A) n :
+  nat_rect (fun _ => A) x (fun _ => f) (S n) = nat_rect (fun _ => A) (f x) (fun _ => f) n.
 Proof.
   induction n; intros; simpl; rewrite <- ?IHn; trivial.
 Qed.
 
-Theorem nat_iter_plus :
+Theorem nat_rect_plus :
   forall (n m:nat) {A} (f:A -> A) (x:A),
-    nat_iter (n + m) f x = nat_iter n f (nat_iter m f x).
+    nat_rect (fun _ => A) x (fun _ => f) (n + m) =
+      nat_rect (fun _ => A) (nat_rect (fun _ => A) x (fun _ => f) m) (fun _ => f) n.
 Proof.
   induction n; intros; simpl; rewrite ?IHn; trivial.
-Qed.
-
-(** Preservation of invariants : if [f : A->A] preserves the invariant [Inv],
-    then the iterates of [f] also preserve it. *)
-
-Theorem nat_iter_invariant :
-  forall (n:nat) {A} (f:A -> A) (P : A -> Prop),
-    (forall x, P x -> P (f x)) ->
-    forall x, P x -> P (nat_iter n f x).
-Proof.
-  induction n; simpl; trivial.
-  intros A f P Hf x Hx. apply Hf, IHn; trivial.
 Qed.

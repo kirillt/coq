@@ -7,25 +7,29 @@
 (************************************************************************)
 
 open Pp
+open Errors
 open Util
-open Univ
 open Names
 open Term
-open Declarations
-open Inductive
+open Vars
+open Context
 open Inductiveops
 open Environ
-open Sign
 open Glob_term
-open Nameops
+open Glob_ops
 open Termops
 open Namegen
 open Libnames
+open Globnames
 open Nametab
-open Evd
 open Mod_subst
+open Misctypes
+open Decl_kinds
 
-let dl = dummy_loc
+let dl = Loc.ghost
+
+(** Should we keep details of universes during detyping ? *)
+let print_universes = ref false
 
 (****************************************************************************)
 (* Tools for printing of Cases                                              *)
@@ -40,9 +44,9 @@ let encode_inductive r =
 (* Tables for Cases printing under a "if" form, a "let" form,  *)
 
 let has_two_constructors lc =
-  Array.length lc = 2 (* & lc.(0) = 0 & lc.(1) = 0 *)
+  Int.equal (Array.length lc) 2 (* & lc.(0) = 0 & lc.(1) = 0 *)
 
-let isomorphic_to_tuple lc = (Array.length lc = 1)
+let isomorphic_to_tuple lc = Int.equal (Array.length lc) 1
 
 let encode_bool r =
   let (x,lc) = encode_inductive r in
@@ -72,7 +76,7 @@ module PrintingInductiveMake =
       let kn' = subst_ind subst kn in
 	if kn' == kn then obj else
 	  kn', ints
-    let printer ind = pr_global_env Idset.empty (IndRef ind)
+    let printer ind = pr_global_env Id.Set.empty (IndRef ind)
     let key = ["Printing";Test.field]
     let title = Test.title
     let member_message x = Test.member_message (printer x)
@@ -83,7 +87,7 @@ module PrintingCasesIf =
   PrintingInductiveMake (struct
     let encode = encode_bool
     let field = "If"
-    let title = "Types leading to pretty-printing of Cases using a `if' form: "
+    let title = "Types leading to pretty-printing of Cases using a `if' form:"
     let member_message s b =
       str "Cases on elements of " ++ s ++
       str
@@ -165,7 +169,7 @@ let computable p k =
        engendrera un prédicat non dépendant) *)
 
   let sign,ccl = decompose_lam_assum p in
-  (rel_context_length sign = k+1)
+  Int.equal (rel_context_length sign) (k + 1)
   &&
   noccur_between 1 (k+1) ccl
 
@@ -173,11 +177,11 @@ let lookup_name_as_displayed env t s =
   let rec lookup avoid n c = match kind_of_term c with
     | Prod (name,_,c') ->
 	(match compute_displayed_name_in RenamingForGoal avoid name c' with
-           | (Name id,avoid') -> if id=s then Some n else lookup avoid' (n+1) c'
+           | (Name id,avoid') -> if Id.equal id s then Some n else lookup avoid' (n+1) c'
 	   | (Anonymous,avoid') -> lookup avoid' (n+1) (pop c'))
     | LetIn (name,_,_,c') ->
 	(match compute_displayed_name_in RenamingForGoal avoid name c' with
-           | (Name id,avoid') -> if id=s then Some n else lookup avoid' (n+1) c'
+           | (Name id,avoid') -> if Id.equal id s then Some n else lookup avoid' (n+1) c'
 	   | (Anonymous,avoid') -> lookup avoid' (n+1) (pop c'))
     | Cast (c,_,_) -> lookup avoid n c
     | _ -> None
@@ -189,9 +193,9 @@ let lookup_index_as_renamed env t n =
 	  (match compute_displayed_name_in RenamingForGoal [] name c' with
                (Name _,_) -> lookup n (d+1) c'
              | (Anonymous,_) ->
-		 if n=0 then
+		 if Int.equal n 0 then
 		   Some (d-1)
-		 else if n=1 then
+		 else if Int.equal n 1 then
 		   Some d
 		 else
 		   lookup (n-1) (d+1) c')
@@ -199,15 +203,15 @@ let lookup_index_as_renamed env t n =
 	  (match compute_displayed_name_in RenamingForGoal [] name c' with
              | (Name _,_) -> lookup n (d+1) c'
              | (Anonymous,_) ->
-		 if n=0 then
+		 if Int.equal n 0 then
 		   Some (d-1)
-		 else if n=1 then
+		 else if Int.equal n 1 then
 		   Some d
 		 else
 		   lookup (n-1) (d+1) c'
 	  )
     | Cast (c,_,_) -> lookup n d c
-    | _ -> if n=0 then Some (d-1) else None
+    | _ -> if Int.equal n 0 then Some (d-1) else None
   in lookup n 1 t
 
 (**********************************************************************)
@@ -215,21 +219,21 @@ let lookup_index_as_renamed env t n =
 
 let update_name na ((_,e),c) =
   match na with
-  | Name _ when force_wildcard () & noccurn (list_index na e) c ->
+  | Name _ when force_wildcard () && noccurn (List.index Name.equal na e) c ->
       Anonymous
   | _ ->
       na
 
 let rec decomp_branch n nal b (avoid,env as e) c =
   let flag = if b then RenamingForGoal else RenamingForCasesPattern in
-  if n=0 then (List.rev nal,(e,c))
+  if Int.equal n 0 then (List.rev nal,(e,c))
   else
     let na,c,f =
       match kind_of_term (strip_outer_cast c) with
 	| Lambda (na,_,c) -> na,c,compute_displayed_let_name_in
 	| LetIn (na,_,_,c) -> na,c,compute_displayed_name_in
 	| _ ->
-	    Name (id_of_string "x"),(applist (lift 1 c, [mkRel 1])),
+	    Name (Id.of_string "x"),(applist (lift 1 c, [mkRel 1])),
 	    compute_displayed_name_in in
     let na',avoid' = f flag avoid na c in
     decomp_branch (n-1) (na'::nal) b (avoid',add_name na' env) c
@@ -238,15 +242,16 @@ let rec build_tree na isgoal e ci cl =
   let mkpat n rhs pl = PatCstr(dl,(ci.ci_ind,n+1),pl,update_name na rhs) in
   let cnl = ci.ci_cstr_ndecls in
   List.flatten
-    (list_tabulate (fun i -> contract_branch isgoal e (cnl.(i),mkpat i,cl.(i)))
-       (Array.length cl))
+    (List.init (Array.length cl)
+      (fun i -> contract_branch isgoal e (cnl.(i),mkpat i,cl.(i))))
 
 and align_tree nal isgoal (e,c as rhs) = match nal with
   | [] -> [[],rhs]
   | na::nal ->
     match kind_of_term c with
-    | Case (ci,p,c,cl) when c = mkRel (list_index na (snd e))
-	& (* don't contract if p dependent *)
+    | Case (ci,p,c,cl) when
+        eq_constr c (mkRel (List.index Name.equal na (snd e)))
+	&& (* don't contract if p dependent *)
 	computable p (ci.ci_pp_info.ind_nargs) ->
 	let clauses = build_tree na isgoal e ci cl in
 	List.flatten
@@ -276,7 +281,7 @@ let is_nondep_branch c n =
     false
 
 let extract_nondep_branches test c b n =
-  let rec strip n r = if n=0 then r else
+  let rec strip n r = if Int.equal n 0 then r else
     match r with
       | GLambda (_,_,_,_,t) -> strip (n-1) t
       | GLetIn (_,_,_,t) -> strip (n-1) t
@@ -285,13 +290,13 @@ let extract_nondep_branches test c b n =
 
 let it_destRLambda_or_LetIn_names n c =
   let rec aux n nal c =
-    if n=0 then (List.rev nal,c) else match c with
+    if Int.equal n 0 then (List.rev nal,c) else match c with
       | GLambda (_,na,_,_,c) -> aux (n-1) (na::nal) c
       | GLetIn (_,na,_,c) -> aux (n-1) (na::nal) c
       | _ ->
           (* eta-expansion *)
-	  let rec next l =
-	    let x = next_ident_away (id_of_string "x") l in
+	  let next l =
+	    let x = next_ident_away (Id.of_string "x") l in
 	    (* Not efficient but unusual and no function to get free glob_vars *)
 (* 	    if occur_glob_constr x c then next (x::l) else x in *)
 	    x
@@ -300,16 +305,16 @@ let it_destRLambda_or_LetIn_names n c =
 	  let a = GVar (dl,x) in
 	  aux (n-1) (Name x :: nal)
             (match c with
-              | GApp (loc,p,l) -> GApp (loc,c,l@[a])
+              | GApp (loc,p,l) -> GApp (loc,p,l@[a])
               | _ -> (GApp (dl,c,[a])))
   in aux n [] c
 
 let detype_case computable detype detype_eqns testdep avoid data p c bl =
-  let (indsp,st,nparams,consnargsl,k) = data in
+  let (indsp,st,consnargsl,k) = data in
   let synth_type = synthetize_type () in
   let tomatch = detype c in
   let alias, aliastyp, pred=
-    if (not !Flags.raw_print) & synth_type & computable & Array.length bl<>0
+    if (not !Flags.raw_print) && synth_type && computable && not (Int.equal (Array.length bl) 0)
     then
       Anonymous, None, None
     else
@@ -321,8 +326,8 @@ let detype_case computable detype detype_eqns testdep avoid data p c bl =
               | GLambda (_,x,_,t,c) -> x, c
 	      | _ -> Anonymous, typ in
 	    let aliastyp =
-	      if List.for_all ((=) Anonymous) nl then None
-	      else Some (dl,indsp,nparams,nl) in
+	      if List.for_all (Name.equal Anonymous) nl then None
+	      else Some (dl,indsp,nl) in
             n, aliastyp, Some typ
   in
   let constructs = Array.init (Array.length bl) (fun i -> (indsp,i+1)) in
@@ -330,7 +335,7 @@ let detype_case computable detype detype_eqns testdep avoid data p c bl =
     try
       if !Flags.raw_print then
         RegularStyle
-      else if st = LetPatternStyle then
+      else if st == LetPatternStyle then
 	st
       else if PrintingLet.active indsp then
 	LetStyle
@@ -340,16 +345,16 @@ let detype_case computable detype detype_eqns testdep avoid data p c bl =
 	st
     with Not_found -> st
   in
-  match tag with
-  | LetStyle when aliastyp = None ->
+  match tag, aliastyp with
+  | LetStyle, None ->
       let bl' = Array.map detype bl in
       let (nal,d) = it_destRLambda_or_LetIn_names consnargsl.(0) bl'.(0) in
       GLetTuple (dl,nal,(alias,pred),tomatch,d)
-  | IfStyle when aliastyp = None ->
+  | IfStyle, None ->
       let bl' = Array.map detype bl in
       let nondepbrs =
-	array_map3 (extract_nondep_branches testdep) bl bl' consnargsl in
-      if array_for_all ((<>) None) nondepbrs then
+	Array.map3 (extract_nondep_branches testdep) bl bl' consnargsl in
+      if Array.for_all ((!=) None) nondepbrs then
 	GIf (dl,tomatch,(alias,pred),
              Option.get nondepbrs.(0),Option.get nondepbrs.(1))
       else
@@ -360,15 +365,20 @@ let detype_case computable detype detype_eqns testdep avoid data p c bl =
       GCases (dl,tag,pred,[tomatch,(alias,aliastyp)],eqnl)
 
 let detype_sort = function
-  | Prop c -> GProp c
-  | Type u -> GType (Some u)
+  | Prop Null -> GProp
+  | Prop Pos -> GSet
+  | Type u ->
+    GType
+      (if !print_universes
+       then Some (Pp.string_of_ppcmds (Univ.pr_uni u))
+       else None)
 
 type binder_kind = BProd | BLambda | BLetIn
 
 (**********************************************************************)
 (* Main detyping function                                             *)
 
-let detype_anonymous = ref (fun loc n -> anomaly "detype: index to an anonymous variable")
+let detype_anonymous = ref (fun loc n -> anomaly ~label:"detype" (Pp.str "index to an anonymous variable"))
 let set_detype_anonymous f = detype_anonymous := f
 
 let rec detype (isgoal:bool) avoid env t =
@@ -379,26 +389,31 @@ let rec detype (isgoal:bool) avoid env t =
 	 | Anonymous -> !detype_anonymous dl n
        with Not_found ->
 	 let s = "_UNBOUND_REL_"^(string_of_int n)
-	 in GVar (dl, id_of_string s))
+	 in GVar (dl, Id.of_string s))
     | Meta n ->
 	(* Meta in constr are not user-parsable and are mapped to Evar *)
-	GEvar (dl, n, None)
+	GEvar (dl, Evar.unsafe_of_int n, None)
     | Var id ->
-	(try
-	  let _ = Global.lookup_named id in GRef (dl, VarRef id)
-	 with e when Errors.noncritical e ->
-	  GVar (dl, id))
+	(try let _ = Global.lookup_named id in GRef (dl, VarRef id)
+	 with Not_found -> GVar (dl, id))
     | Sort s -> GSort (dl,detype_sort s)
     | Cast (c1,REVERTcast,c2) when not !Flags.raw_print ->
         detype isgoal avoid env c1
     | Cast (c1,k,c2) ->
-	GCast(dl,detype isgoal avoid env c1, CastConv (k, detype isgoal avoid env c2))
+        let d1 = detype isgoal avoid env c1 in
+	let d2 = detype isgoal avoid env c2 in
+    let cast = match k with
+    | VMcast -> CastVM d2
+    | NATIVEcast -> CastNative d2
+    | _ -> CastConv d2
+    in
+	GCast(dl,d1,cast)
     | Prod (na,ty,c) -> detype_binder isgoal BProd avoid env na ty c
     | Lambda (na,ty,c) -> detype_binder isgoal BLambda avoid env na ty c
     | LetIn (na,b,_,c) -> detype_binder isgoal BLetIn avoid env na b c
     | App (f,args) ->
 	GApp (dl,detype isgoal avoid env f,
-              array_map_to_list (detype isgoal avoid env) args)
+              Array.map_to_list (detype isgoal avoid env) args)
     | Const sp -> GRef (dl, ConstRef sp)
     | Evar (ev,cl) ->
         GEvar (dl, ev,
@@ -412,7 +427,7 @@ let rec detype (isgoal:bool) avoid env t =
 	detype_case comp (detype isgoal avoid env)
 	  (detype_eqns isgoal avoid env ci comp)
 	  is_nondep_branch avoid
-	  (ci.ci_ind,ci.ci_pp_info.style,ci.ci_npar,
+	  (ci.ci_ind,ci.ci_pp_info.style,
 	   ci.ci_cstr_ndecls,ci.ci_pp_info.ind_nargs)
 	  (Some p) c bl
     | Fix (nvn,recdef) -> detype_fix isgoal avoid env nvn recdef
@@ -426,7 +441,7 @@ and detype_fix isgoal avoid env (vn,_ as nvn) (names,tys,bodies) =
 	 (id::avoid, add_name (Name id) env, id::l))
       (avoid, env, []) names in
   let n = Array.length tys in
-  let v = array_map3
+  let v = Array.map3
     (fun c t i -> share_names isgoal (i+1) [] def_avoid def_env c (lift n t))
     bodies tys vn in
   GRec(dl,GFix (Array.map (fun i -> Some i, GStructRec) (fst nvn), snd nvn),Array.of_list (List.rev lfi),
@@ -442,7 +457,7 @@ and detype_cofix isgoal avoid env n (names,tys,bodies) =
 	 (id::avoid, add_name (Name id) env, id::l))
       (avoid, env, []) names in
   let ntys = Array.length tys in
-  let v = array_map2
+  let v = Array.map2
     (fun c t -> share_names isgoal 0 [] def_avoid def_env c (lift ntys t))
     bodies tys in
   GRec(dl,GCoFix n,Array.of_list (List.rev lfi),
@@ -481,31 +496,31 @@ and share_names isgoal n l avoid env c t =
         share_names isgoal (n-1) ((Name id,Explicit,None,t')::l) avoid env appc c'
     (* If built with the f/n notation: we renounce to share names *)
     | _ ->
-        if n>0 then warning "Detyping.detype: cannot factorize fix enough";
+        if n>0 then msg_warning (strbrk "Detyping.detype: cannot factorize fix enough");
         let c = detype isgoal avoid env c in
         let t = detype isgoal avoid env t in
         (List.rev l,c,t)
 
 and detype_eqns isgoal avoid env ci computable constructs consnargsl bl =
   try
-    if !Flags.raw_print or not (reverse_matching ()) then raise Exit;
+    if !Flags.raw_print || not (reverse_matching ()) then raise Exit;
     let mat = build_tree Anonymous isgoal (avoid,env) ci bl in
     List.map (fun (pat,((avoid,env),c)) -> (dl,[],[pat],detype isgoal avoid env c))
       mat
   with e when Errors.noncritical e ->
     Array.to_list
-      (array_map3 (detype_eqn isgoal avoid env) constructs consnargsl bl)
+      (Array.map3 (detype_eqn isgoal avoid env) constructs consnargsl bl)
 
 and detype_eqn isgoal avoid env constr construct_nargs branch =
   let make_pat x avoid env b ids =
-    if force_wildcard () & noccurn 1 b then
+    if force_wildcard () && noccurn 1 b then
       PatVar (dl,Anonymous),avoid,(add_name Anonymous env),ids
     else
       let id = next_name_away_in_cases_pattern x avoid in
       PatVar (dl,Name id),id::avoid,(add_name (Name id) env),id::ids
   in
   let rec buildrec ids patlist avoid env n b =
-    if n=0 then
+    if Int.equal n 0 then
       (dl, ids,
        [PatCstr(dl, constr, List.rev patlist,Anonymous)],
        detype isgoal avoid env b)
@@ -535,16 +550,16 @@ and detype_eqn isgoal avoid env constr construct_nargs branch =
 
 and detype_binder isgoal bk avoid env na ty c =
   let flag = if isgoal then RenamingForGoal else RenamingElsewhereFor (env,c) in
-  let na',avoid' =
-    if bk = BLetIn then compute_displayed_let_name_in flag avoid na c
-    else compute_displayed_name_in flag avoid na c in
+  let na',avoid' = match bk with
+  | BLetIn -> compute_displayed_let_name_in flag avoid na c
+  | _ -> compute_displayed_name_in flag avoid na c in
   let r =  detype isgoal avoid' (add_name na' env) c in
   match bk with
   | BProd -> GProd (dl, na',Explicit,detype false avoid env ty, r)
   | BLambda -> GLambda (dl, na',Explicit,detype false avoid env ty, r)
   | BLetIn -> GLetIn (dl, na',detype false avoid env ty, r)
 
-let rec detype_rel_context where avoid env sign =
+let detype_rel_context where avoid env sign =
   let where = Option.map (fun c -> it_mkLambda_or_LetIn c sign) where in
   let rec aux avoid env = function
   | [] -> []
@@ -553,7 +568,7 @@ let rec detype_rel_context where avoid env sign =
 	match where with
 	| None -> na,avoid
 	| Some c ->
-	    if b<>None then
+	    if b != None then
 	      compute_displayed_let_name_in
                 (RenamingElsewhereFor (env,c)) avoid na c
 	    else
@@ -572,9 +587,11 @@ let rec subst_cases_pattern subst pat =
   | PatVar _ -> pat
   | PatCstr (loc,((kn,i),j),cpl,n) ->
       let kn' = subst_ind subst kn
-      and cpl' = list_smartmap (subst_cases_pattern subst) cpl in
+      and cpl' = List.smartmap (subst_cases_pattern subst) cpl in
 	if kn' == kn && cpl' == cpl then pat else
 	  PatCstr (loc,((kn',i),j),cpl',n)
+
+let (f_subst_genarg, subst_genarg_hook) = Hook.make ()
 
 let rec subst_glob_constr subst raw =
   match raw with
@@ -589,7 +606,7 @@ let rec subst_glob_constr subst raw =
 
   | GApp (loc,r,rl) ->
       let r' = subst_glob_constr subst r
-      and rl' = list_smartmap (subst_glob_constr subst) rl in
+      and rl' = List.smartmap (subst_glob_constr subst) rl in
 	if r' == r && rl' == rl then raw else
 	  GApp(loc,r',rl')
 
@@ -610,18 +627,18 @@ let rec subst_glob_constr subst raw =
 
   | GCases (loc,sty,rtno,rl,branches) ->
       let rtno' = Option.smartmap (subst_glob_constr subst) rtno
-      and rl' = list_smartmap (fun (a,x as y) ->
+      and rl' = List.smartmap (fun (a,x as y) ->
         let a' = subst_glob_constr subst a in
         let (n,topt) = x in
         let topt' = Option.smartmap
-          (fun (loc,(sp,i),x,y as t) ->
+          (fun (loc,(sp,i),y as t) ->
             let sp' = subst_ind subst sp in
-            if sp == sp' then t else (loc,(sp',i),x,y)) topt in
+            if sp == sp' then t else (loc,(sp',i),y)) topt in
         if a == a' && topt == topt' then y else (a',(n,topt'))) rl
-      and branches' = list_smartmap
+      and branches' = List.smartmap
 			(fun (loc,idl,cpl,r as branch) ->
 			   let cpl' =
-			     list_smartmap (subst_cases_pattern subst) cpl
+			     List.smartmap (subst_cases_pattern subst) cpl
 			   and r' = subst_glob_constr subst r in
 			     if cpl' == cpl && r' == r then branch else
 			       (loc,idl,cpl',r'))
@@ -642,52 +659,51 @@ let rec subst_glob_constr subst raw =
       and b1' = subst_glob_constr subst b1
       and b2' = subst_glob_constr subst b2
       and c' = subst_glob_constr subst c in
-	if c' == c & po' == po && b1' == b1 && b2' == b2 then raw else
+	if c' == c && po' == po && b1' == b1 && b2' == b2 then raw else
           GIf (loc,c',(na,po'),b1',b2')
 
   | GRec (loc,fix,ida,bl,ra1,ra2) ->
-      let ra1' = array_smartmap (subst_glob_constr subst) ra1
-      and ra2' = array_smartmap (subst_glob_constr subst) ra2 in
-      let bl' = array_smartmap
-        (list_smartmap (fun (na,k,obd,ty as dcl) ->
+      let ra1' = Array.smartmap (subst_glob_constr subst) ra1
+      and ra2' = Array.smartmap (subst_glob_constr subst) ra2 in
+      let bl' = Array.smartmap
+        (List.smartmap (fun (na,k,obd,ty as dcl) ->
           let ty' = subst_glob_constr subst ty in
           let obd' = Option.smartmap (subst_glob_constr subst) obd in
-          if ty'==ty & obd'==obd then dcl else (na,k,obd',ty')))
+          if ty'==ty && obd'==obd then dcl else (na,k,obd',ty')))
         bl in
 	if ra1' == ra1 && ra2' == ra2 && bl'==bl then raw else
 	  GRec (loc,fix,ida,bl',ra1',ra2')
 
   | GSort _ -> raw
 
-  | GHole (loc,ImplicitArg (ref,i,b)) ->
-      let ref',_ = subst_global subst ref in
-	if ref' == ref then raw else
-	  GHole (loc,InternalHole)
-  | GHole (loc, (BinderType _ | QuestionMark _ | CasesType | InternalHole |
-      TomatchTypeParameter _ | GoalEvar | ImpossibleCase | MatchingVar _)) ->
-      raw
+  | GHole (loc, knd, solve) ->
+    let nknd = match knd with
+    | Evar_kinds.ImplicitArg (ref, i, b) ->
+      let nref, _ = subst_global subst ref in
+      if nref == ref then knd else Evar_kinds.ImplicitArg (nref, i, b)
+    | _ -> knd
+    in
+    let nsolve = Option.smartmap (Hook.get f_subst_genarg subst) solve in
+    if nsolve == solve && nknd = knd then raw
+    else GHole (loc, nknd, nsolve)
 
   | GCast (loc,r1,k) ->
-      (match k with
-	   CastConv (k,r2) ->
-	     let r1' = subst_glob_constr subst r1 and r2' = subst_glob_constr subst r2 in
-	       if r1' == r1 && r2' == r2 then raw else
-		 GCast (loc,r1', CastConv (k,r2'))
-	 | CastCoerce ->
-	     let r1' = subst_glob_constr subst r1 in
-	       if r1' == r1 then raw else GCast (loc,r1',k))
+      let r1' = subst_glob_constr subst r1 in
+      let k' = Miscops.smartmap_cast_type (subst_glob_constr subst) k in
+      if r1' == r1 && k' == k then raw else GCast (loc,r1',k')
 
 (* Utilities to transform kernel cases to simple pattern-matching problem *)
 
 let simple_cases_matrix_of_branches ind brs =
   List.map (fun (i,n,b) ->
       let nal,c = it_destRLambda_or_LetIn_names n b in
-      let mkPatVar na = PatVar (dummy_loc,na) in
-      let p = PatCstr (dummy_loc,(ind,i+1),List.map mkPatVar nal,Anonymous) in
-      let ids = map_succeed Nameops.out_name nal in
-      (dummy_loc,ids,[p],c))
+      let mkPatVar na = PatVar (Loc.ghost,na) in
+      let p = PatCstr (Loc.ghost,(ind,i+1),List.map mkPatVar nal,Anonymous) in
+      let map name = try Some (Nameops.out_name name) with Failure _ -> None in
+      let ids = List.map_filter map nal in
+      (Loc.ghost,ids,[p],c))
     brs
 
-let return_type_of_predicate ind nparams nrealargs_ctxt pred =
+let return_type_of_predicate ind nrealargs_ctxt pred =
   let nal,p = it_destRLambda_or_LetIn_names (nrealargs_ctxt+1) pred in
-  (List.hd nal, Some (dummy_loc, ind, nparams, List.tl nal)), Some p
+  (List.hd nal, Some (Loc.ghost, ind, List.tl nal)), Some p

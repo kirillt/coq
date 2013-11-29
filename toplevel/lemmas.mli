@@ -9,7 +9,7 @@
 open Names
 open Term
 open Decl_kinds
-open Topconstr
+open Constrexpr
 open Tacexpr
 open Vernacexpr
 open Proof_type
@@ -18,39 +18,41 @@ open Pfedit
 (** A hook start_proof calls on the type of the definition being started *)
 val set_start_hook : (types -> unit) -> unit
 
-val start_proof : identifier -> goal_kind -> types ->
-  ?init_tac:tactic -> ?compute_guard:lemma_possible_guards -> 
-    declaration_hook -> unit
+val start_proof : Id.t -> goal_kind -> types ->
+  ?init_tac:unit Proofview.tactic -> ?compute_guard:lemma_possible_guards -> 
+   unit declaration_hook -> unit
 
 val start_proof_com : goal_kind ->
   (lident option * (local_binder list * constr_expr * (lident option * recursion_order_expr) option)) list ->
-  declaration_hook -> unit
+  unit declaration_hook -> unit
 
 val start_proof_with_initialization : 
-  goal_kind -> (bool * lemma_possible_guards * tactic list option) option ->
-  (identifier * (types * (name list * Impargs.manual_explicitation list))) list
-  -> int list option -> declaration_hook -> unit
+  goal_kind -> (bool * lemma_possible_guards * unit Proofview.tactic list option) option ->
+  (Id.t * (types * (Name.t list * Impargs.manual_explicitation list))) list
+  -> int list option -> unit declaration_hook -> unit
 
 (** A hook the next three functions pass to cook_proof *)
 val set_save_hook : (Proof.proof -> unit) -> unit
 
 (** {6 ... } *)
-(** [save_named b] saves the current completed proof under the name it
-was started; boolean [b] tells if the theorem is declared opaque; it
-fails if the proof is not completed *)
+(** [save_named b] saves the current completed (or the provided) proof
+    under the name it was started; boolean [b] tells if the theorem is 
+    declared opaque; it fails if the proof is not completed *)
 
-val save_named : bool -> unit
+val save_named : ?proof:Proof_global.closed_proof -> bool -> unit
 
 (** [save_anonymous b name] behaves as [save_named] but declares the theorem
 under the name [name] and respects the strength of the declaration *)
 
-val save_anonymous : bool -> identifier -> unit
+val save_anonymous :
+  ?proof:Proof_global.closed_proof -> bool -> Id.t -> unit
 
 (** [save_anonymous_with_strength s b name] behaves as [save_anonymous] but
    declares the theorem under the name [name] and gives it the
    strength [strength] *)
 
-val save_anonymous_with_strength : theorem_kind -> bool -> identifier -> unit
+val save_anonymous_with_strength :
+  ?proof:Proof_global.closed_proof -> theorem_kind -> bool -> Id.t -> unit
 
 (** [admit ()] aborts the current goal and save it as an assmumption *)
 

@@ -10,9 +10,10 @@ open Pp
 open Util
 open Names
 open Term
+open Vars
 open Mod_subst
 open Environ
-open Libnames
+open Globnames
 open Nameops
 open Libobject
 open Lib
@@ -52,19 +53,7 @@ module Evalrefmap =
   Map.Make (Evalreford)
 
 
-let head_map = ref Evalrefmap.empty
-
-let init () = head_map := Evalrefmap.empty
-
-let freeze () = !head_map
-
-let unfreeze hm = head_map := hm
-
-let _ =
-  Summary.declare_summary "Head_decl"
-    { Summary.freeze_function = freeze;
-      Summary.unfreeze_function = unfreeze;
-      Summary.init_function = init }
+let head_map = Summary.ref Evalrefmap.empty ~name:"Head_decl"
 
 let variable_head id  = Evalrefmap.find (EvalVarRef id) !head_map
 let constant_head cst = Evalrefmap.find (EvalConstRef cst) !head_map
@@ -87,8 +76,13 @@ let kind_of_head env t =
       if b then NotImmediatelyComputableHead else ConstructorHead
   | Sort _ | Ind _ | Prod _ -> RigidHead RigidType
   | Cast (c,_,_) -> aux k l c b
-  | Lambda (_,_,c) when l = [] -> assert (not b); aux (k+1) [] c b
-  | Lambda (_,_,c) -> aux k (List.tl l) (subst1 (List.hd l) c) b
+  | Lambda (_,_,c) ->
+    begin match l with
+    | [] ->
+      let () = assert (not b) in
+      aux (k + 1) [] c b
+    | h :: l -> aux k l (subst1 h c) b
+    end
   | LetIn _ -> assert false
   | Meta _ | Evar _ -> NotImmediatelyComputableHead
   | App (c,al) -> aux k (Array.to_list al @ l) c b
@@ -113,9 +107,9 @@ let kind_of_head env t =
           k+n-m,[],a
         else
           (* enough arguments to [cst] *)
-          k,list_skipn n l,List.nth l (i-1) in
-      let l' = list_tabulate (fun _ -> mkMeta 0) q @ rest in
-      aux k' l' a (with_subcase or with_case)
+          k,List.skipn n l,List.nth l (i-1) in
+      let l' = List.make q (mkMeta 0) @ rest in
+      aux k' l' a (with_subcase || with_case)
   | ConstructorHead when with_case -> NotImmediatelyComputableHead
   | x -> x
   in aux 0 [] t false

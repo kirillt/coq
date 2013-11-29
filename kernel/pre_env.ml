@@ -15,7 +15,7 @@
 
 open Util
 open Names
-open Sign
+open Context
 open Univ
 open Term
 open Declarations
@@ -39,12 +39,12 @@ type stratification = {
 }
 
 type val_kind =
-    | VKvalue of values * Idset.t
+    | VKvalue of values * Id.Set.t
     | VKnone
 
 type lazy_val = val_kind ref
 
-type named_vals = (identifier * lazy_val) list
+type named_vals = (Id.t * lazy_val) list
 
 type env = {
   env_globals       : globals;
@@ -54,6 +54,7 @@ type env = {
   env_rel_val       : lazy_val list;
   env_nb_rel        : int;
   env_stratification : stratification;
+  env_conv_oracle   : Conv_oracle.oracle;
   retroknowledge : Retroknowledge.retroknowledge }
 
 type named_context_val = named_context * named_vals
@@ -74,6 +75,7 @@ let empty_env = {
   env_stratification = {
     env_universes = initial_universes;
     env_engagement = None };
+  env_conv_oracle = Conv_oracle.empty;
   retroknowledge = Retroknowledge.initial_retroknowledge }
 
 
@@ -90,12 +92,12 @@ let push_rel d env =
 
 let lookup_rel_val n env =
   try List.nth env.env_rel_val (n - 1)
-  with e when Errors.noncritical e -> raise Not_found
+  with Failure _ -> raise Not_found
 
 let env_of_rel n env =
   { env with
-    env_rel_context = Util.list_skipn n env.env_rel_context;
-    env_rel_val = Util.list_skipn n env.env_rel_val;
+    env_rel_context = Util.List.skipn n env.env_rel_context;
+    env_rel_val = Util.List.skipn n env.env_rel_val;
     env_nb_rel = env.env_nb_rel - n
   }
 
@@ -104,21 +106,25 @@ let env_of_rel n env =
 let push_named_context_val d (ctxt,vals) =
   let id,_,_ = d in
   let rval = ref VKnone in
-    Sign.add_named_decl d ctxt, (id,rval)::vals
-
-exception ASSERT of rel_context
+    Context.add_named_decl d ctxt, (id,rval)::vals
 
 let push_named d env =
 (*  if not (env.env_rel_context = []) then raise (ASSERT env.env_rel_context);
   assert (env.env_rel_context = []); *)
   let id,body,_ = d in
   let rval = ref VKnone in
-    { env with
-      env_named_context = Sign.add_named_decl d env.env_named_context;
-      env_named_vals =  (id,rval):: env.env_named_vals }
+  { env_globals = env.env_globals;
+    env_named_context = Context.add_named_decl d env.env_named_context;
+    env_named_vals = (id, rval) :: env.env_named_vals;
+    env_rel_context = env.env_rel_context;
+    env_rel_val = env.env_rel_val;
+    env_nb_rel = env.env_nb_rel;
+    env_stratification = env.env_stratification;
+    env_conv_oracle = env.env_conv_oracle;
+    retroknowledge = env.retroknowledge; }
 
 let lookup_named_val id env =
-  snd(List.find (fun (id',_) -> id = id') env.env_named_vals)
+  snd(List.find (fun (id',_) -> Id.equal id id') env.env_named_vals)
 
 (* Warning all the names should be different *)
 let env_of_named id env = env

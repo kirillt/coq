@@ -8,26 +8,22 @@
 
 (*i*)
 open Names
-open Decl_kinds
 open Term
-open Sign
+open Context
 open Evd
 open Environ
-open Nametab
-open Mod_subst
-open Topconstr
-open Compat
-open Util
-open Libnames
+open Constrexpr
+open Globnames
 (*i*)
 
 type contexts = Parameters | Properties
 
 type typeclass_error =
     | NotAClass of constr
-    | UnboundMethod of global_reference * identifier located (* Class name, method *)
-    | NoInstance of identifier located * constr list
-    | UnsatisfiableConstraints of evar_map * (existential_key * hole_kind) option
+    | UnboundMethod of global_reference * Id.t Loc.located (* Class name, method *)
+    | NoInstance of Id.t Loc.located * constr list
+    | UnsatisfiableConstraints of
+      evar_map * (existential_key * Evar_kinds.t) option * Evar.Set.t option
     | MismatchedContextInstance of contexts * constr_expr list * rel_context (* found, expected *)
 
 exception TypeClassError of env * typeclass_error
@@ -40,19 +36,19 @@ let unbound_method env cid id = typeclass_error env (UnboundMethod (cid, id))
 
 let no_instance env id args = typeclass_error env (NoInstance (id, args))
 
-let unsatisfiable_constraints env evd ev =
+let unsatisfiable_constraints env evd ev comp =
   match ev with
   | None ->
-      raise (TypeClassError (env, UnsatisfiableConstraints (evd, None)))
+    let err = UnsatisfiableConstraints (evd, None, comp) in
+    raise (TypeClassError (env, err))
   | Some ev ->
-      let loc, kind = Evd.evar_source ev evd in
-	raise (Loc.Exc_located (loc, TypeClassError
-	  (env, UnsatisfiableConstraints (evd, Some (ev, kind)))))
+    let loc, kind = Evd.evar_source ev evd in
+    let err = UnsatisfiableConstraints (evd, Some (ev, kind), comp) in
+    Loc.raise loc (TypeClassError (env, err))
 
 let mismatched_ctx_inst env c n m = typeclass_error env (MismatchedContextInstance (c, n, m))
 
 let rec unsatisfiable_exception exn =
   match exn with
   | TypeClassError (_, UnsatisfiableConstraints _) -> true
-  | Loc.Exc_located(_, e) -> unsatisfiable_exception e
   | _ -> false

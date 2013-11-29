@@ -1,5 +1,17 @@
+<!DOCTYPE html 
+     PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 
-<h1>The Coq Standard Library</h1>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-15"/>
+<link rel="stylesheet" href="css/context.css" type="text/css"/>
+<title>The Coq Standard Library</title>
+</head>
+
+<body>
+
+<H1>The Coq Standard Library</H1>
 
 <p>Here is a short description of the Coq standard library, which is
 distributed with the system.
@@ -25,7 +37,7 @@ through the <tt>Require Import</tt> command.</p>
   </dd>
   
   <dt> <b>Logic</b>:
-      Classical logic and dependent equality
+      Classical logic, dependent equality, extensionality, choice axioms
   </dt>
   <dd>
     theories/Logic/SetIsType.v
@@ -57,6 +69,7 @@ through the <tt>Require Import</tt> command.</p>
     theories/Logic/IndefiniteDescription.v
     theories/Logic/FunctionalExtensionality.v
     theories/Logic/ExtensionalityFacts.v
+    theories/Logic/Fan.v
   </dd>
     
   <dt> <b>Structures</b>:
@@ -173,8 +186,6 @@ through the <tt>Require Import</tt> command.</p>
     theories/ZArith/Zpow_def.v
     theories/ZArith/Zpow_alt.v
     theories/ZArith/Zpower.v
-    theories/ZArith/ZOdiv_def.v
-    theories/ZArith/ZOdiv.v
     theories/ZArith/Zdiv.v
     theories/ZArith/Zquot.v
     theories/ZArith/Zeuclid.v
@@ -386,6 +397,7 @@ through the <tt>Require Import</tt> command.</p>
     theories/Classes/SetoidClass.v
     theories/Classes/SetoidDec.v
     theories/Classes/RelationPairs.v
+    theories/Classes/DecidableClass.v
   </dd>
 
   <dt> <b>Setoids</b>:
@@ -409,12 +421,13 @@ through the <tt>Require Import</tt> command.</p>
   <dt> <b>Vectors</b>:
     Dependent datastructures storing their length
   </dt>
-  <dd>
-    theories/Vectors/Fin.v
-    theories/Vectors/VectorDef.v
-    theories/Vectors/VectorSpec.v
-    (theories/Vectors/Vector.v)
-  </dd>
+    <dd>
+      theories/Vectors/Fin.v
+      theories/Vectors/VectorDef.v
+      theories/Vectors/VectorSpec.v
+      theories/Vectors/VectorEq.v
+      (theories/Vectors/Vector.v)
+    </dd>
 
   <dt> <b>Sorting</b>:
     Axiomatizations of sorts
@@ -566,7 +579,6 @@ through the <tt>Require Import</tt> command.</p>
     theories/Reals/SeqSeries.v
     theories/Reals/Sqrt_reg.v
     theories/Reals/Rlogic.v
-    theories/Reals/LegacyRfield.v
     (theories/Reals/Reals.v)
   </dd>
     

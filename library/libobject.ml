@@ -7,7 +7,7 @@
 (************************************************************************)
 
 open Util
-open Names
+open Errors
 open Libnames
 open Mod_subst
 
@@ -36,7 +36,7 @@ type 'a object_declaration = {
   discharge_function : object_name * 'a -> 'a option;
   rebuild_function : 'a -> 'a }
 
-let yell s = anomaly s
+let yell s = anomaly (Pp.str s)
 
 let default_object s = {
   object_name = s;
@@ -74,7 +74,8 @@ type dynamic_object_declaration = {
   dyn_discharge_function : object_name * obj -> obj option;
   dyn_rebuild_function : obj -> obj }
 
-let object_tag lobj = Dyn.tag lobj
+let object_tag = Dyn.tag
+let object_has_tag = Dyn.has_tag
 
 let cache_tab =
   (Hashtbl.create 17 : (string,dynamic_object_declaration) Hashtbl.t)
@@ -82,36 +83,18 @@ let cache_tab =
 let declare_object_full odecl =
   let na = odecl.object_name in
   let (infun,outfun) = Dyn.create na in
-  let cacher (oname,lobj) =
-    if Dyn.tag lobj = na then odecl.cache_function (oname,outfun lobj)
-    else anomaly "somehow we got the wrong dynamic object in the cachefun"
-  and loader i (oname,lobj) =
-    if Dyn.tag lobj = na then odecl.load_function i (oname,outfun lobj)
-    else anomaly "somehow we got the wrong dynamic object in the loadfun"
-  and opener i (oname,lobj) =
-    if Dyn.tag lobj = na then odecl.open_function i (oname,outfun lobj)
-    else anomaly "somehow we got the wrong dynamic object in the openfun"
-  and substituter (sub,lobj) = 
-    if Dyn.tag lobj = na then 
-      infun (odecl.subst_function (sub,outfun lobj))
-    else anomaly "somehow we got the wrong dynamic object in the substfun"
-  and classifier lobj =
-    if Dyn.tag lobj = na then
-      match odecl.classify_function (outfun lobj) with
-	| Dispose -> Dispose
-	| Substitute obj -> Substitute (infun obj)
-	| Keep obj -> Keep (infun obj)
-	| Anticipate (obj) -> Anticipate (infun obj)
-    else
-      anomaly "somehow we got the wrong dynamic object in the classifyfun"
+  let cacher (oname,lobj) = odecl.cache_function (oname,outfun lobj)
+  and loader i (oname,lobj) = odecl.load_function i (oname,outfun lobj)
+  and opener i (oname,lobj) = odecl.open_function i (oname,outfun lobj)
+  and substituter (sub,lobj) = infun (odecl.subst_function (sub,outfun lobj))
+  and classifier lobj = match odecl.classify_function (outfun lobj) with
+  | Dispose -> Dispose
+  | Substitute obj -> Substitute (infun obj)
+  | Keep obj -> Keep (infun obj)
+  | Anticipate (obj) -> Anticipate (infun obj)
   and discharge (oname,lobj) =
-    if Dyn.tag lobj = na then
-      Option.map infun (odecl.discharge_function (oname,outfun lobj))
-    else
-      anomaly "somehow we got the wrong dynamic object in the dischargefun"
-  and rebuild lobj =
-    if Dyn.tag lobj = na then infun (odecl.rebuild_function (outfun lobj))
-    else anomaly "somehow we got the wrong dynamic object in the rebuildfun"
+    Option.map infun (odecl.discharge_function (oname,outfun lobj))
+  and rebuild lobj = infun (odecl.rebuild_function (outfun lobj))
   in
   Hashtbl.add cache_tab na { dyn_cache_function = cacher;
 			     dyn_load_function = loader;

@@ -26,7 +26,6 @@
 #
 # make VERBOSE=1           # restore the raw echoing of commands
 # make NO_RECALC_DEPS=1    # avoid recomputing dependencies
-# make NO_RECOMPILE_LIB=1  # a coqtop rebuild does not trigger a stdlib rebuild
 #
 # Nota: the 1 above can be replaced by any non-empty value
 #
@@ -79,7 +78,7 @@ EXISTINGMLI := $(call find, '*.mli')
 
 GENML4FILES:= $(ML4FILES:.ml4=.ml)
 GENMLFILES:=$(LEXFILES:.mll=.ml) $(YACCFILES:.mly=.ml) \
-  scripts/tolink.ml kernel/copcodes.ml
+  tools/tolink.ml kernel/copcodes.ml
 GENMLIFILES:=$(YACCFILES:.mly=.mli)
 GENPLUGINSMOD:=$(filter plugins/%,$(MLLIBFILES:%.mllib=%_mod.ml))
 export GENHFILES:=kernel/byterun/coq_jumptbl.h
@@ -166,7 +165,7 @@ cruftclean: ml4clean
 
 indepclean:
 	rm -f $(GENFILES)
-	rm -f $(COQTOPBYTE) $(COQMKTOPBYTE) $(COQCBYTE) $(CHICKENBYTE) bin/fake_ide
+	rm -f $(COQTOPBYTE) $(CHICKENBYTE) bin/fake_ide
 	find . -name '*~' -o -name '*.cm[ioa]' | xargs rm -f
 	rm -f */*.pp[iox] plugins/*/*.pp[iox]
 	rm -rf $(SOURCEDOCDIR)
@@ -192,20 +191,18 @@ docclean:
 	rm -f doc/common/version.tex
 	rm -f doc/refman/styles.hva doc/refman/cover.html doc/refman/Reference-Manual.html
 	rm -f doc/coq.tex
-	rm -f doc/refman/styles.hva doc/refman/cover.html 
 
 archclean: clean-ide optclean voclean
-	rm -rf _build myocamlbuild_config.ml
+	rm -rf _build
 	rm -f $(ALLSTDLIB).*
 
 optclean:
 	rm -f $(COQTOPEXE) $(COQMKTOP) $(COQC) $(CHICKEN) $(COQDEPBOOT)
-	rm -f $(COQTOPOPT) $(COQMKTOPOPT) $(COQCOPT) $(CHICKENOPT)
 	rm -f $(TOOLS) $(CSDPCERT)
 	find . -name '*.cmx' -o -name '*.cmxs' -o -name '*.cmxa' -o -name '*.[soa]' -o -name '*.so' | xargs rm -f
 
 clean-ide:
-	rm -f $(COQIDECMO) $(COQIDECMX) $(COQIDECMO:.cmo=.cmi) $(COQIDEBYTE) $(COQIDEOPT) $(COQIDE)
+	rm -f $(COQIDECMO) $(COQIDECMX) $(COQIDECMO:.cmo=.cmi) $(COQIDEBYTE) $(COQIDE)
 	rm -f ide/input_method_lexer.ml
 	rm -f ide/highlight.ml ide/config_lexer.ml ide/config_parser.mli ide/config_parser.ml
 	rm -f ide/utf8_convert.ml
@@ -220,13 +217,12 @@ depclean:
 	find . $(FIND_VCS_CLAUSE) '(' -name '*.d' ')' -print | xargs rm -f
 
 cleanconfig:
-	rm -f config/Makefile config/coq_config.ml dev/ocamldebug-v7 ide/undo.mli
+	rm -f config/Makefile config/coq_config.ml myocamlbuild_config.ml dev/ocamldebug-v7
 
 distclean: clean cleanconfig
 
 voclean:
-	rm -f states/*.coq
-	find theories plugins test-suite -name '*.vo' -o -name '*.glob' | xargs rm -f
+	find theories plugins test-suite -name '*.vo' -o -name '*.glob' -o -name "*.cmxs" -o -name "*.native" -o -name "*.cmx" -o -name "*.cmi" -o -name "*.o" | xargs rm -f
 
 devdocclean:
 	find . -name '*.dep.ps' -o -name '*.dot' | xargs rm -f
@@ -238,7 +234,7 @@ devdocclean:
 # Emacs tags
 ###########################################################################
 
-.PHONY: tags otags
+.PHONY: tags
 
 tags:
 	echo $(MLIFILES) $(MLSTATICFILES) $(ML4FILES) | sort -r | xargs \
@@ -253,19 +249,6 @@ tags:
 	echo $(ML4FILES) | sort -r | xargs \
 	etags --append --language=none\
 	      "--regex=/[ \t]*\([^: \t]+\)[ \t]*:/\1/"
-
-
-otags: 
-	echo $(MLIFILES) $(MLSTATICFILES) | sort -r | xargs otags
-	echo $(ML4FILES) | sort -r | xargs \
-	etags --append --language=none\
-	      "--regex=/let[ \t]+\([^ \t]+\)/\1/" \
-	      "--regex=/let[ \t]+rec[ \t]+\([^ \t]+\)/\1/" \
-	      "--regex=/and[ \t]+\([^ \t]+\)/\1/" \
-	      "--regex=/type[ \t]+\([^ \t]+\)/\1/" \
-              "--regex=/exception[ \t]+\([^ \t]+\)/\1/" \
-	      "--regex=/val[ \t]+\([^ \t]+\)/\1/" \
-	      "--regex=/module[ \t]+\([^ \t]+\)/\1/"
 
 
 %.elc: %.el

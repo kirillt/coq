@@ -6,9 +6,11 @@
 (*         *       GNU Lesser General Public License Version 2.1        *)
 (************************************************************************)
 
+open Pp
+open Errors
 open Util
-open Names
 open Term
+open Vars
 open Environ
 open Reductionops
 open Type_errors
@@ -16,22 +18,21 @@ open Pretype_errors
 open Inductive
 open Inductiveops
 open Typeops
-open Evd
 open Arguments_renaming
 
 let meta_type evd mv =
   let ty =
     try Evd.meta_ftype evd mv
-    with Not_found -> anomaly ("unknown meta ?"^Nameops.string_of_meta mv) in
+    with Not_found -> anomaly (str "unknown meta ?" ++ str (Nameops.string_of_meta mv)) in
   meta_instance evd ty
 
 let constant_type_knowing_parameters env cst jl =
-  let paramstyp = Array.map (fun j -> j.uj_type) jl in
+  let paramstyp = Array.map (fun j -> lazy j.uj_type) jl in
   type_of_constant_knowing_parameters env (constant_type env cst) paramstyp
 
 let inductive_type_knowing_parameters env ind jl =
   let (mib,mip) = lookup_mind_specif env ind in
-  let paramstyp = Array.map (fun j -> j.uj_type) jl in
+  let paramstyp = Array.map (fun j -> lazy j.uj_type) jl in
   Inductive.type_of_inductive_knowing_parameters env mip paramstyp
 
 let e_type_judgment env evdref j =
@@ -70,16 +71,16 @@ let e_judge_of_apply env evdref funj argjv =
   apply_rec 1 funj.uj_type (Array.to_list argjv)
 
 let e_check_branch_types env evdref ind cj (lfj,explft) =
-  if Array.length lfj <> Array.length explft then
+  if not (Int.equal (Array.length lfj) (Array.length explft)) then
     error_number_branches env cj (Array.length explft);
   for i = 0 to Array.length explft - 1 do
     if not (Evarconv.e_cumul env evdref lfj.(i).uj_type explft.(i)) then
       error_ill_formed_branch env cj.uj_val (ind,i+1) lfj.(i).uj_type explft.(i)
   done
 
-let rec max_sort l =
-  if List.mem InType l then InType else
-  if List.mem InSet l then InSet else InProp
+let max_sort l =
+  if Sorts.List.mem InType l then InType else
+  if Sorts.List.mem InSet l then InSet else InProp
 
 let e_is_correct_arity env evdref c pj ind specif params =
   let arsign = make_arity_signature env true (make_ind_family (ind,params)) in
@@ -92,7 +93,8 @@ let e_is_correct_arity env evdref c pj ind specif params =
         if not (Evarconv.e_cumul env evdref a1 a1') then error ();
         srec (push_rel (na1,None,a1) env) t ar'
     | Sort s, [] ->
-        if not (List.mem (family_of_sort s) allowed_sorts) then error ()
+        if not (Sorts.List.mem (Sorts.family s) allowed_sorts)
+        then error ()
     | Evar (ev,_), [] ->
         let s = Termops.new_sort_in_family (max_sort allowed_sorts) in
         evdref := Evd.define ev (mkSort s) !evdref
@@ -106,7 +108,7 @@ let e_is_correct_arity env evdref c pj ind specif params =
 let e_type_case_branches env evdref (ind,largs) pj c =
   let specif = lookup_mind_specif env ind in
   let nparams = inductive_params specif in
-  let (params,realargs) = list_chop nparams largs in
+  let (params,realargs) = List.chop nparams largs in
   let p = pj.uj_val in
   let univ = e_is_correct_arity env evdref c pj ind specif params in
   let lc = build_branches_type ind specif params p in
@@ -130,7 +132,7 @@ let check_allowed_sort env sigma ind c p =
   let ksort = family_of_sort (sort_of_arity env sigma pj.uj_type) in
   let specif = Global.lookup_inductive ind in
   let sorts = elim_sorts specif in
-  if not (List.exists ((=) ksort) sorts) then
+  if not (List.exists ((==) ksort) sorts) then
     let s = inductive_sort_family (snd specif) in
     error_elim_arity env ind sorts c pj
       (Some(ksort,s,error_elim_explain ksort s))
@@ -205,12 +207,12 @@ let rec execute env evdref cstr =
 		(* Sort-polymorphism of inductive types *)
 		make_judge f
 		  (inductive_type_knowing_parameters env ind
-		    (jv_nf_evar !evdref jl))
+		    (Evarutil.jv_nf_evar !evdref jl))
 	    | Const cst ->
 		(* Sort-polymorphism of inductive types *)
 		make_judge f
 		  (constant_type_knowing_parameters env cst
-		    (jv_nf_evar !evdref jl))
+		    (Evarutil.jv_nf_evar !evdref jl))
 	    | _ ->
 		execute env evdref f
 	in
@@ -287,10 +289,9 @@ let e_type_of env evd c =
   (* side-effect on evdref *)
   !evdref, Termops.refresh_universes j.uj_type
 
-let solve_evars env evd c =
-  let evdref = ref evd in
+let solve_evars env evdref c =
   let c = (execute env evdref c).uj_val in
   (* side-effect on evdref *)
-  !evdref, nf_evar !evdref c
+  nf_evar !evdref c
 
 let _ = Evarconv.set_solve_evars solve_evars

@@ -22,7 +22,7 @@ global constant.
 \comindex{About}\\ 
 This displays various informations about the object denoted by {\qualid}:
 its kind (module, constant, assumption, inductive,
-constructor, abbreviation\ldots), long name, type, implicit
+constructor, abbreviation, \ldots), long name, type, implicit
 arguments and argument scopes. It does not print the body of
 definitions or proofs.
 
@@ -135,9 +135,9 @@ displayed in Objective Caml syntax, where global identifiers are still
 displayed as in \Coq\ terms.
 
 \begin{Variants}
-\item \texttt{Recursive Extraction {\qualid$_1$} \ldots{} {\qualid$_n$}.}\\
+\item \texttt{Recursive Extraction} {\qualid$_1$} \ldots{} {\qualid$_n$}{\tt .}\\
   Recursively extracts all the material needed for the extraction of 
-  globals {\qualid$_1$} \ldots{} {\qualid$_n$}.
+  globals {\qualid$_1$}, \ldots, {\qualid$_n$}.
 \end{Variants}
 
 \SeeAlso Chapter~\ref{Extraction}.
@@ -155,39 +155,16 @@ relies.
   \comindex{Print Opaque Dependencies}}\\
   Displays the set of opaque constants {\qualid} relies on in addition
   to the assumptions.
+\item \texttt{\tt Print Transparent Dependencies {\qualid}.
+  \comindex{Print Transparent Dependencies}}\\
+  Displays the set of transparent constants {\qualid} relies on in addition
+  to the assumptions.
+\item \texttt{\tt Print All Dependencies {\qualid}.
+  \comindex{Print All Dependencies}}\\
+  Displays all assumptions and constants {\qualid} relies on.
 \end{Variants}
 
-\subsection[\tt Search {\term}.]{\tt Search {\term}.\comindex{Search}}
-This command displays the name and type of all theorems of the current
-context whose statement's conclusion has the form {\tt ({\term} t1 ..
-  tn)}.  This command is useful to remind the user of the name of
-library lemmas.
-
-\begin{coq_example}
-Search le.
-Search (@eq bool).
-\end{coq_example}
-
-\begin{Variants}
-\item
-{\tt Search {\term} inside {\module$_1$} \ldots{} {\module$_n$}.}
-
-This restricts the search to constructions defined in modules
-{\module$_1$} \ldots{} {\module$_n$}.
-
-\item {\tt Search {\term} outside {\module$_1$} \ldots{} {\module$_n$}.}
-
-This restricts the search to constructions not defined in modules
-{\module$_1$} \ldots{} {\module$_n$}.
-
-\begin{ErrMsgs}
-\item \errindex{Module/section \module{} not found}
-No module \module{} has been required (see Section~\ref{Require}).
-\end{ErrMsgs}
-
-\end{Variants}
-
-\subsection[\tt SearchAbout {\qualid}.]{\tt SearchAbout {\qualid}.\comindex{SearchAbout}}
+\subsection[\tt Search {\qualid}.]{\tt Search {\qualid}.\comindex{Search}}
 This command displays the name and type of all objects (theorems,
 axioms, etc) of the current context whose statement contains \qualid.
 This command is useful to remind the user of the name of library
@@ -202,36 +179,36 @@ environment}\\
 \newcommand{\termpatternorstr}{{\termpattern}\textrm{\textsl{-}}{\str}}
 
 \begin{Variants}
-\item {\tt SearchAbout {\str}.}
+\item {\tt Search {\str}.}
 
 If {\str} is a valid identifier, this command displays the name and type
 of all objects (theorems, axioms, etc) of the current context whose
 name contains {\str}. If {\str} is a notation's string denoting some
 reference {\qualid} (referred to by its main symbol as in \verb="+"=
 or by its notation's string as in \verb="_ + _"= or \verb="_ 'U' _"=, see
-Section~\ref{Notation}), the command works like {\tt SearchAbout
+Section~\ref{Notation}), the command works like {\tt Search
 {\qualid}}.
 
-\item {\tt SearchAbout {\str}\%{\delimkey}.}
+\item {\tt Search {\str}\%{\delimkey}.}
 
 The string {\str} must be a notation or the main symbol of a notation
 which is then interpreted in the scope bound to the delimiting key
 {\delimkey} (see Section~\ref{scopechange}).
 
-\item {\tt SearchAbout {\termpattern}.}
+\item {\tt Search {\termpattern}.}
 
 This searches for all statements or types of definition that contains
 a subterm that matches the pattern {\termpattern} (holes of the
 pattern are either denoted by ``{\texttt \_}'' or
 by ``{\texttt ?{\ident}}'' when non linear patterns are expected).
 
-\item {\tt SearchAbout \nelist{\zeroone{-}{\termpatternorstr}}{}.}\\
+\item {\tt Search \nelist{\zeroone{-}{\termpatternorstr}}{}.}\\
 
 \noindent where {\termpatternorstr} is a
 {\termpattern} or a {\str}, or a {\str} followed by a scope
 delimiting key {\tt \%{\delimkey}}.
 
-This generalization of {\tt SearchAbout} searches for all objects
+This generalization of {\tt Search} searches for all objects
 whose statement or type contains a subterm matching {\termpattern} (or
 {\qualid} if {\str} is the notation for a reference {\qualid}) and
 whose name contains all {\str} of the request that correspond to valid
@@ -240,23 +217,18 @@ search excludes the objects that mention that {\termpattern} or that
 {\str}.
 
 \item
-  {\tt SearchAbout \nelist{{\termpatternorstr}}{}
-    inside {\module$_1$} \ldots{} {\module$_n$}.}
+  {\tt Search} \nelist{{\termpatternorstr}}{}
+    {\tt inside} {\module$_1$} \ldots{} {\module$_n$}{\tt .}
 
 This restricts the search to constructions defined in modules
 {\module$_1$} \ldots{} {\module$_n$}.
 
 \item
-  {\tt SearchAbout \nelist{{\termpatternorstr}}{}
+  {\tt Search \nelist{{\termpatternorstr}}{}
      outside {\module$_1$}...{\module$_n$}.}
 
 This restricts the search to constructions not defined in modules
 {\module$_1$} \ldots{} {\module$_n$}.
-
-\item {\tt SearchAbout [ ... ]. }
-
-For compatibility with older versions, the list of objects to search
-may be enclosed by optional {\tt [  ]} delimiters.
 
 \end{Variants}
 
@@ -266,17 +238,61 @@ may be enclosed by optional {\tt [  ]} delimiters.
 Require Import ZArith.
 \end{coq_example*}
 \begin{coq_example}
-SearchAbout Z.mul Z.add "distr".
-SearchAbout "+"%Z "*"%Z "distr" -positive -Prop.
-SearchAbout (?x * _ + ?x * _)%Z outside OmegaLemmas.
+Search Z.mul Z.add "distr".
+Search "+"%Z "*"%Z "distr" -positive -Prop.
+Search (?x * _ + ?x * _)%Z outside OmegaLemmas.
 \end{coq_example}
+
+\Warning \comindex{SearchAbout} Up to Coq version 8.4, {\tt Search}
+had the behavior of current {\tt SearchHead} and the behavior of
+current {\tt Search} was obtained with command {\tt SearchAbout}. For
+compatibility, the deprecated name {\tt SearchAbout} can still be used
+as a synonym of {\tt Search}. For compatibility, the list of objects to
+search when using {\tt SearchAbout} may also be enclosed by optional
+{\tt [ ]} delimiters.
+
+\subsection[\tt SearchHead {\term}.]{\tt SearchHead {\term}.\comindex{SearchHead}}
+This command displays the name and type of all theorems of the current
+context whose statement's conclusion has the form {\tt ({\term} t1 ..
+  tn)}.  This command is useful to remind the user of the name of
+library lemmas.
+
+\begin{coq_example*}
+Reset Initial.
+\end{coq_example*}
+
+\begin{coq_example}
+SearchHead le.
+SearchHead (@eq bool).
+\end{coq_example}
+
+\begin{Variants}
+\item
+{\tt SearchHead} {\term} {\tt inside} {\module$_1$} \ldots{} {\module$_n$}{\tt .}
+
+This restricts the search to constructions defined in modules
+{\module$_1$} \ldots{} {\module$_n$}.
+
+\item {\tt SearchHead} {\term} {\tt outside} {\module$_1$} \ldots{} {\module$_n$}{\tt .}
+
+This restricts the search to constructions not defined in modules
+{\module$_1$} \ldots{} {\module$_n$}.
+
+\begin{ErrMsgs}
+\item \errindex{Module/section \module{} not found}
+No module \module{} has been required (see Section~\ref{Require}).
+\end{ErrMsgs}
+
+\end{Variants}
+
+\Warning Up to Coq version 8.4, {\tt SearchHead} was named {\tt Search}.
 
 \subsection[\tt SearchPattern {\termpattern}.]{\tt SearchPattern {\term}.\comindex{SearchPattern}}
 
 This command displays the name and type of all theorems of the current
 context whose statement's conclusion or last hypothesis and conclusion
 matches the expression {\term} where holes in the latter are denoted
-by ``{\texttt \_}''. It is a variant of {\tt SearchAbout
+by ``{\texttt \_}''. It is a variant of {\tt Search
   {\termpattern}} that does not look for subterms but searches for
 statements whose conclusion has exactly the expected form, or whose
 statement finishes by the given series of hypothesis/conclusion.
@@ -337,7 +353,7 @@ This restricts the search to constructions not defined in modules
 \end{Variants}
 
 \subsubsection{Nota Bene:}
-For the {\tt Search}, {\tt SearchAbout}, {\tt SearchPattern} and
+For the {\tt Search}, {\tt SearchHead}, {\tt SearchPattern} and
 {\tt SearchRewrite} queries, it is possible to globally filter
 the search results via the command
 {\tt Add Search Blacklist "substring1"}.
@@ -559,7 +575,7 @@ with the mapping used to compile the file.
   Export} {\it B}, then the command {\tt Require Import} {\it A}
   also imports the module {\it B}.
 
-\item {\tt Require \zeroone{Import {\sl |} Export} {\qualid}$_1$ \ldots {\qualid}$_n$.}
+\item {\tt Require \zeroone{Import {\sl |} Export}} {\qualid}$_1$ {\ldots} {\qualid}$_n${\tt .}
 
   This loads the modules {\qualid}$_1$, \ldots, {\qualid}$_n$ and
   their recursive dependencies. If {\tt Import} or {\tt Export} is
@@ -618,7 +634,7 @@ This command displays the list of library files loaded in the current
 imported.
 
 \subsection[\tt Declare ML Module {\str$_1$} .. {\str$_n$}.]{\tt Declare ML Module {\str$_1$} .. {\str$_n$}.\comindex{Declare ML Module}}
-This commands loads the Objective Caml compiled files {\str$_1$} {\dots}
+This commands loads the Objective Caml compiled files {\str$_1$} {\ldots}
 {\str$_n$} (dynamic link). It is mainly used to load tactics
 dynamically.
 % (see Chapter~\ref{WritingTactics}).
@@ -974,13 +990,13 @@ computation of algebraic values, such as numbers, and for reflexion-based
 tactics. The commands to fine-tune the reduction strategies and the
 lazy conversion algorithm are described first.
 
-\subsection[\tt Opaque \qualid$_1$ {\dots} \qualid$_n$.]{\tt Opaque \qualid$_1$ {\dots} \qualid$_n$.\comindex{Opaque}\label{Opaque}} 
+\subsection[{\tt Opaque} \qualid$_1$ {\ldots} \qualid$_n${\tt .}]{{\tt Opaque} \qualid$_1$ {\ldots} \qualid$_n${\tt .}\comindex{Opaque}\label{Opaque}}
 This command has an effect on unfoldable constants, i.e. 
 on constants defined by {\tt Definition} or {\tt Let} (with an explicit
 body), or by a command assimilated to a definition such as {\tt
 Fixpoint}, {\tt Program Definition}, etc, or by a proof ended by {\tt
 Defined}. The command tells not to unfold
-the constants {\qualid$_1$} {\dots} {\qualid$_n$} in tactics using
+the constants {\qualid$_1$} {\ldots} {\qualid$_n$} in tactics using
 $\delta$-conversion (unfolding a constant is replacing it by its
 definition).
 
@@ -990,7 +1006,7 @@ case {\Coq} has to check the conversion (see Section~\ref{conv-rules})
 of two distinct applied constants.
 
 The scope of {\tt Opaque} is limited to the current section, or
-current file, unless the variant {\tt Global Opaque \qualid$_1$ {\dots}
+current file, unless the variant {\tt Global Opaque \qualid$_1$ {\ldots}
 \qualid$_n$} is used.
 
 \SeeAlso sections \ref{Conversion-tactics}, \ref{Automatizing},
@@ -1004,7 +1020,7 @@ environment}\\
     and if \texttt{bar} does not exist, \texttt{foo} is set opaque.
 \end{ErrMsgs}
 
-\subsection[\tt Transparent \qualid$_1$ {\dots} \qualid$_n$.]{\tt Transparent \qualid$_1$ {\dots} \qualid$_n$.\comindex{Transparent}\label{Transparent}}
+\subsection[{\tt Transparent} \qualid$_1$ {\ldots} \qualid$_n${\tt .}]{{\tt Transparent} \qualid$_1$ {\ldots} \qualid$_n${\tt .}\comindex{Transparent}\label{Transparent}}
 This command is the converse of {\tt Opaque} and it applies on
 unfoldable constants to restore their unfoldability after an {\tt
 Opaque} command.
@@ -1018,8 +1034,8 @@ distinguishes lemmas from the usual defined constants, whose actual
 values are of course relevant in general.
 
 The scope of {\tt Transparent} is limited to the current section, or
-current file, unless the variant {\tt Global Transparent \qualid$_1$
-\dots \qualid$_n$} is used.
+current file, unless the variant {\tt Global Transparent} \qualid$_1$
+{\ldots} \qualid$_n$ is used.
 
 \begin{ErrMsgs}
 % \item \errindex{Can not set transparent.}\\
@@ -1032,12 +1048,12 @@ environment}\\
 \SeeAlso sections \ref{Conversion-tactics}, \ref{Automatizing},
 \ref{Theorem}
 
-\subsection{\tt Strategy {\it level} [ \qualid$_1$ {\dots} \qualid$_n$
-  ].\comindex{Strategy}\comindex{Local Strategy}\label{Strategy}}
+\subsection{{\tt Strategy} {\it level} {\tt [} \qualid$_1$ {\ldots} \qualid$_n$
+  {\tt ].}\comindex{Strategy}\comindex{Local Strategy}\label{Strategy}}
 This command generalizes the behavior of {\tt Opaque} and {\tt
   Transparent} commands. It is used to fine-tune the strategy for
 unfolding constants, both at the tactic level and at the kernel
-level. This command associates a level to \qualid$_1$ {\dots}
+level. This command associates a level to \qualid$_1$ {\ldots}
 \qualid$_n$. Whenever two expressions with two distinct head
 constants are compared (for instance, this comparison can be triggered
 by a type cast), the one with lower level is expanded first. In case
