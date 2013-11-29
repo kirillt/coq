@@ -10,7 +10,10 @@
 open Util
 open Names
 open Term
+open Vars
+open Context
 open Declarations
+open Declareops
 open Environ
 open Reduction
 open Reductionops
@@ -19,9 +22,7 @@ open Termops
 open Inductiveops
 open Recordops
 open Namegen
-open Summary
-open Libnames
-open Nametab
+open Globnames
 open Miniml
 open Table
 open Mlutil
@@ -38,13 +39,13 @@ let none = Evd.empty
 
 let type_of env c =
   try
-    let polyprop = (lang() = Haskell) in
+    let polyprop = (lang() == Haskell) in
     Retyping.get_type_of ~polyprop env none (strip_outer_cast c)
   with SingletonInductiveBecomesProp id -> error_singleton_become_prop id
 
 let sort_of env c =
   try
-    let polyprop = (lang() = Haskell) in
+    let polyprop = (lang() == Haskell) in
     Retyping.get_sort_family_of ~polyprop env none (strip_outer_cast c)
   with SingletonInductiveBecomesProp id -> error_singleton_become_prop id
 
@@ -73,17 +74,19 @@ type flag = info * scheme
 (*s [flag_of_type] transforms a type [t] into a [flag].
   Really important function. *)
 
-let rec flag_of_type env t =
+let rec flag_of_type env t : flag =
   let t = whd_betadeltaiota env none t in
   match kind_of_term t with
     | Prod (x,t,c) -> flag_of_type (push_rel (x,None,t) env) c
     | Sort (Prop Null) -> (Logic,TypeScheme)
     | Sort _ -> (Info,TypeScheme)
-    | _ -> if (sort_of env t) = InProp then (Logic,Default) else (Info,Default)
+    | _ -> if (sort_of env t) == InProp then (Logic,Default) else (Info,Default)
 
 (*s Two particular cases of [flag_of_type]. *)
 
-let is_default env t = (flag_of_type env t = (Info, Default))
+let is_default env t = match flag_of_type env t with
+| (Info, Default) -> true
+| _ -> false
 
 exception NotDefault of kill_reason
 
@@ -93,7 +96,9 @@ let check_default env t =
     | Logic,_ -> raise (NotDefault Kother)
     | _ -> ()
 
-let is_info_scheme env t = (flag_of_type env t = (Info, TypeScheme))
+let is_info_scheme env t = match flag_of_type env t with
+| (Info, TypeScheme) -> true
+| _ -> false
 
 (*s [type_sign] gernerates a signature aimed at treating a type application. *)
 
@@ -111,7 +116,7 @@ let rec type_scheme_nb_args env c =
 	if is_info_scheme env t then n+1 else n
     | _ -> 0
 
-let _ = register_type_scheme_nb_args type_scheme_nb_args
+let _ = Hook.set type_scheme_nb_args_hook type_scheme_nb_args
 
 (*s [type_sign_vl] does the same, plus a type var list. *)
 
@@ -138,7 +143,8 @@ let sign_with_implicits r s nb_params =
     | [] -> []
     | sign::s ->
 	let sign' =
-	  if sign = Keep && List.mem i implicits then Kill Kother else sign
+	  if sign == Keep && Int.List.mem i implicits
+          then Kill Kother else sign
 	in sign' :: add_impl (succ i) s
   in
   add_impl (1+nb_params) s
@@ -147,11 +153,11 @@ let sign_with_implicits r s nb_params =
 
 let rec handle_exn r n fn_name = function
   | MLexn s ->
-      (try Scanf.sscanf s "UNBOUND %d"
+      (try Scanf.sscanf s "UNBOUND %d%!"
 	 (fun i ->
 	    assert ((0 < i) && (i <= n));
 	    MLexn ("IMPLICIT "^ msg_non_implicit r (n+1-i) (fn_name i)))
-       with e when Errors.noncritical e -> MLexn s)
+       with Scanf.Scan_failure _ | End_of_file -> MLexn s)
   | a -> ast_map (handle_exn r n fn_name) a
 
 (*S Management of type variable contexts. *)
@@ -172,8 +178,8 @@ let db_from_sign s =
   an inductive type (see just below). *)
 
 let rec db_from_ind dbmap i =
-  if i = 0 then []
-  else (try Intmap.find i dbmap with Not_found -> 0)::(db_from_ind dbmap (i-1))
+  if Int.equal i 0 then []
+  else (try Int.Map.find i dbmap with Not_found -> 0)::(db_from_ind dbmap (i-1))
 
 (*s [parse_ind_args] builds a map: [i->j] iff the i-th Coq argument
   of a constructor corresponds to the j-th type var of the ML inductive. *)
@@ -187,34 +193,34 @@ let rec db_from_ind dbmap i =
 
 let parse_ind_args si args relmax =
   let rec parse i j = function
-    | [] -> Intmap.empty
+    | [] -> Int.Map.empty
     | Kill _ :: s -> parse (i+1) j s
     | Keep :: s ->
       (match kind_of_term args.(i-1) with
-	 | Rel k -> Intmap.add (relmax+1-k) j (parse (i+1) (j+1) s)
+	 | Rel k -> Int.Map.add (relmax+1-k) j (parse (i+1) (j+1) s)
 	 | _ -> parse (i+1) (j+1) s)
   in parse 1 1 si
 
 let oib_equal o1 o2 =
-  id_ord o1.mind_typename o2.mind_typename = 0 &&
-  list_equal eq_rel_declaration o1.mind_arity_ctxt o2.mind_arity_ctxt &&
+  Id.equal o1.mind_typename o2.mind_typename &&
+  List.equal eq_rel_declaration o1.mind_arity_ctxt o2.mind_arity_ctxt &&
   begin match o1.mind_arity, o2.mind_arity with
   | Monomorphic {mind_user_arity=c1; mind_sort=s1},
     Monomorphic {mind_user_arity=c2; mind_sort=s2} ->
-      eq_constr c1 c2 && s1 = s2
-  | ma1, ma2 -> ma1 = ma2 end &&
-  o1.mind_consnames = o2.mind_consnames
+      eq_constr c1 c2 && Sorts.equal s1 s2
+  | ma1, ma2 -> Pervasives.(=) ma1 ma2 (** FIXME: this one is surely wrong *) end &&
+    Array.equal Id.equal o1.mind_consnames o2.mind_consnames
 
 let mib_equal m1 m2 =
-  array_equal oib_equal m1.mind_packets m1.mind_packets &&
-  m1.mind_record = m2.mind_record &&
-  m1.mind_finite = m2.mind_finite &&
-  m1.mind_ntypes = m2.mind_ntypes &&
-  list_equal eq_named_declaration m1.mind_hyps m2.mind_hyps &&
-  m1.mind_nparams = m2.mind_nparams &&
-  m1.mind_nparams_rec = m2.mind_nparams_rec &&
-  list_equal eq_rel_declaration m1.mind_params_ctxt m2.mind_params_ctxt &&
-  m1.mind_constraints = m2.mind_constraints
+  Array.equal oib_equal m1.mind_packets m1.mind_packets &&
+  (m1.mind_record : bool) == m2.mind_record &&
+  (m1.mind_finite : bool) == m2.mind_finite &&
+  Int.equal m1.mind_ntypes m2.mind_ntypes &&
+  List.equal eq_named_declaration m1.mind_hyps m2.mind_hyps &&
+  Int.equal m1.mind_nparams m2.mind_nparams &&
+  Int.equal m1.mind_nparams_rec m2.mind_nparams_rec &&
+  List.equal eq_rel_declaration m1.mind_params_ctxt m2.mind_params_ctxt &&
+  Pervasives.(=) m1.mind_constraints m2.mind_constraints (** FIXME *)
 
 (*S Extraction of a type. *)
 
@@ -237,7 +243,7 @@ let rec extract_type env db j c args =
 	   | [] -> assert false (* A lambda cannot be a type. *)
 	   | a :: args -> extract_type env db j (subst1 a d) args)
     | Prod (n,t,d) ->
-	assert (args = []);
+	assert (List.is_empty args);
 	let env' = push_rel_assum (n,t) env in
 	(match flag_of_type env t with
 	   | (Info, Default) ->
@@ -257,10 +263,10 @@ let rec extract_type env db j c args =
 	       (match expand env mld with
 		  | Tdummy d -> Tdummy d
 		  | _ ->
-		      let reason = if lvl=TypeScheme then Ktype else Kother in
+		      let reason = if lvl == TypeScheme then Ktype else Kother in
 		      Tarr (Tdummy reason, mld)))
     | Sort _ -> Tdummy Ktype (* The two logical cases. *)
-    | _ when sort_of env (applist (c, args)) = InProp -> Tdummy Kother
+    | _ when sort_of env (applist (c, args)) == InProp -> Tdummy Kother
     | Rel n ->
 	(match lookup_rel n env with
            | (_,Some t,_) -> extract_type env db j (lift n t) args
@@ -268,7 +274,7 @@ let rec extract_type env db j c args =
 	       (* Asks [db] a translation for [n]. *)
 	       if n > List.length db then Tunknown
 	       else let n' = List.nth db (n-1) in
-	       if n' = 0 then Tunknown else Tvar n')
+	       if Int.equal n' 0 then Tunknown else Tvar n')
     | Const kn ->
 	let r = ConstRef kn in
 	let cb = lookup_constant kn env in
@@ -281,21 +287,21 @@ let rec extract_type env db j c args =
 		  | Undef _ | OpaqueDef _ -> mlt
 		  | Def _ when is_custom r -> mlt
 		  | Def lbody ->
-		      let newc = applist (Declarations.force lbody, args) in
+		      let newc = applist (Lazyconstr.force lbody, args) in
 		      let mlt' = extract_type env db j newc [] in
 		      (* ML type abbreviations interact badly with Coq *)
 		      (* reduction, so [mlt] and [mlt'] might be different: *)
 		      (* The more precise is [mlt'], extracted after reduction *)
 		      (* The shortest is [mlt], which use abbreviations *)
 		      (* If possible, we take [mlt], otherwise [mlt']. *)
-		      if expand env mlt = expand env mlt' then mlt else mlt')
+		      if Pervasives.(=) (expand env mlt) (expand env mlt') then mlt else mlt') (** FIXME *)
 	   | (Info, Default) ->
                (* Not an ML type, for example [(c:forall X, X->X) Type nat] *)
 	       (match cb.const_body with
 		  | Undef _  | OpaqueDef _ -> Tunknown (* Brutal approx ... *)
 		  | Def lbody ->
 		      (* We try to reduce. *)
-		      let newc = applist (Declarations.force lbody, args) in
+		      let newc = applist (Lazyconstr.force lbody, args) in
 		      extract_type env db j newc []))
     | Ind (kn,i) ->
 	let s = (extract_ind env kn).ind_packets.(i).ip_sign in
@@ -310,7 +316,7 @@ let rec extract_type env db j c args =
 and extract_type_app env db (r,s) args =
   let ml_args =
     List.fold_right
-      (fun (b,c) a -> if b=Keep then
+      (fun (b,c) a -> if b == Keep then
 	 let p = List.length (fst (splay_prod env none (type_of env c))) in
          let db = iterate (fun l -> 0 :: l) p db in
          (extract_type_scheme env db c p) :: a
@@ -328,7 +334,7 @@ and extract_type_app env db (r,s) args =
 (* [db] is a context for translating Coq [Rel] into ML type [Tvar]. *)
 
 and extract_type_scheme env db c p =
-  if p=0 then extract_type env db 0 c []
+  if Int.equal p 0 then extract_type env db 0 c []
   else
     let c = whd_betaiotazeta Evd.empty c in
     match kind_of_term c with
@@ -337,7 +343,7 @@ and extract_type_scheme env db c p =
       | _ ->
           let rels = fst (splay_prod env none (type_of env c)) in
           let env = push_rels_assum rels env in
-          let eta_args = List.rev_map mkRel (interval 1 p) in
+          let eta_args = List.rev_map mkRel (List.interval 1 p) in
           extract_type env db 0 (lift p c) eta_args
 
 
@@ -358,9 +364,9 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
        When at toplevel of the monolithic case, we cannot do much
        (cf Vector and bug #2570) *)
     let equiv =
-      if lang () <> Ocaml ||
+      if lang () != Ocaml ||
 	 (not (modular ()) && at_toplevel (mind_modpath kn)) ||
-	 kn_ord (canonical_mind kn) (user_mind kn) = 0
+	 KerName.equal (canonical_mind kn) (user_mind kn)
       then
 	NoEquiv
       else
@@ -377,15 +383,15 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
     (* First pass: we store inductive signatures together with *)
     (* their type var list. *)
     let packets =
-      Array.map
-	(fun mip ->
-	   let b = snd (mind_arity mip) <> InProp in
+      Array.mapi
+	(fun i mip ->
 	   let ar = Inductive.type_of_inductive env (mib,mip) in
-	   let s,v = if b then type_sign_vl env ar else [],[] in
+	   let info = (fst (flag_of_type env ar) == Info) in
+	   let s,v = if info then type_sign_vl env ar else [],[] in
 	   let t = Array.make (Array.length mip.mind_nf_lc) [] in
 	   { ip_typename = mip.mind_typename;
 	     ip_consnames = mip.mind_consnames;
-	     ip_logical = (not b);
+	     ip_logical = not info;
 	     ip_sign = s;
 	     ip_vars = v;
 	     ip_types = t })
@@ -423,16 +429,16 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
 	let r = IndRef ip in
 	if is_custom r then raise (I Standard);
 	if not mib.mind_finite then raise (I Coinductive);
-	if mib.mind_ntypes <> 1 then raise (I Standard);
+	if not (Int.equal mib.mind_ntypes 1) then raise (I Standard);
 	let p = packets.(0) in
 	if p.ip_logical then raise (I Standard);
-	if Array.length p.ip_types <> 1 then raise (I Standard);
+	if not (Int.equal (Array.length p.ip_types) 1) then raise (I Standard);
 	let typ = p.ip_types.(0) in
 	let l = List.filter (fun t -> not (isDummy (expand env t))) typ in
 	if not (keep_singleton ()) &&
-	    List.length l = 1 && not (type_mem_kn kn (List.hd l))
+	    Int.equal (List.length l) 1 && not (type_mem_kn kn (List.hd l))
 	then raise (I Singleton);
-	if l = [] then raise (I Standard);
+	if List.is_empty l then raise (I Standard);
 	if not mib.mind_record then raise (I Standard);
 	(* Now we're sure it's a record. *)
 	(* First, we find its field names. *)
@@ -443,10 +449,10 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
 	  | _ -> []
 	in
 	let field_names =
-	  list_skipn mib.mind_nparams (names_prod mip0.mind_user_lc.(0)) in
-	assert (List.length field_names = List.length typ);
+	  List.skipn mib.mind_nparams (names_prod mip0.mind_user_lc.(0)) in
+	assert (Int.equal (List.length field_names) (List.length typ));
 	let projs = ref Cset.empty in
-	let mp,d,_ = repr_mind kn in
+	let mp = MutInd.modpath kn in
 	let rec select_fields l typs = match l,typs with
 	  | [],[] -> []
 	  | _::l, typ::typs when isDummy (expand env typ) ->
@@ -454,9 +460,9 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
 	  | Anonymous::l, typ::typs ->
 	      None :: (select_fields l typs)
 	  | Name id::l, typ::typs ->
-	      let knp = make_con mp d (label_of_id id) in
+	      let knp = Constant.make2 mp (Label.of_id id) in
 	      (* Is it safe to use [id] for projections [foo.id] ? *)
-	      if List.for_all ((=) Keep) (type2signature env typ)
+	      if List.for_all ((==) Keep) (type2signature env typ)
 	      then projs := Cset.add knp !projs;
 	      Some (ConstRef knp) :: (select_fields l typs)
 	  | _ -> assert false
@@ -497,7 +503,7 @@ and extract_type_cons env db dbmap c i =
   match kind_of_term (whd_betadeltaiota env none c) with
     | Prod (n,t,d) ->
 	let env' = push_rel_assum (n,t) env in
-	let db' = (try Intmap.find i dbmap with Not_found -> 0) :: db in
+	let db' = (try Int.Map.find i dbmap with Not_found -> 0) :: db in
 	let l = extract_type_cons env' db' dbmap d (i+1) in
 	(extract_type env db 0 t []) :: l
     | _ -> []
@@ -519,7 +525,7 @@ and mlt_env env r = match r with
 	   | Def l_body ->
 	       (match flag_of_type env typ with
 		  | Info,TypeScheme ->
-		      let body = Declarations.force l_body in
+		      let body = Lazyconstr.force l_body in
 		      let s,vl = type_sign_vl env typ in
 		      let db = db_from_sign s in
 		      let t = extract_type_scheme env db body (List.length s)
@@ -660,7 +666,8 @@ and extract_cst_app env mle mlt kn args =
   (* Can we instantiate types variables for this constant ? *)
   (* In Ocaml, inside the definition of this constant, the answer is no. *)
   let instantiated, ty_args =
-    if lang () = Ocaml && List.mem kn !current_fixpoints then (var2var' (snd schema), [])
+    if lang () == Ocaml && List.mem_f Constant.equal kn !current_fixpoints
+    then (var2var' (snd schema), [])
     else instantiation' schema
   in
   (* Then the expected type of this constant. *)
@@ -682,14 +689,14 @@ and extract_cst_app env mle mlt kn args =
   (* The ml arguments, already expunged from known logical ones *)
   let mla = make_mlargs env mle s args metas in
   let mla =
-    if (is_magical magic1) || lang () <> Ocaml then mla
+    if (is_magical magic1) || lang () != Ocaml then mla
     else
       try
         (* for better optimisations later, we discard dependent args
            of projections and replace them by fake args that will be
            removed during final pretty-print. *)
-	let l,l' = list_chop (projection_arity (ConstRef kn)) mla in
-	if l' <> [] then (List.map (fun _ -> MLexn "Proj Args") l) @ l'
+	let l,l' = List.chop (projection_arity (ConstRef kn)) mla in
+	if not (List.is_empty l') then (List.map (fun _ -> MLexn "Proj Args") l) @ l'
 	else mla
       with e when Errors.noncritical e -> mla
   in
@@ -697,7 +704,7 @@ and extract_cst_app env mle mlt kn args =
      one [Kill Kother] lead to a dummy lam. So a [MLdummy] is left
      accordingly. *)
   let optdummy = match sign_kind s_full with
-    | UnsafeLogicalSig when lang () <> Haskell -> [MLdummy]
+    | UnsafeLogicalSig when lang () != Haskell -> [MLdummy]
     | _ -> []
   in
   (* Different situations depending of the number of arguments: *)
@@ -711,7 +718,7 @@ and extract_cst_app env mle mlt kn args =
     (* Partially applied function with some logical arg missing.
        We complete via eta and expunge logical args. *)
     let ls' = ls-la in
-    let s' = list_skipn la s in
+    let s' = List.skipn la s in
     let mla = (List.map (ast_lift ls') mla) @ (eta_args_sign ls' s') in
     let e = anonym_or_dummy_lams (mlapp head mla) s' in
     put_magic magic2 (remove_n_lams (List.length optdummy) e)
@@ -733,7 +740,7 @@ and extract_cons_app env mle mlt (((kn,i) as ip,j) as cp) args =
   let oi = mi.ind_packets.(i) in
   let nb_tvars = List.length oi.ip_vars
   and types = List.map (expand env) oi.ip_types.(j-1) in
-  let list_tvar = List.map (fun i -> Tvar i) (interval 1 nb_tvars) in
+  let list_tvar = List.map (fun i -> Tvar i) (List.interval 1 nb_tvars) in
   let type_cons = type_recomp (types, Tglob (IndRef ip, list_tvar)) in
   let type_cons = instantiation (nb_tvars, type_cons) in
   (* Then, the usual variables [s], [ls], [la], ... *)
@@ -743,7 +750,7 @@ and extract_cons_app env mle mlt (((kn,i) as ip,j) as cp) args =
   let la = List.length args in
   assert (la <= ls + params_nb);
   let la' = max 0 (la - params_nb) in
-  let args' = list_lastn la' args in
+  let args' = List.lastn la' args in
   (* Now, we build the expected type of the constructor *)
   let metas = List.map new_meta args' in
   (* If stored and expected types differ, then magic! *)
@@ -751,7 +758,7 @@ and extract_cons_app env mle mlt (((kn,i) as ip,j) as cp) args =
   let magic1 = needs_magic (type_cons, type_recomp (metas, a)) in
   let magic2 = needs_magic (a, mlt) in
   let head mla =
-    if mi.ind_kind = Singleton then
+    if mi.ind_kind == Singleton then
       put_magic magic1 (List.hd mla) (* assert (List.length mla = 1) *)
     else
       let typeargs = match snd (type_decomp type_cons) with
@@ -768,11 +775,11 @@ and extract_cons_app env mle mlt (((kn,i) as ip,j) as cp) args =
       (dummy_lams (anonym_or_dummy_lams head' s) (params_nb - la))
   else
     let mla = make_mlargs env mle s args' metas in
-    if la = ls + params_nb
+    if Int.equal la (ls + params_nb)
     then put_magic_if (not (is_magical magic1)) magic2 (head mla)
     else (* [ params_nb <= la <= ls + params_nb ] *)
       let ls' = params_nb + ls - la in
-      let s' = list_lastn ls' s in
+      let s' = List.lastn ls' s in
       let mla = (List.map (ast_lift ls') mla) @ (eta_args_sign ls' s') in
       put_magic magic2 (anonym_or_dummy_lams (head mla) s')
 
@@ -783,20 +790,20 @@ and extract_case env mle ((kn,i) as ip,c,br) mlt =
   (* [ni]: number of arguments without parameters in each branch *)
   let ni = mis_constr_nargs_env env ip in
   let br_size = Array.length br in
-  assert (Array.length ni = br_size);
-  if br_size = 0 then begin
+  assert (Int.equal (Array.length ni) br_size);
+  if Int.equal br_size 0 then begin
     add_recursors env kn; (* May have passed unseen if logical ... *)
     MLexn "absurd case"
   end else
     (* [c] has an inductive type, and is not a type scheme type. *)
     let t = type_of env c in
     (* The only non-informative case: [c] is of sort [Prop] *)
-    if (sort_of env t) = InProp then
+    if (sort_of env t) == InProp then
       begin
 	add_recursors env kn; (* May have passed unseen if logical ... *)
 	(* Logical singleton case: *)
 	(* [match c with C i j k -> t] becomes [t'] *)
-	assert (br_size = 1);
+	assert (Int.equal br_size 1);
 	let s = iterate (fun l -> Kill Kother :: l) ni.(0) [] in
 	let mlt = iterate (fun t -> Tarr (Tdummy Kother, t)) ni.(0) mlt in
 	let e = extract_maybe_term env mle mlt br.(0) in
@@ -825,13 +832,13 @@ and extract_case env mle ((kn,i) as ip,c,br) mlt =
 	let e' = handle_exn r (List.length s) (fun _ -> Anonymous) e in
 	(List.rev ids, Pusual r, e')
       in
-      if mi.ind_kind = Singleton then
+      if mi.ind_kind == Singleton then
 	begin
 	  (* Informative singleton case: *)
 	  (* [match c with C i -> t] becomes [let i = c' in t'] *)
-	  assert (br_size = 1);
+	  assert (Int.equal br_size 1);
 	  let (ids,_,e') = extract_branch 0 in
-	  assert (List.length ids = 1);
+	  assert (Int.equal (List.length ids) 1);
 	  MLletin (tmp_id (List.hd ids), (0,tydummy), a,e') (*ITODO*)
 	end
       else
@@ -847,7 +854,7 @@ and extract_fix env mle i (fi,ti,ci as recd) mlt =
   let metas = Array.map new_meta fi in
   metas.(i) <- mlt;
   let mle = Array.fold_left Mlenv.push_type mle metas in
-  let ei = array_map2 (extract_maybe_term env mle) metas ci in
+  let ei = Array.map2 (extract_maybe_term env mle) metas ci in
   let idtys = array_map2 (fun f meta -> (id_of_name f, meta)) fi metas in
   MLfix (i, idtys, ei)
 
@@ -856,14 +863,14 @@ and extract_fix env mle i (fi,ti,ci as recd) mlt =
 (* [decomp_lams_eta env c t] finds the number [n] of products in the type [t],
    and decompose the term [c] in [n] lambdas, with eta-expansion if needed. *)
 
-let rec decomp_lams_eta_n n m env c t =
+let decomp_lams_eta_n n m env c t =
   let rels = fst (splay_prod_n env none n t) in
   let rels = List.map (fun (id,_,c) -> (id,c)) rels in
   let rels',c = decompose_lam c in
   let d = n - m in
   (* we'd better keep rels' as long as possible. *)
-  let rels = (list_firstn d rels) @ rels' in
-  let eta_args = List.rev_map mkRel (interval 1 d) in
+  let rels = (List.firstn d rels) @ rels' in
+  let eta_args = List.rev_map mkRel (List.interval 1 d) in
   rels, applist (lift d c,eta_args)
 
 (* Let's try to identify some situation where extracted code
@@ -874,7 +881,7 @@ let rec gentypvar_ok c = match kind_of_term c with
   | App (c,v) ->
       (* if all arguments are variables, these variables will
 	 disappear after extraction (see [empty_s] below) *)
-      array_for_all isRel v && gentypvar_ok c
+      Array.for_all isRel v && gentypvar_ok c
   | Cast (c,_,_) -> gentypvar_ok c
   | _ -> false
 
@@ -901,26 +908,26 @@ let extract_std_constant env kn body typ =
     and m = nb_lam body in
     if n <= m then decompose_lam_n n body
     else
-      let s,s' = list_chop m s in
-      if List.for_all ((=) Keep) s' &&
-	(lang () = Haskell || sign_kind s <> UnsafeLogicalSig)
+      let s,s' = List.chop m s in
+      if List.for_all ((==) Keep) s' &&
+	(lang () == Haskell || sign_kind s != UnsafeLogicalSig)
       then decompose_lam_n m body
       else decomp_lams_eta_n n m env body typ
   in
   (* Should we do one eta-expansion to avoid non-generalizable '_a ? *)
   let rels, c =
     let n = List.length rels in
-    let s,s' = list_chop n s in
+    let s,s' = List.chop n s in
     let k = sign_kind s in
-    let empty_s = (k = EmptySig || k = SafeLogicalSig) in
-    if lang () = Ocaml && empty_s && not (gentypvar_ok c)
-      && s' <> [] && type_maxvar t <> 0
+    let empty_s = (k == EmptySig || k == SafeLogicalSig) in
+    if lang () == Ocaml && empty_s && not (gentypvar_ok c)
+      && not (List.is_empty s') && not (Int.equal (type_maxvar t) 0)
     then decomp_lams_eta_n (n+1) n env body typ
     else rels,c
   in
   let n = List.length rels in
-  let s = list_firstn n s in
-  let l,l' = list_chop n l in
+  let s = List.firstn n s in
+  let l,l' = List.chop n l in
   let t' = type_recomp (l',t') in
   (* The initial ML environment. *)
   let mle = List.fold_left Mlenv.push_std_type Mlenv.empty l in
@@ -960,7 +967,7 @@ let extract_fixpoint env vkn (fi,ti,ci) =
   (* for replacing recursive calls [Rel ..] by the corresponding [Const]: *)
   let sub = List.rev_map mkConst kns in
   for i = 0 to n-1 do
-    if sort_of env ti.(i) <> InProp then begin
+    if sort_of env ti.(i) != InProp then begin
       let e,t = extract_std_constant env vkn.(i) (substl sub ci.(i)) ti.(i) in
       terms.(i) <- e;
       types.(i) <- t;
@@ -1000,17 +1007,21 @@ let extract_constant env kn cb =
     | (Info,TypeScheme) ->
         (match cb.const_body with
 	  | Undef _ -> warn_info (); mk_typ_ax ()
-	  | Def c -> mk_typ (force c)
+	  | Def c -> mk_typ (Lazyconstr.force c)
 	  | OpaqueDef c ->
 	    add_opaque r;
-	    if access_opaque () then mk_typ (force_opaque c) else mk_typ_ax ())
+	    if access_opaque () then
+              mk_typ (Lazyconstr.force_opaque (Future.force c))
+            else mk_typ_ax ())
     | (Info,Default) ->
         (match cb.const_body with
 	  | Undef _ -> warn_info (); mk_ax ()
-	  | Def c -> mk_def (force c)
+	  | Def c -> mk_def (Lazyconstr.force c)
 	  | OpaqueDef c ->
 	    add_opaque r;
-	    if access_opaque () then mk_def (force_opaque c) else mk_ax ())
+	    if access_opaque () then
+              mk_def (Lazyconstr.force_opaque (Future.force c))
+            else mk_ax ())
 
 let extract_constant_spec env kn cb =
   let r = ConstRef kn in
@@ -1024,23 +1035,19 @@ let extract_constant_spec env kn cb =
 	  | Undef _ | OpaqueDef _ -> Stype (r, vl, None)
 	  | Def body ->
 	      let db = db_from_sign s in
-	      let t = extract_type_scheme env db (force body) (List.length s)
+              let body = Lazyconstr.force body in
+	      let t = extract_type_scheme env db body (List.length s)
 	      in Stype (r, vl, Some t))
     | (Info, Default) ->
 	let t = snd (record_constant_type env kn (Some typ)) in
 	Sval (r, type_expunge env t)
 
-let extract_with_type env cb =
-  let typ = Typeops.type_of_constant_type env cb.const_type in
+let extract_with_type env c =
+  let typ = type_of env c in
   match flag_of_type env typ with
     | (Info, TypeScheme) ->
 	let s,vl = type_sign_vl env typ in
 	let db = db_from_sign s in
-	let c = match cb.const_body with
-	  | Def body -> force body
-	  (* A "with Definition ..." is necessarily transparent *)
-	  | Undef _ | OpaqueDef _ -> assert false
-	in
 	let t = extract_type_scheme env db c (List.length s) in
 	Some (vl, t)
     | _ -> None
@@ -1055,7 +1062,7 @@ let extract_inductive env kn =
       | [] -> []
       | t::l ->
 	  let l' = filter (succ i) l in
-	  if isDummy (expand env t) || List.mem i implicits then l'
+	  if isDummy (expand env t) || Int.List.mem i implicits then l'
 	  else t::l'
     in filter (1+ind.ind_nparams) l
   in
@@ -1070,9 +1077,9 @@ let logical_decl = function
   | Dterm (_,MLdummy,Tdummy _) -> true
   | Dtype (_,[],Tdummy _) -> true
   | Dfix (_,av,tv) ->
-      (array_for_all ((=) MLdummy) av) &&
-      (array_for_all isDummy tv)
-  | Dind (_,i) -> array_for_all (fun ip -> ip.ip_logical) i.ind_packets
+      (Array.for_all ((==) MLdummy) av) &&
+      (Array.for_all isDummy tv)
+  | Dind (_,i) -> Array.for_all (fun ip -> ip.ip_logical) i.ind_packets
   | _ -> false
 
 (*s Is a [ml_spec] logical ? *)
@@ -1080,5 +1087,5 @@ let logical_decl = function
 let logical_spec = function
   | Stype (_, [], Some (Tdummy _)) -> true
   | Sval (_,Tdummy _) -> true
-  | Sind (_,i) -> array_for_all (fun ip -> ip.ip_logical) i.ind_packets
+  | Sind (_,i) -> Array.for_all (fun ip -> ip.ip_logical) i.ind_packets
   | _ -> false
