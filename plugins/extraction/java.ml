@@ -55,12 +55,12 @@ let mkvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
 let unfold_arrows typ =
   let rec work acc = function
     | Tarr (l,r) -> work (l::acc) r
-    | x -> (x,acc)
+    | x -> (List.rev acc,x)
   in work [] typ
 
 let unfold_arrows' typ =
-  let (h,t) = unfold_arrows typ
-  in List.concat [t;[h]]
+  let (args,typ) = unfold_arrows typ
+  in List.concat [args;[typ]]
 
 let rec count_variables typ =
   let work acc = function
@@ -83,7 +83,7 @@ let keywords =
   [ (* TODO *) "public"; "protected"; "private"; "static"; "class" ]
   Idset.empty
 
-let pp_global k r = str @@ if is_inline_custom r then find_custom r else Common.pp_global k r
+let pp_global kn ref = str @@ if is_inline_custom ref then find_custom ref else Common.pp_global kn ref
 
 let rec pp_type vars = function
     | Tglob (ref,args) -> pp_global Type ref ++
@@ -234,36 +234,18 @@ and pp_fix_term par env i (ids,bl) args = assert false (* TODO: wrap usual funct
     (v 0
        (v 1 (str "let {" ++ fnl () ++
 	     prvect_with_sep (fun () -> str ";" ++ fnl ())
-	       (fun (fi,ti) -> pp_function env (pr_id fi) ti)
+	       (fun (fi,ti) -> pp_function_term env (pr_id fi) ti)
 	       (array_map2 (fun a b -> a,b) ids bl) ++
 	     str "}") ++
         fnl () ++ str "in " ++ pp_apply (pr_id ids.(i)) false args))
 *)
 
-and pp_function env f t =
-  let bl,t' = collect_lams t in
-  let bl,env' = push_vars (List.map id_of_mlid bl) env in
-  (f ++ pr_binding (List.rev bl) ++
-     str " =" ++ fnl () ++ str "  " ++
-     hov 2 (pp_expr false env' [] t'))
-
-(*s Pretty-printing of inductive types declaration. *)
-
-let pp_logical_ind packet =
-  pp_comment (pr_id packet.ip_typename ++ str " : logical inductive") ++
-  pp_comment (str "with constructors : " ++ prvect_with_sep spc pr_id packet.ip_consnames)
-
-let pp_singleton kn packet =
-  let l = rename_tvars keywords packet.ip_vars in
-  let l' = List.rev l in
-  hov 2 (str "type " ++ pp_global Type (IndRef (kn,0)) ++ spc () ++
-	 prlist_with_sep spc pr_id l ++
-	 (if l <> [] then str " " else mt ()) ++ str "=" ++ spc () ++
-	 pp_type l' (List.hd packet.ip_types.(0)) ++ fnl () ++
-	 pp_comment (str "singleton inductive, whose constructor was " ++
-		     pr_id packet.ip_consnames.(0)))
-
-(* Pretty-printing of Inductives *)
+and pp_function_term env name def = assert false
+(*let bl,def = collect_lams def in*)
+    (*let bl,env' = push_vars (List.map id_of_mlid bl) env in*)
+(*(name ++ pr_binding (List.rev bl) ++*)
+ (*str " =" ++ fnl () ++ str "  " ++*)
+ (*hov 2 (pp_expr false env' [] def))*)
 
 let pp_tags constructors =
   str "public Tag tag;\n" ++
@@ -283,90 +265,71 @@ let pp_constructor_class vars father suffix (r,types) =
     (prlist_strict (fun (i,_) -> str "field" ++ i ++ str " = arg" ++ i ++ str ";\n") types) ++
     str "tag = Tag." ++ name ++ str ";")
 
-let pp_inductive_class ip vars cv =
-  let constructors = Array.to_list @@ Array.mapi (fun i c -> ConstructRef (ip,i+1),c) cv in
-  let ip' = pp_global Type (IndRef ip) in
-  let arg = pp_generic vars
-  in  pp_class (str "public static abstract class " ++ ip' ++ arg) @@
+let pp_inductive_class ki vars cs =
+  let constructors = Array.to_list @@ Array.mapi (fun i c -> ConstructRef (ki,i+1),c) cs in
+  let name = pp_global Type (IndRef ki) in
+  let arg  = pp_generic vars
+  in  pp_class (str "public static abstract class " ++ name ++ arg) @@
     pp_tags constructors ++ str "\n" ++
-    (pp_list' "\n" (pp_constructor_class vars ip' arg) constructors)
+    (pp_list' "\n" (pp_constructor_class vars name arg) constructors)
 
-(*TODO: generate toString()*)
-let pp_one_ind ip vars cv =
-  let vars = rename_tvars keywords vars in
-  if Array.length cv = 0 then str "/* empty inductive */"
-  else pp_inductive_class ip vars cv
-
-let rec pp_ind first kn ind =
-  let pp_ind_packet ip packet =
-    if is_custom (IndRef ip)
+let rec pp_inductive kn ind =
+  let pp_logical packet =
+    pp_comment_b @@
+      (pr_id packet.ip_typename ++ str " : logical inductive") ++
+      (str " with constructors : " ++ prvect_with_sep spc pr_id packet.ip_consnames) in
+  let pp_one_ind ki vars cs =
+    let vars = rename_tvars keywords vars in
+    if Array.length cs = 0 then str "/* empty inductive */"
+      else pp_inductive_class ki vars cs in
+      (*TODO: generate toString()*)
+  let pp_ind_packet ki packet =
+    if is_custom (IndRef ki)
       then pp_comment_b @@ str "is_custom = true"
       else if packet.ip_logical
-           then pp_logical_ind packet
-           else pp_one_ind ip packet.ip_vars packet.ip_types
+           then pp_logical packet
+           else pp_one_ind ki packet.ip_vars packet.ip_types
   in pp_list "\n" @@
     List.mapi (fun i packet -> pp_ind_packet (kn,i) packet) @@
     Array.to_list ind.ind_packets
 
-(*s Pretty-printing of a declaration. *)
+let pp_typedecl ref vars typ =
+  if is_inline_custom ref
+    then mt ()
+    else pp_class (str "public static class " ++ pp_global Type ref ++
+                   str " extends " ++ pp_type vars typ) @@ str ""
 
-let pp_fix name def typ ref =
-  if is_inline_custom ref || (not (is_custom ref) && def = MLexn "UNUSED")
+let pp_function ref def  typ =
+  if is_inline_custom ref
     then mt ()
     else match typ with
          | Tarr (l,r) ->
            if is_custom ref
              then assert false
-             else let (typ,args) = unfold_arrows typ in
+             else let (args,typ) = unfold_arrows typ in
                   pp_class (str "public static class " ++ pp_global Term ref) @@
-                    pp_method "public static" typ "apply" args @@ str "return null; " ++ pp_comment_b (str "TODO") (* pp_function (empty_env ()) name def) *) 
+                    pp_method "public static" typ "apply" args @@
+                      str "return null; " ++ pp_comment_b (str "TODO") (* pp_function_term (empty_env ()) name def) *) 
          | _ -> assert false (* TODO: try to implement *)
 
 let pp_decl = function
-  | Dind (kn,i) when i.ind_kind = Singleton -> pp_singleton kn i.ind_packets.(0)
-  | Dind (kn,i) -> pp_ind true kn i
-  | Dtype (r, l, t) ->
-    if is_inline_custom r
-      then mt ()
-      else let l = rename_tvars keywords l
-           in let st =
-                try
-                  let ids,s = find_type_custom r
-                  in prlist (fun id -> str (id^" ")) ids ++ str "=" ++ spc () ++ str s
-                with Not_found ->
-                  prlist (fun id -> pr_id id ++ str " ") l ++
-                    if t = Taxiom
-                      then str "= () -- AXIOM TO BE REALIZED\n"
-                      else str "=" ++ spc () ++ pp_type l t
-              in hov 2 (str "type " ++ pp_global Type r ++ spc () ++ st) ++ fnl2 ()
-  | Dfix (refs, defs, types) ->
-    let names = Array.map (fun ref -> if is_inline_custom ref then mt () else pp_global Term ref) refs
-    in prvecti (fun i ref -> pp_fix names.(i) defs.(i) types.(i) ref) refs
-  | Dterm (r, a, t) ->
-      if is_inline_custom r then mt ()
-      else let e = pp_global Term r
-        in e ++ str " :: " ++ pp_type [] t ++ fnl () ++
-          if is_custom r
-            then hov 0 (e ++ str " = " ++ str (find_custom r) ++ fnl2 ())
-            else hov 0 (pp_function (empty_env ()) e a ++ fnl2 ())
-
-let rec pp_structure_elem = function
-  | (l,SEdecl d) -> pp_decl d
-  | (l,SEmodule m) -> pp_module_expr m.ml_mod_expr
-  | (l,SEmodtype m) -> mt () (* for the moment we simply discard module type *)
-
-and pp_module_expr = function
-  | MEstruct (mp,sel) -> pp_list' "\n" pp_structure_elem sel
-  | MEfunctor _ -> mt () (* for the moment we simply discard unapplied functors *)
-  | MEident _ | MEapply _ -> assert false (* should be expansed in extract_env *)
+  | Dtype (ref , vars, typ  ) -> pp_typedecl ref vars typ
+  | Dterm (ref , def , typ  ) -> pp_function ref def  typ
+  | Dfix  (refs, defs, types) -> pp_list' "\n" (fun i -> let k = pred i in pp_function refs.(k) defs.(k) types.(k)) @@ range 1 @@ Array.length refs
+  | Dind  (kn  , ind        ) -> pp_inductive kn ind (* special case: ind.ind_kind = Singleton *)
 
 let pp_struct =
-  let pp_sel (mp,sel) =
+  let pp_element = function
+    | (l,SEdecl d) -> pp_decl d
+    | _ -> assert false in
+  let pp_elements (mp,sel) =
     push_visible mp [];
-    let p = pp_list' "\n" pp_structure_elem sel in
-    pop_visible (); pp_class (str @@ "public interface " ^ basename mp) p ++ str "\n"
+    let output = pp_list' "\n" pp_element sel in
+    pop_visible ();
+    pp_class (str @@ "public interface " ^ basename mp) @@
+      output ++ str "\n"
   in
-  pp_list' "\n" pp_sel
+  pp_list' "\n" pp_elements
 
 let java_descr = {
   keywords = keywords;
