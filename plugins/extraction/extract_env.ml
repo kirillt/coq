@@ -326,7 +326,7 @@ let rec extract_sfb env mp all = function
 
 and extract_seb env mp all = function
   | (SEBident _ | SEBapply _) as seb when lang () <> Ocaml ->
-      (* in Haskell/Scheme, we expand everything *)
+      (* in Haskell/Scheme/Java, we expand everything *)
       extract_seb env mp all (expand_seb env mp seb)
   | SEBident mp ->
       if is_modfile mp && not (modular ()) then error_MPfile_as_mod mp false;
@@ -379,6 +379,7 @@ let descr () = match lang () with
   | Ocaml -> Ocaml.ocaml_descr
   | Haskell -> Haskell.haskell_descr
   | Scheme -> Scheme.scheme_descr
+  | Java -> Java.java_descr
 
 (* From a filename string "foo.ml" or "foo", builds "foo.ml" and "foo.mli"
    Works similarly for the other languages. *)
@@ -458,7 +459,7 @@ let print_structure_to_file (fn,si,mo) dry struc =
     tdummy = struct_type_search Mlutil.isDummy struc;
     tunknown = struct_type_search ((=) Tunknown) struc;
     magic =
-      if lang () <> Haskell then false
+      if lang () <> Haskell && lang () <> Java then false
       else struct_ast_search (function MLmagic _ -> true | _ -> false) struc }
   in
   (* First, a dry run, for computing objects to rename or duplicate *)

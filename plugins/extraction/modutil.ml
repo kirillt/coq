@@ -391,16 +391,13 @@ let check_implicits = function
 
 let optimize_struct to_appear struc =
   let subst = ref (Refmap'.empty : ml_ast Refmap'.t) in
-  let opt_struc =
-    List.map (fun (mp,lse) -> (mp, optim_se true (fst to_appear) subst lse))
-      struc
-  in
-  ignore (struct_ast_search check_implicits opt_struc);
-  if library () then
-    List.filter (fun (_,lse) -> lse<>[]) opt_struc
-  else begin
-    reset_needed ();
-    List.iter add_needed (fst to_appear);
-    List.iter add_needed_mp (snd to_appear);
-    depcheck_struct opt_struc
-  end
+  let opt_struc = List.map (fun (mp,lse) -> (mp, optim_se true (fst to_appear) subst lse)) struc
+  in ignore (struct_ast_search check_implicits opt_struc);
+    if library () then
+      List.filter (fun (_,lse) -> lse<>[]) opt_struc
+    else begin
+      reset_needed ();
+      List.iter add_needed (fst to_appear);
+      List.iter add_needed_mp (snd to_appear);
+      depcheck_struct opt_struc
+    end

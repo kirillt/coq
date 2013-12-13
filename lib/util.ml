@@ -1377,14 +1377,12 @@ let pr_vertical_list pr = function
 
 let prvecti_with_sep sep elem v =
   let rec pr i =
-    if i = 0 then
-      elem 0 v.(0)
-    else
-      let r = pr (i-1) and s = sep () and e = elem i v.(i) in
-      r ++ s ++ e
-  in
-  let n = Array.length v in
-  if n = 0 then mt () else pr (n - 1)
+    if i = 0
+      then elem 0 v.(0)
+      else let r = pr (i-1) and s = sep () and e = elem i v.(i)
+           in r ++ s ++ e
+  in let n = Array.length v
+     in if n = 0 then mt () else pr (n - 1)
 
 (* [prvecti pr [|a0 ; ... ; an|]] outputs [pr 0 a0 ++ ... ++ pr n an] *)
 

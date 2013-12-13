@@ -552,6 +552,11 @@ let pp_haskell_gen k mp rls = match rls with
     let prf = if base_mp mp <> top_visible_mp () then s ^ "." else "" in
     prf ^ str
 
+(* Java *)
+
+let pp_java_gen k mp rls = pp_haskell_gen k mp rls
+
+
 (* Main name printing function for a reference *)
 
 let pp_global k r =
@@ -569,6 +574,7 @@ let pp_global k r =
       | Scheme -> unquote s (* no modular Scheme extraction... *)
       | Haskell -> if modular () then pp_haskell_gen k mp rls else s
       | Ocaml -> pp_ocaml_gen k mp rls (Some l)
+      | Java -> if modular () then pp_java_gen k mp rls else s
 
 (* The next function is used only in Ocaml extraction...*)
 
