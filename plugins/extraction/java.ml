@@ -113,139 +113,26 @@ let pp_method modifier typ name args body =
      str name ++ str "(" ++ pp_method_args vars args ++ str ")" ++
      pp_wrap_b_nl body
 
-(*s Pretty-printing of expressions. [par] indicates whether
-    parentheses are needed or not. [env] is the list of names for the
-    de Bruijn variables. [args] is the list of collected arguments
-    (already pretty-printed). *)
+(* Pretty-printing of expressions:
+   [env] is the list of names for the de Bruijn variables
+   [args] is the list of collected arguments (already pretty-printed) *)
 
-let pp_abst = function
-  | [] -> (mt ())
-  | l  -> (str "\\" ++
-             prlist_with_sep (fun () -> (str " ")) pr_id l ++
-             str " ->" ++ spc ())
+let rec pp_expr par env args = function
+    | MLrel    n         -> assert false (* get_db_name n env *)
+    | MLapp   (f,args')  -> assert false
+    | MLlam    _         -> assert false (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
+    | MLletin (id,a1,a2) -> assert false (* push_vars [id_of_mlid id] env *)
+    | MLglob   r         -> assert false
+    | MLcons  (_,r,a)    -> assert false (* assert (args=[]); *)
+    | MLtuple  l         -> assert false (* assert (args=[]); *)
+    | MLcase  (typ,t,pv) -> assert false (* is_custom_match pv ; not (is_regular_match pv) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match pv *)
+    | MLfix (i,ids,defs) -> assert false (* push_vars (List.rev (Array.to_list ids)) env *)
+    | MLexn    s         -> assert false
+    | MLdummy            -> assert false
+    | MLmagic  a         -> assert false
+    | MLaxiom            -> assert false
 
-let expr_needs_par = function
-  | MLlam _  -> true
-  | MLcase _ -> false (* now that we use the case ... of { ... } syntax *)
-  | _        -> false
-
-let rec pp_expr par env args =
-  let apply st = pp_apply st par args
-  and apply2 st = pp_apply2 st par args in
-  function
-    | MLrel n ->
-	let id = get_db_name n env in apply (pr_id id)
-    | MLapp (f,args') ->
-	let stl = List.map (pp_expr true env []) args' in
-        pp_expr par env (stl @ args) f
-    | MLlam _ as a ->
-      	let fl,a' = collect_lams a in
-	let fl,env' = push_vars (List.map id_of_mlid fl) env in
-	let st = (pp_abst (List.rev fl) ++ pp_expr false env' [] a') in
-	apply2 st
-    | MLletin (id,a1,a2) ->
-	let i,env' = push_vars [id_of_mlid id] env in
-	let pp_id = pr_id (List.hd i)
-	and pp_a1 = pp_expr false env [] a1
-	and pp_a2 = pp_expr (not par && expr_needs_par a2) env' [] a2 in
-	let pp_def =
-	  str "let {" ++ cut () ++
-	  hov 1 (pp_id ++ str " = " ++ pp_a1 ++ str "}")
-	in
-	apply2 (hv 0 (hv 0 (hv 1 pp_def ++ spc () ++ str "in") ++
-		       spc () ++ hov 0 pp_a2))
-    | MLglob r ->
-	apply (pp_global Term r)
-    | MLcons (_,r,a) as c ->
-        assert (args=[]);
-        begin match a with
-	  | _ when is_native_char c -> pp_native_char c
-	  | [] -> pp_global Cons r
-	  | [a] ->
-	    pp_par par (pp_global Cons r ++ spc () ++ pp_expr true env [] a)
-	  | _ ->
-	    pp_par par (pp_global Cons r ++ spc () ++
-			prlist_with_sep spc (pp_expr true env []) a)
-	end
-    | MLtuple l ->
-        assert (args=[]);
-        pp_boxed_tuple (pp_expr true env []) l
-    | MLcase (_,t, pv) when is_custom_match pv ->
-        if not (is_regular_match pv) then
-	  error "Cannot mix yet user-given match and general patterns.";
-	let mkfun (ids,_,e) =
-	  if ids <> [] then named_lams (List.rev ids) e
-	  else dummy_lams (ast_lift 1 e) 1
-	in
-	let pp_branch tr = pp_expr true env [] (mkfun tr) ++ fnl () in
-	let inner =
-	  str (find_custom_match pv) ++ fnl () ++
-	  prvect pp_branch pv ++
-	  pp_expr true env [] t
-	in
-	apply2 (hov 2 inner)
-    | MLcase (typ,t,pv) ->
-        apply2
-	  (v 0 (str "case " ++ pp_expr false env [] t ++ str " of {" ++
-		fnl () ++ pp_pat env pv))
-    | MLfix (i,ids,defs) ->
-	let ids',env' = push_vars (List.rev (Array.to_list ids)) env in
-      	pp_fix_term par env' i (Array.of_list (List.rev ids'),defs) args
-    | MLexn s ->
-	(* An [MLexn] may be applied, but I don't really care. *)
-	pp_par par (str "Prelude.error" ++ spc () ++ qs s)
-    | MLdummy ->
-	str "__" (* An [MLdummy] may be applied, but I don't really care. *)
-    | MLmagic a ->
-	pp_apply (str "unsafeCoerce") par (pp_expr true env [] a :: args)
-    | MLaxiom -> pp_par par (str "Prelude.error \"AXIOM TO BE REALIZED\"")
-
-and pp_cons_pat par r ppl =
-  pp_par par (pp_global Cons r ++ space_if (ppl<>[]) ++ prlist_with_sep spc identity ppl)
-
-and pp_gen_pat par ids env = function
-  | Pcons (r,l) -> pp_cons_pat par r (List.map (pp_gen_pat true ids env) l)
-  | Pusual r -> pp_cons_pat par r (List.map pr_id ids)
-  | Ptuple l -> pp_boxed_tuple (pp_gen_pat false ids env) l
-  | Pwild -> str "_"
-  | Prel n -> pr_id (get_db_name n env)
-
-and pp_one_pat env (ids,p,t) =
-  let ids',env' = push_vars (List.rev_map id_of_mlid ids) env in
-  hov 2 (str " " ++
-	 pp_gen_pat false (List.rev ids') env' p ++
-	 str " ->" ++ spc () ++
-	 pp_expr (expr_needs_par t) env' [] t)
-
-and pp_pat env pv =
-  prvecti
-    (fun i x ->
-       pp_one_pat env pv.(i) ++
-       if i = Array.length pv - 1 then str "}" else
-	 (str ";" ++ fnl ()))
-    pv
-
-(*s names of the functions ([ids]) are already pushed in [env],
-    and passed here just for convenience. *)
-
-and pp_fix_term par env i (ids,bl) args = assert false (* TODO: wrap usual functions into class? *)
-(*
-  pp_par par
-    (v 0
-       (v 1 (str "let {" ++ fnl () ++
-	     prvect_with_sep (fun () -> str ";" ++ fnl ())
-	       (fun (fi,ti) -> pp_function_term env (pr_id fi) ti)
-	       (array_map2 (fun a b -> a,b) ids bl) ++
-	     str "}") ++
-        fnl () ++ str "in " ++ pp_apply (pr_id ids.(i)) false args))
-*)
-
-and pp_function_term env name def = assert false
-(*let bl,def = collect_lams def in*)
-    (*let bl,env' = push_vars (List.map id_of_mlid bl) env in*)
-(*(name ++ pr_binding (List.rev bl) ++*)
- (*str " =" ++ fnl () ++ str "  " ++*)
- (*hov 2 (pp_expr false env' [] def))*)
+(* Pretty-printing of inductive types *)
 
 let pp_tags constructors =
   str "public Tag tag;\n" ++
@@ -293,6 +180,8 @@ let rec pp_inductive kn ind =
     List.mapi (fun i packet -> pp_ind_packet (kn,i) packet) @@
     Array.to_list ind.ind_packets
 
+(* Pretty-printing of other declarations *)
+
 let pp_typedecl ref vars typ =
   if is_inline_custom ref
     then mt ()
@@ -309,7 +198,7 @@ let pp_function ref def  typ =
              else let (args,typ) = unfold_arrows typ in
                   pp_class (str "public static class " ++ pp_global Term ref) @@
                     pp_method "public static" typ "apply" args @@
-                      str "return null; " ++ pp_comment_b (str "TODO") (* pp_function_term (empty_env ()) name def) *) 
+                      str "return null; " ++ pp_comment_b (str "TODO")
          | _ -> assert false (* TODO: try to implement *)
 
 let pp_decl = function
