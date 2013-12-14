@@ -98,7 +98,7 @@ let rec pp_type vars = function
 let pp_comment s = str "// " ++ s ++ fnl ()
 let pp_comment_b = pp_wrap2 "/* " " */"
 
-let pp_generic vars = if vars != [] then pp_wrap_g @@ pp_list' "," pr_upper_id vars else mt ()
+let pp_generic vars = if vars != [] then str " " ++ (pp_wrap_g @@ pp_list' "," pr_upper_id vars) else mt ()
 
 let pp_enum name items =
   str "public static enum " ++ str name ++ str " " ++
@@ -109,7 +109,7 @@ let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 let pp_method modifier (typ,vars) name (argtyps,argnames) body =
   let args = List.map (fun (argtyp,argname) -> (argtyp,argname)) @@ List.combine argtyps argnames in
   let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-  in str modifier ++ str " " ++ pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
+  in str modifier ++ pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
      str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
