@@ -48,7 +48,7 @@ let range l r =
   in List.rev @@ work [] l r
   (* Could be `List.of_enum (l--r)' *)
 
-let mkvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
+let mktvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
 
 (* Type utilities *)
 
@@ -83,7 +83,9 @@ let keywords =
   [ (* TODO *) "public"; "protected"; "private"; "static"; "class" ]
   Idset.empty
 
-let pp_global kn ref = str @@ if is_inline_custom ref then find_custom ref else Common.pp_global kn ref
+let escape = String.map (fun c -> if c = '\'' then '_' else c) (* dirty *)
+
+let pp_global kn ref = str @@ escape @@ if is_inline_custom ref then find_custom ref else Common.pp_global kn ref
 
 let rec pp_type vars = function
     | Tglob (ref,args) -> pp_global Type ref ++
@@ -104,33 +106,66 @@ let pp_enum name items =
 
 let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 
-let pp_method_args vars args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-
-let pp_method modifier typ name args body =
-  let vars = List.map mkvar @@ range 1 @@ count_variables' @@ typ::args in 
-  let args = List.mapi (fun i typ -> (typ,"arg"^(Pervasives.string_of_int i))) args
+let pp_method modifier (typ,vars) name (args,names) body =
+  let args = List.mapi (fun i typ -> (typ,names.(i))) args in
+  let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
   in str modifier ++ str " " ++ pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
-     str name ++ str "(" ++ pp_method_args vars args ++ str ")" ++
+     str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
-(* Pretty-printing of expressions:
-   [env] is the list of names for the de Bruijn variables
-   [args] is the list of collected arguments (already pretty-printed) *)
+(* Pretty-printing of expressions *)
 
-let rec pp_expr par env args = function
-    | MLrel    n         -> assert false (* get_db_name n env *)
-    | MLapp   (f,args')  -> assert false
-    | MLlam    _         -> assert false (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
-    | MLletin (id,a1,a2) -> assert false (* push_vars [id_of_mlid id] env *)
-    | MLglob   r         -> assert false
-    | MLcons  (_,r,a)    -> assert false (* assert (args=[]); *)
-    | MLtuple  l         -> assert false (* assert (args=[]); *)
-    | MLcase  (typ,t,pv) -> assert false (* is_custom_match pv ; not (is_regular_match pv) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match pv *)
-    | MLfix (i,ids,defs) -> assert false (* push_vars (List.rev (Array.to_list ids)) env *)
-    | MLexn    s         -> assert false
-    | MLdummy            -> assert false
-    | MLmagic  a         -> assert false
-    | MLaxiom            -> assert false
+let temporary_typemap = ref [] (* HACK *)
+let search ref =
+  let rec work = function
+    | [] -> assert false
+    | (ref',typ)::tl -> if ref = ref' then typ else work tl
+  in work temporary_typemap.contents
+
+let pp_expr env (typ,vars) term =
+  let mkvar  i   = "var" ^ Pervasives.string_of_int i in
+  let return i r = (succ i,(mkvar i, r)) in
+  let rec pp_expr' k env typ =
+    let mock       = return k @@ pp_type vars typ ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet */\n") in
+    function
+    | MLrel    i           -> let name = env.(pred i) in (k,(name,mt ()))
+    | MLapp   (f,args)     ->
+      (* So far, we can't check type of function against arguments;
+         one of the solutions: to implement application one-by-one (via lambdas). *)
+      (match f with
+       | MLglob ref ->
+         let (typs,typ)  = unfold_arrows @@ search ref (* HACK *) in
+         let step (k',acc) (argtyp,argterm) = let res = pp_expr' k' env argtyp argterm in (fst res,(snd res)::acc) in
+         let (k'',args') = List.fold_left step (k,[]) @@ List.combine typs args in
+         let      args'' = List.rev     args'  in
+         let names       = List.map fst args'' in
+         let output      = pp_list "\n" @@ List.map snd args'' in
+         let call        =
+           pp_type vars typ ++ str (" " ^ mkvar k'' ^ " = ") ++
+           pp_global Term ref ++
+             str (".apply(") ++ pp_list' ", " str names ++ str ");\n"
+         in  return k'' @@ output ++ call
+       | x -> assert false
+       (* TODO
+         For lambdas I need:
+           1) smart representation of lambdas as objects;
+           2) get types for variables, etc.
+             a) infer it manually
+             b) look, what can suggest Coq source
+       *)
+       )
+    | MLlam    _           -> mock (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
+    | MLletin (id,a1,a2)   -> mock (* push_vars [id_of_mlid id] env *)
+    | MLglob   ref         -> mock
+    | MLcons  (_,r,a)      -> mock (* assert (args=[]); *)
+    | MLtuple  l           -> mock (* assert (args=[]); *)
+    | MLcase  (typ,t,pv)   -> mock (* is_custom_match pv ; not (is_regular_match pv) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match pv *)
+    | MLfix   (i,ids,defs) -> mock (* push_vars (List.rev (Array.to_list ids)) env *)
+    | MLexn    s           -> mock
+    | MLdummy              -> mock
+    | MLmagic  a           -> mock
+    | MLaxiom              -> mock
+  in snd @@ pp_expr' 0 env typ term
 
 (* Pretty-printing of inductive types *)
 
@@ -189,6 +224,7 @@ let pp_typedecl ref vars typ =
                    str " extends " ++ pp_type vars typ) @@ str ""
 
 let pp_function ref def  typ =
+  temporary_typemap := (ref,typ)::temporary_typemap.contents; (* HACK *)
   if is_inline_custom ref
     then mt ()
     else match typ with
@@ -196,9 +232,12 @@ let pp_function ref def  typ =
            if is_custom ref
              then assert false
              else let (args,typ) = unfold_arrows typ in
-                  pp_class (str "public static class " ++ pp_global Term ref) @@
-                    pp_method "public static" typ "apply" args @@
-                      str "return null; " ++ pp_comment_b (str "TODO")
+                  let  vars      = List.map mktvar @@ range 1 @@ count_variables' @@ typ::args in 
+                  let  names     = (Array.of_list @@ List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) args) in
+                  let (res,code) = pp_expr names (typ,vars) @@ snd @@ collect_lams def
+                  in pp_class (str "public static class " ++ pp_global Term ref) @@
+                     pp_method "public static" (typ,vars) "apply" (args,names) @@
+                       code ++ str ("return " ^ res ^ ";")
          | _ -> assert false (* TODO: try to implement *)
 
 let pp_decl = function
@@ -216,7 +255,7 @@ let pp_struct =
     let output = pp_list' "\n" pp_element sel in
     pop_visible ();
     pp_class (str @@ "public interface " ^ basename mp) @@
-      output ++ str "\n"
+      output
   in
   pp_list' "\n" pp_elements
 
