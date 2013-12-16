@@ -75,7 +75,7 @@ and count_variables' types =
     | typ::types' -> work (Pervasives.max acc @@ count_variables typ) types'
     | [] -> acc
   in work 0 types
-  
+
 (* Java utilities *)
 
 let keywords =
@@ -123,11 +123,33 @@ let search ref =
   in work temporary_typemap.contents
 
 let pp_expr env (typ,vars) term =
+  let pp_consname typ ref =
+    (* DIRTY: Replace it with proper creation of submodule for inductive type, so e.g. Datatypes.S will become Datatypes.nat.S *)
+    let raw_name     = string_of_ppcmds @@ pp_type vars typ in
+    let i            = try String.index raw_name '<' with Not_found -> String.length raw_name in
+    let l            = String.length raw_name in
+    let base         = String.sub raw_name 0 i in
+    let generic      = String.sub raw_name i (l - i) in
+    let raw_consname = string_of_ppcmds @@ pp_global Cons ref in
+    let i'           = String.index raw_consname '.' in
+    let l'           = String.length raw_consname in
+    let consname     = String.sub raw_consname i' (l' - i')
+    in str @@ base ^ consname ^ generic in
+  let pp_casetag ref =
+    (* DIRTY *)
+    let raw_name = string_of_ppcmds @@ pp_global Cons ref
+    in try
+         let i = succ @@ String.index raw_name '.'
+         in str @@ String.sub raw_name i @@ (String.length raw_name) - i
+       with
+         Not_found -> str raw_name in
   let mkvar  i   = "var" ^ Pervasives.string_of_int i in
   let return i r = (succ i,(mkvar i, r)) in
   let rec pp_expr' k env =
     let mock       = return k @@ pp_type vars typ ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet */\n") in
     function
+    (* I use here my own names for some expressions instead of given ids;
+      make sure that all such ids aren't used (in my cases there were only relative variables). *)
     | MLrel    i             -> let name = List.nth env (pred i) in (k,(name,mt ()))
     | MLapp   (f,args)       ->
       (* So far, we can't check type of function against arguments;
@@ -156,7 +178,7 @@ let pp_expr env (typ,vars) term =
              c) make all variables be Object and cast them when apply function
        *)
        )
-    | MLlam    _             -> mock (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
+    | MLlam   (_,term)       -> mock (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
     | MLletin (_,t1,t2)      ->
       let (k',(name1,output1)) = pp_expr' k env t1 (* push_vars [id_of_mlid id] env *) in
       let env' = name1::env in
@@ -170,24 +192,29 @@ let pp_expr env (typ,vars) term =
       let      args''  = List.rev     args'  in
       let names        = List.map fst args'' in
       let output       = pp_list "" @@ List.map snd args'' in
-      (* DIRTY: Replace it with proper creation of submodule for inductive type, so e.g. Datatypes.S will become Datatypes.nat.S *)
-      let raw_name     = string_of_ppcmds @@ pp_type vars typ in
-      let i            = try String.index raw_name '<' with Not_found -> String.length raw_name in
-      let l            = String.length raw_name in
-      let base         = String.sub raw_name 0 i in
-      let generic      = String.sub raw_name i (l - i) in
-      let raw_consname = string_of_ppcmds @@ pp_global Cons ref in
-      let i'           = String.index raw_consname '.' in
-      let l'           = String.length raw_consname in
-      let consname     = String.sub raw_consname i' (l' - i') in
-      let name         = str @@ base ^ consname ^ generic in
       let call         =
-        pp_type vars typ ++ str (" " ^ mkvar k'' ^ " = ") ++
-        str "new " ++ name ++ 
+        str "final " ++ pp_type vars typ ++ str (" " ^ mkvar k'' ^ " = ") ++
+        str "new " ++ pp_consname typ ref ++
           str ("(") ++ pp_list' ", " str names ++ str ");\n"
       in return k'' @@ output ++ call
-    | MLtuple  l             -> mock (* assert (args=[]); *)
-    | MLcase  (typ,t,pv)     -> mock (* is_custom_match pv ; not (is_regular_match pv) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match pv *)
+    | MLtuple (terms)        -> mock (* assert (args=[]); *)
+    | MLcase  (typ,term,brs) ->
+      (* Other way (maybe better) is to generate eliminators *)
+      let (k1,resvar) = (succ k, mkvar k) in
+      let (k2,(name,output1)) = pp_expr' k1 env term in
+      let case (k,output) = function
+        | (ids,Pusual ref,term) ->
+          let (k' ,casted) = (succ k, mkvar k) in
+          let env' = List.fold_left (fun acc i -> (casted ^ ".field" ^ Pervasives.string_of_int i)::acc) env @@ List.mapi (fun i _ -> i) ids in
+          let (k'',(name',output')) = pp_expr' k' env' term in
+          let castedtyp = pp_consname typ ref in
+          let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
+          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;"))
+        | _ -> assert false (* TODO *) in
+      let (k3,cases) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
+      let switch = str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases
+      in (succ k3,(resvar,switch))
+      (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
     | MLfix   (i,ids,defs)   -> mock (* push_vars (List.rev (Array.to_list ids)) env *)
     | MLexn    s             -> mock
     | MLdummy                -> mock
@@ -261,12 +288,12 @@ let pp_function ref def  typ =
            if is_custom ref
              then assert false
              else let (args,typ) = unfold_arrows typ in
-                  let  vars      = List.map mktvar @@ range 1 @@ count_variables' @@ typ::args in 
+                  let  vars      = List.map mktvar @@ range 1 @@ count_variables' @@ typ::args in
                   let  names     = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) args in
                   let (res,code) = pp_expr names (typ,vars) @@ snd @@ collect_lams def
                   in pp_class (str "public static class " ++ pp_global Term ref) @@
                      pp_method "public static" (typ,vars) "apply" (args,names) @@
-                       code ++ str ("return " ^ res ^ ";")
+                       code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")
          | _ -> assert false (* TODO: try to implement *)
 
 let pp_decl = function
