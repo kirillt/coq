@@ -88,12 +88,13 @@ let escape = String.map (fun c -> if c = '\'' then '_' else c) (* dirty *)
 let pp_global kn ref = str @@ escape @@ if is_inline_custom ref then find_custom ref else Common.pp_global kn ref
 
 let rec pp_type vars = function
-    | Tglob (ref,args) -> pp_global Type ref ++
-      if args = []
-        then mt ()
-        else pp_wrap_g @@ pp_list' "," (pp_type vars) args
-    | Tvar i -> pr_upper_id @@ List.nth vars (pred i)
-    | _ -> assert false
+  | Tglob (ref,args) -> pp_global Type ref ++
+    if args = []
+      then mt ()
+      else pp_wrap_g @@ pp_list' "," (pp_type vars) args
+  | Tvar  i -> pr_upper_id @@ List.nth vars (pred i)
+  | Tvar' i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
+  | _ -> assert false
 
 let pp_comment s = str "// " ++ s ++ fnl ()
 let pp_comment_b = pp_wrap2 "/* " " */"
