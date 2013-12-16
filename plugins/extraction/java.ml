@@ -201,7 +201,7 @@ let pp_expr env (typ,vars) term =
     | MLcase  (typ,term,brs) ->
       (* Other way (maybe better) is to generate eliminators *)
       let (k1,resvar) = (succ k, mkvar k) in
-      let (k2,(name,output1)) = pp_expr' k1 env term in
+      let (k2,(name,output)) = pp_expr' k1 env term in
       let case (k,output) = function
         | (ids,Pusual ref,term) ->
           let (k' ,casted) = (succ k, mkvar k) in
@@ -212,7 +212,7 @@ let pp_expr env (typ,vars) term =
           in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;"))
         | _ -> assert false (* TODO *) in
       let (k3,cases) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
-      let switch = str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases
+      let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
     | MLfix   (i,ids,defs)   -> mock (* push_vars (List.rev (Array.to_list ids)) env *)
@@ -234,14 +234,18 @@ let pp_constructor_args types = pp_list' ", " (fun (i,typ) -> typ () ++ str " ar
 
 let pp_constructor_class vars father suffix (ref,types) =
   temporary_typemap := (ref,(types, Tvar 0 (* HACK *)))::temporary_typemap.contents; (* HACK *)
-  let types = List.mapi (fun i typ -> (str @@ Pervasives.string_of_int i, (fun _ -> pp_type vars typ))) types in
-  let name  = pp_global Cons ref
+  let types  = List.mapi (fun i typ -> (str @@ Pervasives.string_of_int i, (fun _ -> pp_type vars typ))) types in
+  let fields = List.mapi (fun i _ -> "field" ^ Pervasives.string_of_int i) types in
+  let name   = pp_global Cons ref
   in  pp_class (str "public static final class " ++ name ++ suffix ++ str " extends " ++ father ++ suffix) @@
-  prlist_strict pp_constructor_field types ++
-  str "public " ++ name ++ str "(" ++ pp_constructor_args types ++ str ") " ++
-  (pp_wrap_b_nl @@
-    (prlist_strict (fun (i,_) -> str "field" ++ i ++ str " = arg" ++ i ++ str ";\n") types) ++
-    str "tag = Tag." ++ name ++ str ";")
+    prlist_strict pp_constructor_field types ++
+    str "public " ++ name ++ str "(" ++ pp_constructor_args types ++ str ") " ++
+    (pp_wrap_b_nl @@
+      (prlist_strict (fun (i,_) -> str "field" ++ i ++ str " = arg" ++ i ++ str ";\n") types) ++
+      str "tag = Tag." ++ name ++ str ";") ++
+    (str ("\n@Override\n" ^ "public String toString()") ++
+     (pp_wrap_b_nl @@ str "return \"" ++ name ++ str "\"" ++
+           (pp_list' "" (fun field -> str @@ " + \" \" + " ^ field ^ ".toString()") fields) ++ str ";\n"))
 
 let pp_inductive_class ki vars cs =
   let constructors = Array.to_list @@ Array.mapi (fun i c -> ConstructRef (ki,i+1),c) cs in
