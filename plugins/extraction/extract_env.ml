@@ -569,9 +569,8 @@ let separate_extraction lr =
     | (MPfile dir as mp, sel) as e ->
 	print_structure_to_file (module_filename mp) false [e]
     | _ -> assert false
-  in
-  List.iter print struc;
-  reset ()
+  in List.iter print struc;
+     reset ()
 
 (*s Simple extraction in the Coq toplevel. The vernacular command
     is \verb!Extraction! [qualid]. *)

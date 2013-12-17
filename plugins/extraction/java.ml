@@ -99,7 +99,7 @@ let rec pp_type vars = function
 let pp_comment s = str "// " ++ s ++ fnl ()
 let pp_comment_b = pp_wrap2 "/* " " */"
 
-let pp_generic vars = if vars != [] then str " " ++ (pp_wrap_g @@ pp_list' "," pr_upper_id vars) else mt ()
+let pp_generic vars = if vars != [] then pp_wrap_g @@ pp_list' "," pr_upper_id vars else mt ()
 
 let pp_enum name items =
   str "public static enum " ++ str name ++ str " " ++
@@ -110,7 +110,7 @@ let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 let pp_method modifier (typ,vars) name (argtyps,argnames) body =
   let args = List.map (fun (argtyp,argname) -> (argtyp,argname)) @@ List.combine argtyps argnames in
   let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-  in str modifier ++ pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
+  in str modifier ++ if vars == [] then str " " else pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
      str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
@@ -132,18 +132,16 @@ let pp_expr env (typ,vars) term =
     let base         = String.sub raw_name 0 i in
     let generic      = String.sub raw_name i (l - i) in
     let raw_consname = string_of_ppcmds @@ pp_global Cons ref in
-    let i'           = String.index raw_consname '.' in
+    let i'           = try String.index raw_consname '.' with Not_found -> 0 in
     let l'           = String.length raw_consname in
     let consname     = String.sub raw_consname i' (l' - i')
     in str @@ base ^ consname ^ generic in
   let pp_casetag ref =
     (* DIRTY *)
     let raw_name = string_of_ppcmds @@ pp_global Cons ref
-    in try
-         let i = succ @@ String.index raw_name '.'
-         in str @@ String.sub raw_name i @@ (String.length raw_name) - i
-       with
-         Not_found -> str raw_name in
+    in try let i = succ @@ String.index raw_name '.'
+           in str @@ String.sub raw_name i @@ (String.length raw_name) - i
+       with Not_found -> str raw_name in
   let mkvar  i   = "var" ^ Pervasives.string_of_int i in
   let return i r = (succ i,(mkvar i, r)) in
   let rec pp_expr' k env =
@@ -246,7 +244,7 @@ let pp_constructor_class vars father suffix (ref,types) =
       str "tag = Tag." ++ name ++ str ";") ++
     (str ("\n@Override\n" ^ "public String toString()") ++
      (pp_wrap_b_nl @@ str "return \"" ++ name ++ str "\"" ++
-           (pp_list' "" (fun field -> str @@ " + \" \" + " ^ field ^ ".toString()") fields) ++ str ";\n"))
+           (pp_list' "" (fun field -> str @@ " + \" \" + " ^ field ^ ".toString()") fields) ++ str ";"))
 
 let pp_inductive_class ki vars cs =
   let constructors = Array.to_list @@ Array.mapi (fun i c -> ConstructRef (ki,i+1),c) cs in
@@ -295,7 +293,7 @@ let pp_function ref def  typ =
              else let (args,typ) = unfold_arrows typ in
                   let  vars      = List.map mktvar @@ range 1 @@ count_variables' @@ typ::args in
                   let  names     = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) args in
-                  let (res,code) = pp_expr names (typ,vars) @@ snd @@ collect_lams def
+                  let (res,code) = pp_expr (List.rev names) (typ,vars) @@ snd @@ collect_lams def
                   in pp_class (str "public static class " ++ pp_global Term ref) @@
                      pp_method "public static" (typ,vars) "apply" (args,names) @@
                        code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")
