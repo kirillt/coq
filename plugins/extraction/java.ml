@@ -132,10 +132,10 @@ let pp_expr env (typ,vars) term =
     let base         = String.sub raw_name 0 i in
     let generic      = String.sub raw_name i (l - i) in
     let raw_consname = string_of_ppcmds @@ pp_global Cons ref in
-    let i'           = try String.index raw_consname '.' with Not_found -> 0 in
+    let i'           = try pred @@ String.index raw_consname '.' with Not_found -> 0 in
     let l'           = String.length raw_consname in
     let consname     = String.sub raw_consname i' (l' - i')
-    in str @@ base ^ consname ^ generic in
+    in str @@ base ^ "." ^ consname ^ generic in
   let pp_casetag ref =
     (* DIRTY *)
     let raw_name = string_of_ppcmds @@ pp_global Cons ref
