@@ -159,6 +159,10 @@ let pp_expr env (typ,vars) term =
       (* So far, we can't check type of function against arguments;
          one of the solutions: to implement application one-by-one (via lambdas).
          Also we need to instantiate generic parameters when apply polymorph functions. *)
+      (* TODO
+        We also need to instantiate types of generics in some cases:
+        e.g. call `insert(list<tree<a>>,...)' requires generic parameter `<tree<a>>'
+        and proper type of result variable *)
       (match f with
        | MLglob ref ->
          let (_,typ)      = search ref (* HACK *) in
@@ -190,8 +194,7 @@ let pp_expr env (typ,vars) term =
            2) get types for variables, etc.
              a) infer it manually
              b) look, what can suggest Coq source
-             c) make all variables be Object and cast them when apply function
-       *)
+             c) make all variables be Object and cast them when apply function *)
        )
     | MLlam   (_,term)       -> mock (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
     | MLletin (_,t1,t2)      ->
