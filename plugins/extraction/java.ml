@@ -93,7 +93,7 @@ let rec pp_type vars = function
   | Tglob (ref,args) -> pp_global Type ref ++
     if args = []
       then mt ()
-      else pp_generic vars
+      else if args != [] then pp_wrap_g @@ pp_list' "," (pp_type vars) args else mt ()
   | Tvar  i -> pr_upper_id @@ List.nth vars (pred i)
   | Tvar' i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
   | _ -> assert false
@@ -110,7 +110,7 @@ let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 let pp_method modifier (typ,vars) name (argtyps,argnames) body =
   let args = List.map (fun (argtyp,argname) -> (argtyp,argname)) @@ List.combine argtyps argnames in
   let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-  in str modifier ++ if vars != [] then str " " ++ pp_generic vars else mt () ++ str " " ++ pp_type vars typ ++ str " " ++
+  in str modifier ++ (if vars != [] then str " " ++ pp_generic vars else mt ()) ++ str " " ++ pp_type vars typ ++ str " " ++
      str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
