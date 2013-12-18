@@ -22,6 +22,7 @@ open Common
 
 let pp_wrap2 l r body = str l ++ body ++ str r
 let pp_wrap         c = pp_wrap2 c c
+let pp_wrap_a         = pp_wrap2 "(" ")"
 let pp_wrap_b         = pp_wrap2 "{" "}"
 let pp_wrap_g         = pp_wrap2 "<" ">"
 let pp_wrap_b_nl body = pp_wrap_b (pp_wrap "\n" body)
@@ -89,14 +90,17 @@ let pp_global kn ref = str @@ escape @@ if is_inline_custom ref then find_custom
 
 let pp_generic vars = if vars == [] then mt () else pp_wrap_g @@ pp_list' "," pr_upper_id vars
 
-let rec pp_type vars = function
-  | Tglob (ref,args) -> pp_global Type ref ++
+let rec pp_type vars =
+  let pp_parameters args =
     if args = []
       then mt ()
-      else if args != [] then pp_wrap_g @@ pp_list' "," (pp_type vars) args else mt ()
-  | Tvar  i -> pr_upper_id @@ List.nth vars (pred i)
-  | Tvar' i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
-  | _ -> assert false
+      else pp_wrap_g @@ pp_list' "," (pp_type vars) args
+  in function
+    | Tglob (ref,args) -> pp_global Type ref ++ pp_parameters args
+    | Tarr  (l,r) -> str "Function" ++ pp_parameters [l;r]
+    | Tvar   i -> pr_upper_id @@ List.nth vars (pred i)
+    | Tvar'  i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
+    | _ -> assert false
 
 let pp_comment s = str "// " ++ s ++ fnl ()
 let pp_comment_b = pp_wrap2 "/* " " */"
@@ -107,10 +111,10 @@ let pp_enum name items =
 
 let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 
-let pp_method modifier (typ,vars) name (argtyps,argnames) body =
+let pp_method binded modifier (typ,vars) name (argtyps,argnames) body =
   let args = List.map (fun (argtyp,argname) -> (argtyp,argname)) @@ List.combine argtyps argnames in
   let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-  in str modifier ++ (if vars != [] then str " " ++ pp_generic vars else mt ()) ++ str " " ++ pp_type vars typ ++ str " " ++
+  in str modifier ++ (if not binded && vars != [] then str " " ++ pp_generic vars else mt ()) ++ str " " ++ pp_type vars typ ++ str " " ++
      str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
@@ -145,7 +149,8 @@ let pp_expr env (typ,vars) term =
   let mkvar  i   = "var" ^ Pervasives.string_of_int i in
   let return i r = (succ i,(mkvar i, r)) in
   let rec pp_expr' k env =
-    let mock       = return k @@ pp_type vars typ ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet */\n") in
+    let mock' msg = return k @@ pp_type vars typ ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
+    let mock      = mock' "" in
     function
     (* I use here my own names for some expressions instead of given ids;
       make sure that all such ids aren't used (in my cases there were only relative variables). *)
@@ -165,9 +170,9 @@ let pp_expr env (typ,vars) term =
          let call         =
            pp_type vars typ ++ str (" " ^ mkvar k'' ^ " = ") ++
            pp_global Term ref ++
-             str (".apply(") ++ pp_list' ", " str names ++ str ");\n"
+             str (".apply") ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";\n"
          in return k'' @@ output ++ call
-       | x -> assert false
+       | x -> mock' "application of non-global value"
        (* TODO
          For lambdas I need:
            1) smart representation of lambdas as objects;
@@ -209,7 +214,7 @@ let pp_expr env (typ,vars) term =
           let castedtyp = pp_consname typ ref in
           let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
           in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;") ++ str "\n")
-        | _ -> assert false (* TODO *) in
+        | _ -> assert false (* assert false (* TODO *) *) in
       let (k3,cases_raw) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
       let cases = str @@ let t = string_of_ppcmds cases_raw in String.sub t 0 @@ pred @@ String.length t (* DIRTY *) in
       let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases ++ str "\n" 
@@ -288,16 +293,33 @@ let pp_function ref def  typ =
   if is_inline_custom ref
     then mt ()
     else match typ with
-         | Tarr (l,r) ->
+         | Tarr (l,r) as arrow ->
            if is_custom ref
              then assert false
              else let (args,typ) = unfold_arrows typ in
                   let  vars      = List.map mktvar @@ range 1 @@ count_variables' @@ typ::args in
+                  let  fname     = pp_global Term ref in
                   let  names     = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) args in
+                  let
+                    rec pp_lambda_return x = str "return " ++ pp_lambda_object x
+                    and pp_lambda_object = function
+                      | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
+                      | (Tarr _ as arrow, names) ->
+                        str "new " ++ pp_type vars arrow ++ (
+                          pp_class (str "() ") @@ pp_lambda_method (arrow,names)) ++ str ";"
+                      | _ -> assert false
+                    and pp_lambda_method = function
+                      | (Tarr (l,r),name::rest) ->
+                        str "@Override\n" ++
+                        (pp_method true "public" (r,vars) "apply" ([l],[name]) @@
+                          str "return " ++ pp_lambda_object (r,rest))
+                      | _ -> assert false in
                   let (res,code) = pp_expr (List.rev names) (typ,vars) @@ snd @@ collect_lams def
-                  in pp_class (str "public static class " ++ pp_global Term ref) @@
-                     pp_method "public static" (typ,vars) "apply" (args,names) @@
-                       code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")
+                  in pp_class (str "public static class " ++ fname) @@
+                     (pp_method false "public static" (typ,vars) "apply" (args,names) @@
+                       code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")) ++ str "\n" ++
+                     (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
+                       pp_lambda_return (arrow,names))
          | _ -> assert false (* TODO: try to implement *)
 
 let pp_decl = function
