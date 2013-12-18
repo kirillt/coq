@@ -161,9 +161,9 @@ let pp_expr env (typ,vars) term =
          Also we need to instantiate generic parameters when apply polymorph functions. *)
       (match f with
        | MLglob ref ->
-         let (types,typ)  = search ref (* HACK *) in
-         let step (k',acc) (argtyp,argterm) = let res = pp_expr' k' env argterm in (fst res,(snd res)::acc) in
-         let (k'',args')  = List.fold_left step (k,[]) @@ List.combine types args in
+         let (_,typ)      = search ref (* HACK *) in
+         let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
+         let (k'',args')  = List.fold_left step (k,[]) args in
          let      args''  = List.rev     args'  in
          let names        = List.map fst args'' in
          let output       = pp_list "" @@ List.map snd args'' in
@@ -172,7 +172,18 @@ let pp_expr env (typ,vars) term =
            pp_global Term ref ++
              str (".apply") ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";\n"
          in return k'' @@ output ++ call
-       | x -> mock' "application of non-global value"
+       | _ ->
+         let (k1,(fname,fcode)) = pp_expr' k env f in
+         let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
+         let (k2,args')  = List.fold_left step (k1,[]) args in
+         let      args''  = List.rev     args'  in
+         let names        = List.map fst args'' in
+         let output       = pp_list "" @@ fcode :: (List.map snd args'') in
+         let call         =
+           str ("Object " ^ mkvar k2 ^ " = ") ++
+           str fname ++
+             (pp_list' "" str @@ List.map (fun name -> ".apply(" ^ name ^ ")") names) ++ str ";\n"
+         in return k2 @@ output ++ call
        (* TODO
          For lambdas I need:
            1) smart representation of lambdas as objects;
@@ -217,7 +228,7 @@ let pp_expr env (typ,vars) term =
         | _ -> assert false (* assert false (* TODO *) *) in
       let (k3,cases_raw) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
       let cases = str @@ let t = string_of_ppcmds cases_raw in String.sub t 0 @@ pred @@ String.length t (* DIRTY *) in
-      let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases ++ str "\n" 
+      let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
     | MLfix   (i,ids,defs)   -> mock (* push_vars (List.rev (Array.to_list ids)) env *)
