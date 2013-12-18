@@ -87,19 +87,19 @@ let escape = String.map (fun c -> if c = '\'' then '_' else c) (* dirty *)
 
 let pp_global kn ref = str @@ escape @@ if is_inline_custom ref then find_custom ref else Common.pp_global kn ref
 
+let pp_generic vars = if vars == [] then mt () else pp_wrap_g @@ pp_list' "," pr_upper_id vars
+
 let rec pp_type vars = function
   | Tglob (ref,args) -> pp_global Type ref ++
     if args = []
       then mt ()
-      else pp_wrap_g @@ pp_list' "," (pp_type vars) args
+      else pp_generic vars
   | Tvar  i -> pr_upper_id @@ List.nth vars (pred i)
   | Tvar' i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
   | _ -> assert false
 
 let pp_comment s = str "// " ++ s ++ fnl ()
 let pp_comment_b = pp_wrap2 "/* " " */"
-
-let pp_generic vars = if vars != [] then pp_wrap_g @@ pp_list' "," pr_upper_id vars else mt ()
 
 let pp_enum name items =
   str "public static enum " ++ str name ++ str " " ++
@@ -110,7 +110,7 @@ let pp_class header body = header ++ str " " ++ pp_wrap_b_nl body
 let pp_method modifier (typ,vars) name (argtyps,argnames) body =
   let args = List.map (fun (argtyp,argname) -> (argtyp,argname)) @@ List.combine argtyps argnames in
   let pp_args = pp_list' ", " (fun (typ,name) -> str "final " ++ pp_type vars typ ++ str (" "^name)) args
-  in str modifier ++ if vars == [] then str " " else pp_generic vars ++ str " " ++ pp_type vars typ ++ str " " ++
+  in str modifier ++ if vars != [] then str " " ++ pp_generic vars else mt () ++ str " " ++ pp_type vars typ ++ str " " ++
      str name ++ str "(" ++ pp_args ++ str ")" ++
      pp_wrap_b_nl body
 
@@ -132,7 +132,7 @@ let pp_expr env (typ,vars) term =
     let base         = String.sub raw_name 0 i in
     let generic      = String.sub raw_name i (l - i) in
     let raw_consname = string_of_ppcmds @@ pp_global Cons ref in
-    let i'           = try pred @@ String.index raw_consname '.' with Not_found -> 0 in
+    let i'           = try succ @@ String.index raw_consname '.' with Not_found -> 0 in
     let l'           = String.length raw_consname in
     let consname     = String.sub raw_consname i' (l' - i')
     in str @@ base ^ "." ^ consname ^ generic in
@@ -208,10 +208,11 @@ let pp_expr env (typ,vars) term =
           let (k'',(name',output')) = pp_expr' k' env' term in
           let castedtyp = pp_consname typ ref in
           let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
-          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;"))
+          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;") ++ str "\n")
         | _ -> assert false (* TODO *) in
-      let (k3,cases) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
-      let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases
+      let (k3,cases_raw) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
+      let cases = str @@ let t = string_of_ppcmds cases_raw in String.sub t 0 @@ pred @@ String.length t (* DIRTY *) in
+      let switch = output ++ str ("Object " ^ resvar ^ " = null;\n") ++ pp_class (str @@ "switch (" ^ name ^ ".tag)") cases ++ str "\n" 
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
     | MLfix   (i,ids,defs)   -> mock (* push_vars (List.rev (Array.to_list ids)) env *)
