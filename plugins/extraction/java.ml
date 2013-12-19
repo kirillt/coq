@@ -334,7 +334,18 @@ let pp_function ref def  typ =
                        code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")) ++ str "\n" ++
                      (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
                        pp_lambda_return (arrow,names))
-         | _ -> assert false (* TODO: try to implement *)
+         | _ ->
+           if is_custom ref
+           then assert false
+             else let vars = List.map mktvar @@ range 1 @@ count_variables typ in
+                  let typname = pp_type vars typ in
+                  let fname = pp_global Term ref in
+                  let initname = fname ++ str "_init" in
+                  let (res,code) = pp_expr [] (typ,vars) @@ def
+                  in str "public static " ++ typname ++ str " " ++ fname ++ str " = " ++ initname ++ str ".create();\n" ++
+                     (pp_class (str "public static class " ++ initname) @@
+                       (pp_method false "public static" (typ,vars) "create" ([],[]) @@
+                         code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")))
 
 let pp_decl = function
   | Dtype (ref , vars, typ  ) -> pp_typedecl ref vars typ
