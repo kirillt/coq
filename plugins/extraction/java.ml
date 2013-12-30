@@ -190,8 +190,7 @@ let pp_expr env (typ,vars) term =
         and proper type of result variable *)
       (match f with
        | MLglob ref ->
-         let types        = search ref (* HACK *) in
-         let typ          = fold_to_arrow @@ drop (List.length args) types in
+         let (types,typ)  = search ref (* HACK *) in
          let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
          let (k'',args')  = List.fold_left step (k,[]) args in
          let      args''  = List.rev     args'  in
@@ -228,9 +227,11 @@ let pp_expr env (typ,vars) term =
       let env' = name1::env in
       let (k'',(name2,output2)) = pp_expr' k' env' t2
       in (k'',(name2,output1 ++ output2))
-    | MLglob   ref           -> mock' "MLglob"
+    | MLglob   ref           ->
+      let (types,typ) = search ref (* HACK *)
+      in return k @@ str "final " ++ pp_type vars (fold_to_arrow @@ List.concat [types;[typ]]) ++ (str @@ " " ^ (mkvar k) ^ " = ") ++ pp_global Term ref ++ str ".lambda();\n"
     | MLcons  (typ,ref,args) ->
-      let types = search ref (* HACK *) in
+      let (types,_)    = search ref (* HACK *) in
       let step (k',acc) (argtyp,argterm) = let res = pp_expr' k' env argterm in (fst res,(snd res)::acc) in
       let (k'',args')  = List.fold_left step (k,[]) @@ List.combine types args in
       let      args''  = List.rev     args'  in
@@ -284,7 +285,7 @@ let pp_constructor_field (i,typ) = str "public final " ++ typ () ++ str " field"
 let pp_constructor_args types = pp_list' ", " (fun (i,typ) -> typ () ++ str " arg" ++ i) types
 
 let pp_constructor_class vars father suffix (ref,types) =
-  temporary_typemap := (ref, types (* no output type *))::temporary_typemap.contents; (* HACK *)
+  temporary_typemap := (ref, (types, Tvar (-1) (* no output type *)))::temporary_typemap.contents; (* HACK *)
   let types  = List.mapi (fun i typ -> (str @@ Pervasives.string_of_int i, (fun _ -> pp_type vars typ))) types in
   let fields = List.mapi (fun i _ -> "field" ^ Pervasives.string_of_int i) types in
   let name   = pp_global Cons ref
@@ -335,7 +336,6 @@ let pp_typedecl ref vars typ =
                    str " extends " ++ pp_type vars typ) @@ str ""
 
 let pp_function ref def  typ =
-  temporary_typemap := (ref,unfold_arrows' typ)::temporary_typemap.contents; (* HACK *)
   if is_inline_custom ref
     then mt ()
     else match typ with
@@ -344,6 +344,7 @@ let pp_function ref def  typ =
              then assert false
              else let (args,term) = collect_lams def in
                   let (types,typ) = unfold_arrows_n (List.length args) typ in
+                  temporary_typemap := (ref,(types,typ))::temporary_typemap.contents; (* HACK *)
                   let  vars       = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types in
                   let  fname      = pp_global Term ref in
                   let  names      = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types in
