@@ -545,6 +545,38 @@ let record_constant_type env kn opt_typ =
     in let schema = (type_maxvar mlt, mlt)
     in add_type kn schema; schema
 
+(*s Mutable global cache for avoiding propagation of lots of arguments
+    and reducing size of changes to existent code *)
+
+let cache_size = 10
+let types_cache : (ml_ast,ml_type) Hashtbl.t = Hashtbl.create cache_size
+let count_cache : (ml_type,int)    Hashtbl.t = Hashtbl.create cache_size
+
+(* I am not sure yet, that this way is fully correct,
+   perhaps it will be necessary propogate numbers of terms
+   and memoize type for every (unique) term. *)
+
+let memoize_type term typ =
+  let add     = Hashtbl.add     types_cache term typ in
+  let replace = Hashtbl.replace types_cache term typ in
+  let count typ' =
+    try Hashtbl.find count_cache typ'
+    with Not_found ->
+      let i = type_maxvar typ
+      in Hashtbl.add count_cache typ' i;
+      i
+  in match term with
+    | MLrel  _ -> ()
+    | MLglob _ | MLcons _ ->
+      (try let old = Hashtbl.find types_cache term
+           in if count old < count typ
+              then replace
+              else add
+       with Not_found -> add)
+    | _ -> add
+
+let recall_type = Hashtbl.find types_cache
+
 (*S Extraction of a term. *)
 
 (* Precondition: [(c args)] is not a type scheme, and is informative. *)
@@ -553,7 +585,8 @@ let record_constant_type env kn opt_typ =
 (* [mlt] is the ML type we want our extraction of [(c args)] to have. *)
 
 let rec extract_term env mle mlt c args =
-  match kind_of_term c with
+  let memoize term = memoize_type term mlt; term
+  in memoize @@ match kind_of_term c with
     | App (f,a) ->
 	extract_term env mle mlt f (Array.to_list a @ args)
     | Lambda (n, t, d) ->

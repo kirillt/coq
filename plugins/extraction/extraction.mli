@@ -26,6 +26,11 @@ val extract_fixpoint :
 
 val extract_inductive : env -> mutual_inductive -> ml_ind
 
+(*s Mutable global cache for avoiding propagation of lots of arguments
+    and reducing size of changes to existent code *)
+
+val types_cache : (ml_ast,ml_type) Hashtbl.t
+
 (*s Is a [ml_decl] or a [ml_spec] logical ? *)
 
 val logical_decl : ml_decl -> bool
