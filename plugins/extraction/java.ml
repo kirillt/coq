@@ -204,11 +204,11 @@ let pp_expr env (typ,vars) term =
        | _ -> (* TODO *)
          let (k1,(fname,fcode)) = pp_expr' k env f in
          let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
-         let (k2,args')  = List.fold_left step (k1,[]) args in
-         let      args''  = List.rev     args'  in
-         let names        = List.map fst args'' in
-         let output       = pp_list "" @@ fcode :: (List.map snd args'') in
-         let call         =
+         let (k2,args') = List.fold_left step (k1,[]) args in
+         let     args'' = List.rev     args'  in
+         let names      = List.map fst args'' in
+         let output     = pp_list "" @@ fcode :: (List.map snd args'') in
+         let call       =
            str ("Object " ^ mkvar k2 ^ " = ") ++
            str fname ++
              (pp_list' "" str @@ List.map (fun name -> ".apply(" ^ name ^ ")") names) ++ str ";\n"
