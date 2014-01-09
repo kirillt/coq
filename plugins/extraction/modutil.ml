@@ -91,7 +91,7 @@ let patt_iter_references do_cons p =
     | Prel _ | Pwild -> ()
   in iter p
 
-let ast_iter_references do_term do_cons do_type a =
+let rec ast_iter_references do_term do_cons do_type a =
   let rec iter a =
     ast_iter iter a;
     match a with
@@ -100,7 +100,7 @@ let ast_iter_references do_term do_cons do_type a =
       | MLcase (ty,_,v) ->
 	type_iter_references do_type ty;
 	Array.iter (fun (_,p,_) -> patt_iter_references do_cons p) v
-
+      | MLtyped (a,typ) -> ast_iter_references do_term do_cons do_type a
       | MLrel _ | MLlam _ | MLapp _ | MLletin _ | MLtuple _ | MLfix _ | MLexn _
       | MLdummy | MLaxiom | MLmagic _ -> ()
   in iter a

@@ -267,6 +267,7 @@ let pp_expr env (typ,vars) term =
       let switch = output ++ str ("Object " (* TODO *) ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
+    | MLtyped (term,typ)     -> (* TODO *) pp_expr' k env term
     | MLfix   (i,ids,defs)   -> mock' "MLfix" (* push_vars (List.rev (Array.to_list ids)) env *)
     | MLexn    s             -> mock' "MLexn"
     | MLdummy                -> mock' "MLdummy"

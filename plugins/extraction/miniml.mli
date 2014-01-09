@@ -118,6 +118,7 @@ and ml_ast =
   | MLtuple  of ml_ast list
   | MLcase   of ml_type * ml_ast * ml_branch array
   | MLfix    of int * identifier array * ml_ast array
+  | MLtyped  of ml_ast * ml_type
   | MLexn    of string
   | MLdummy
   | MLaxiom

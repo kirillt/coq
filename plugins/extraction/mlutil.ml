@@ -379,7 +379,7 @@ let ast_map_branch f (c,ids,a) = (c,ids,f a)
 (* Warning: in [ast_map] we assume that [f] does not change the type
    of [MLcons] and of [MLcase] heads *)
 
-let ast_map f = function
+let rec ast_map f = function
   | MLlam (i,a) -> MLlam (i, f a)
   | MLletin (i,a,b) -> MLletin (i, f a, f b)
   | MLcase (typ,a,v) -> MLcase (typ,f a, Array.map (ast_map_branch f) v)
@@ -388,6 +388,7 @@ let ast_map f = function
   | MLcons (typ,c,l) -> MLcons (typ,c, List.map f l)
   | MLtuple l -> MLtuple (List.map f l)
   | MLmagic a -> MLmagic (f a)
+  | MLtyped (a,typ) -> MLtyped (ast_map f a,typ) (* I hope typ will not be changed =/ *)
   | MLrel _ | MLglob _ | MLexn _ | MLdummy | MLaxiom as a -> a
 
 (*s Map over asts, with binding depth as parameter. *)
@@ -396,7 +397,7 @@ let ast_map_lift_branch f n (ids,p,a) = (ids,p, f (n+(List.length ids)) a)
 
 (* Same warning as for [ast_map]... *)
 
-let ast_map_lift f n = function
+let rec ast_map_lift f n = function
   | MLlam (i,a) -> MLlam (i, f (n+1) a)
   | MLletin (i,a,b) -> MLletin (i, f n a, f (n+1) b)
   | MLcase (typ,a,v) -> MLcase (typ,f n a,Array.map (ast_map_lift_branch f n) v)
@@ -406,13 +407,14 @@ let ast_map_lift f n = function
   | MLcons (typ,c,l) -> MLcons (typ,c, List.map (f n) l)
   | MLtuple l -> MLtuple (List.map (f n) l)
   | MLmagic a -> MLmagic (f n a)
+  | MLtyped (a,typ) -> MLtyped (ast_map_lift f n a,typ)
   | MLrel _ | MLglob _ | MLexn _ | MLdummy | MLaxiom as a -> a
 
 (*s Iter over asts. *)
 
 let ast_iter_branch f (c,ids,a) = f a
 
-let ast_iter f = function
+let rec ast_iter f = function
   | MLlam (i,a) -> f a
   | MLletin (i,a,b) -> f a; f b
   | MLcase (_,a,v) -> f a; Array.iter (ast_iter_branch f) v
@@ -420,6 +422,7 @@ let ast_iter f = function
   | MLapp (a,l) -> f a; List.iter f l
   | MLcons (_,_,l) | MLtuple l -> List.iter f l
   | MLmagic a -> f a
+  | MLtyped (a,typ) -> ast_iter f a
   | MLrel _ | MLglob _ | MLexn _ | MLdummy | MLaxiom  -> ()
 
 (*S Operations concerning De Bruijn indices. *)
