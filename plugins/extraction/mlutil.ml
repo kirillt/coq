@@ -116,11 +116,23 @@ let put_magic_if b a = if b && lang () <> Scheme then MLmagic a else a
 
 let put_magic p a = if needs_magic p && lang () <> Scheme then MLmagic a else a
 
+(* Utility for walking on ASTs with MLtyped nodes *)
+let rec map_mltyped f =
+  function
+  | MLtyped (a,t) -> map_mltyped f a
+  | a -> f a
+
+(* Always when we replace node under MLtyped, we must wrap it back with MLtyped *)
+let rec map_mltyped' f =
+  function
+  | MLtyped (a,t) -> MLtyped (map_mltyped' f a,t)
+  | a -> f a
+
 let generalizable a =
   lang () <> Ocaml ||
-    match a with
+    map_mltyped (fun a -> match a with
       | MLapp _ -> false
-      | _ -> true (* TODO, this is just an approximation for the moment *)
+      | _ -> true) a (* TODO, this is just an approximation for the moment *)
 
 (*S ML type env. *)
 
@@ -369,6 +381,7 @@ let ast_iter_rel f =
     | MLapp (a,l) -> iter n a; List.iter (iter n) l
     | MLcons (_,_,l) | MLtuple l ->  List.iter (iter n) l
     | MLmagic a -> iter n a
+    | MLtyped (a,t) -> iter n a
     | MLglob _ | MLexn _ | MLdummy | MLaxiom -> ()
   in iter 0
 
@@ -388,7 +401,7 @@ let rec ast_map f = function
   | MLcons (typ,c,l) -> MLcons (typ,c, List.map f l)
   | MLtuple l -> MLtuple (List.map f l)
   | MLmagic a -> MLmagic (f a)
-  | MLtyped (a,typ) -> MLtyped (ast_map f a,typ) (* I hope typ will not be changed =/ *)
+  | MLtyped (a,typ) -> MLtyped (ast_map f a,typ) (* I assume that typ will not be changed =/ *)
   | MLrel _ | MLglob _ | MLexn _ | MLdummy | MLaxiom as a -> a
 
 (*s Map over asts, with binding depth as parameter. *)
@@ -459,6 +472,7 @@ let nb_occur_match =
     | MLapp (a,l) -> List.fold_left (fun r a -> r+(nb k a)) (nb k a) l
     | MLcons (_,_,l) | MLtuple l -> List.fold_left (fun r a -> r+(nb k a)) 0 l
     | MLmagic a -> nb k a
+    | MLtyped (a,t) -> nb k a
     | MLglob _ | MLexn _ | MLdummy | MLaxiom -> 0
   in nb 1
 
@@ -557,6 +571,7 @@ let is_regular_match br =
 
 let collect_lams =
   let rec collect acc = function
+    | MLtyped (a,t) -> collect acc a
     | MLlam(id,t) -> collect (id::acc) t
     | x           -> acc,x
   in collect []
@@ -567,6 +582,7 @@ let collect_n_lams =
   let rec collect acc n t =
     if n = 0 then acc,t
     else match t with
+      | MLtyped (a,t) -> collect acc n a
       | MLlam(id,t) -> collect (id::acc) (n-1) t
       | _ -> assert false
   in collect []
@@ -576,12 +592,14 @@ let collect_n_lams =
 let rec remove_n_lams n t =
   if n = 0 then t
   else match t with
+      | MLtyped (a,t) -> remove_n_lams n a
       | MLlam(_,t) -> remove_n_lams (n-1) t
       | _ -> assert false
 
 (*s [nb_lams] gives the number of head [MLlam]. *)
 
 let rec nb_lams = function
+  | MLtyped (a,t) -> nb_lams a
   | MLlam(_,t) -> succ (nb_lams t)
   | _ -> 0
 
@@ -799,7 +817,7 @@ let rec merge_ids ids ids' = match ids,ids' with
   | i::ids, i'::ids' ->
       (if i = Dummy then i' else i) :: (merge_ids ids ids')
 
-let is_exn = function MLexn _ -> true | _ -> false
+let is_exn = map_mltyped (function MLexn _ -> true | _ -> false)
 
 let rec permut_case_fun br acc =
   let nb = ref max_int in
@@ -856,20 +874,20 @@ let rec iota_red i lift br ((typ,r,a) as cons) =
    traverse matches in the head of the first match *)
 
 let iota_gen br hd =
-  let rec iota k = function
+  let rec iota k = map_mltyped' (function
     | MLcons (typ,r,a) -> iota_red 0 k br (typ,r,a)
     | MLcase(typ,e,br') ->
 	let new_br =
 	  Array.map (fun (i,p,c)->(i,p,iota (k+(List.length i)) c)) br'
 	in MLcase(typ,e,new_br)
-    | _ -> raise Impossible
+    | _ -> raise Impossible)
   in iota 0 hd
 
-let is_atomic = function
+let is_atomic = map_mltyped (function
   | MLrel _ | MLglob _ | MLexn _ | MLdummy -> true
-  | _ -> false
+  | _ -> false)
 
-let is_imm_apply = function MLapp (MLrel 1, _) -> true | _ -> false
+let rec is_imm_apply = function MLapp (MLrel 1, _) -> true | MLtyped (a,t) -> is_imm_apply a | _ -> false
 
 (** Program creates a let-in named "program_branch_NN" for each branch of match.
     Unfolding them leads to more natural code (and more dummy removal) *)
@@ -892,7 +910,7 @@ let expand_linear_let o id e =
 
 (* Some beta-iota reductions + simplifications. *)
 
-let rec simpl o = function
+let rec simpl o = map_mltyped' (function
   | MLapp (f, []) -> simpl o f
   | MLapp (f, a) -> simpl_app o (List.map (simpl o) a) (simpl o f)
   | MLcase (typ,e,br) ->
@@ -914,11 +932,11 @@ let rec simpl o = function
       if ast_occurs_itvl 1 n c.(i) then
 	MLfix (i, ids, Array.map (simpl o) c)
       else simpl o (ast_lift (-n) c.(i)) (* Dummy fixpoint *)
-  | a -> ast_map (simpl o) a
+  | a -> ast_map (simpl o) a)
 
 (* invariant : list [a] of arguments is non-empty *)
 
-and simpl_app o a = function
+and simpl_app o a = map_mltyped' (function
   | MLapp (f',a') -> simpl_app o (a'@a) f'
   | MLlam (Dummy,t) ->
       simpl o (MLapp (ast_pop t, List.tl a))
@@ -944,7 +962,7 @@ and simpl_app o a = function
       in simpl o (MLcase (typ,e,br'))
   | (MLdummy | MLexn _) as e -> e
 	(* We just discard arguments in those cases. *)
-  | f -> MLapp (f,a)
+  | f -> MLapp (f,a))
 
 (* Invariant : all empty matches should now be [MLexn] *)
 
@@ -1041,7 +1059,7 @@ let kill_dummy_lams c =
 let eta_expansion_sign s (ids,c) =
   let rec abs ids rels i = function
     | [] ->
-	let a = List.rev_map (function MLrel x -> MLrel (i-x) | a -> a) rels
+	let a = List.rev_map (map_mltyped' (function MLrel x -> MLrel (i-x) | a -> a)) rels
 	in ids, MLapp (ast_lift (i-1) c, a)
     | Keep :: l -> abs (anonymous :: ids) (MLrel i :: rels) (i+1) l
     | Kill _ :: l -> abs (Dummy :: ids) (MLdummy :: rels) (i+1) l
@@ -1078,12 +1096,12 @@ let term_expunge s (ids,c) =
 let kill_dummy_args ids r t =
   let m = List.length ids in
   let bl = List.rev_map sign_of_id ids in
-  let rec found n = function
+  let rec found n = map_mltyped (function
     | MLrel r' when r' = r + n -> true
     | MLmagic e -> found n e
-    | _ -> false
+    | _ -> false)
   in
-  let rec killrec n = function
+  let rec killrec n = map_mltyped' (function
     | MLapp(e, a) when found n e ->
 	let k = max 0 (m - (List.length a)) in
 	let a = List.map (killrec n) a in
@@ -1093,7 +1111,7 @@ let kill_dummy_args ids r t =
     | e when found n e ->
 	let a = select_via_bl bl (eta_args m) in
 	named_lams ids (MLapp (ast_lift m e, a))
-    | e -> ast_map_lift killrec n e
+    | e -> ast_map_lift killrec n e)
   in killrec 0 t
 
 (*s The main function for local [dummy] elimination. *)
@@ -1131,6 +1149,7 @@ let rec kill_dummy = function
 (* Similar function, but acting only on head lambdas and let-ins *)
 
 and kill_dummy_hd = function
+  | MLtyped (a,t) -> MLtyped (kill_dummy_hd a,t)
   | MLlam(id,e) -> MLlam(id, kill_dummy_hd e)
   | MLletin(id,c,e) ->
       (try
@@ -1164,10 +1183,10 @@ let normalize a =
 let general_optimize_fix f ids n args m c =
   let v = Array.make n 0 in
   for i=0 to (n-1) do v.(i)<-i done;
-  let aux i = function
+  let aux i = map_mltyped (function
     | MLrel j when v.(j-1)>=0 ->
 	if ast_occurs (j+1) c then raise Impossible else v.(j-1)<-(-i-1)
-    | _ -> raise Impossible
+    | _ -> raise Impossible)
   in list_iter_i aux args;
   let args_f = List.rev_map (fun i -> MLrel (i+m+1)) (Array.to_list v) in
   let new_f = anonym_tmp_lams (MLapp (MLrel (n+m+1),args_f)) m in
@@ -1180,22 +1199,22 @@ let optimize_fix a =
     let ids,a' = collect_lams a in
     let n = List.length ids in
     if n = 0 then a
-    else match a' with
+    else map_mltyped' (fun a' -> match a' with
       | MLfix(_,[|f|],[|c|]) ->
 	  let new_f = MLapp (MLrel (n+1),eta_args n) in
 	  let new_c = named_lams ids (normalize (ast_subst new_f c))
 	  in MLfix(0,[|f|],[|new_c|])
       | MLapp(a',args) ->
 	  let m = List.length args in
-	  (match a' with
-	     | MLfix(_,_,_) when
-		 (test_eta_args_lift 0 n args) && not (ast_occurs_itvl 1 m a')
-		 -> a'
-	     | MLfix(_,[|f|],[|c|]) ->
-		 (try general_optimize_fix f ids n args m c
-		  with Impossible -> a)
-	     | _ -> a)
-      | _ -> a
+        map_mltyped' (fun a' -> match a' with
+           | MLfix(_,_,_) when
+           (test_eta_args_lift 0 n args) && not (ast_occurs_itvl 1 m a')
+           -> a'
+           | MLfix(_,[|f|],[|c|]) ->
+           (try general_optimize_fix f ids n args m c
+            with Impossible -> a)
+           | _ -> a) a'
+      | _ -> a) a'
 
 (*S Inlining. *)
 
@@ -1211,13 +1230,14 @@ let rec ml_size = function
   | MLfix(_,_,f) -> ml_size_array f
   | MLletin (_,_,t) -> ml_size t
   | MLmagic t -> ml_size t
+  | MLtyped (a,t) -> ml_size a
   | MLglob _ | MLrel _ | MLexn _ | MLdummy | MLaxiom -> 0
 
 and ml_size_list l = List.fold_left (fun a t -> a + ml_size t) 0 l
 
 and ml_size_array a = Array.fold_left (fun a t -> a + ml_size t) 0 a
 
-let is_fix = function MLfix _ -> true | _ -> false
+let is_fix = map_mltyped (function MLfix _ -> true | _ -> false)
 
 (*s Strictness *)
 
@@ -1241,7 +1261,7 @@ let pop n l = List.map (fun x -> if x<=n then raise Toplevel else x-n) l
    variable to the candidates?  We use this flag to check only the external
    lambdas, those that will correspond to arguments. *)
 
-let rec non_stricts add cand = function
+let rec non_stricts add cand = map_mltyped (function
   | MLlam (id,t) ->
       let cand = lift 1 cand in
       let cand = if add then 1::cand else cand in
@@ -1276,7 +1296,7 @@ let rec non_stricts add cand = function
   | MLmagic t ->
       non_stricts add cand t
   | _ ->
-      cand
+      cand)
 
 (* The real test: we are looking for internal non-strict variables, so we start
    with no candidates, and the only positive answer is via the [Toplevel]

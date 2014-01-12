@@ -182,6 +182,7 @@ let rec pp_expr par env args =
     | MLmagic a ->
 	pp_apply (str "unsafeCoerce") par (pp_expr true env [] a :: args)
     | MLaxiom -> pp_par par (str "Prelude.error \"AXIOM TO BE REALIZED\"")
+    | MLtyped _ -> assert false
 
 and pp_cons_pat par r ppl =
   pp_par par

@@ -90,7 +90,7 @@ let rec count_variables typ =
     | Tglob (ref,args) -> count_variables' @@ args
     | Tarr _ as arrow -> count_variables' @@ unfold_arrows' arrow
     | Tvar i -> Pervasives.max acc i
-    | _ -> assert false
+    | _ -> (* TODO assert false *) acc
   in assert (type_maxvar typ = work 0 typ) ; type_maxvar typ
 
 and count_variables' types =
@@ -98,6 +98,44 @@ and count_variables' types =
     | typ::types' -> work (Pervasives.max acc @@ count_variables typ) types'
     | [] -> acc
   in work 0 types
+
+(* debugging facility *)
+let rec eq_types prefix =
+  let rec eq_types_multi was prefix =
+    function
+    | lt::lts, rt::rts ->
+      (match eq_types "" (lt,rt) with
+       | Some error -> eq_types_multi true (prefix ^ error ^ "; ") (lts,rts)
+       | None -> eq_types_multi was prefix (lts,rts))
+    | [], [] -> if was then Some prefix else None
+    | _, _ -> Some (prefix ^ "different lengths of lists")
+  in function
+  | Tunknown     , Tunknown      -> None
+  | Taxiom       , Taxiom        -> None
+  | Tdummy kl    , Tdummy kr     -> if kl == kr then None else Some (prefix ^ "Tdummy")
+  | Tmeta  ml    , Tmeta  mr     -> if ml.id == mr.id then
+    (match (ml.contents,mr.contents) with
+     | (Some tl,Some tr) -> eq_types "Tmeta (some): " (tl,tr)
+     | (None,None) -> None
+     | _ -> Some (prefix ^ "Tmeta: one some, other none"))
+    else Some (prefix ^ "Tmeta, different ids")
+  | Tglob (rl,al), Tglob (rr,ar) ->
+    if rl == rr
+      then (match eq_types_multi false "" (al,ar) with
+       | Some error -> Some (prefix ^ "Tglob: different args (" ^ error ^ ")")
+       | None -> None)
+      else Some (prefix ^ "Tglob: different refs")
+  | Tarr  (ll,rl), Tarr  (lr,rr) ->
+  (match (eq_types "" (ll,lr), eq_types "" (rl,rr)) with
+   | Some l, Some r -> Some (prefix ^ "Tarr: different domains (" ^ l ^ ") and different codomains (" ^ r ^ ")")
+   | Some l, None -> Some (prefix ^ "Tarr: different domains (" ^ l ^ ")")
+   | None, Some r -> Some (prefix ^ "Tarr: different codomains (" ^ r ^ ")")
+   | None, None -> None)
+  | Tvar   il    , Tvar   ir     -> if il == ir then None else Some (prefix ^ "Tvar")
+  | Tvar   il    , Tvar'  ir     -> if il == ir then None else Some (prefix ^ "Tvar")
+  | Tvar'  il    , Tvar   ir     -> if il == ir then None else Some (prefix ^ "Tvar'")
+  | Tvar'  il    , Tvar'  ir     -> if il == ir then None else Some (prefix ^ "Tvar'")
+  | _ -> Some (prefix ^ "Wrong constructors")
 
 (* Java utilities *)
 
@@ -123,9 +161,9 @@ let rec pp_type vars =
     | Tvar   i -> (try pr_upper_id @@ List.nth vars (pred i) with Failure "nth" -> str @@ "?" ^ Pervasives.string_of_int i)
     | Tvar'  i -> pp_type vars @@ Tvar i (* TODO: not sure about that *)
     | Tmeta  m ->
-      Option.default (str @@
-        "/* meta " ^ Pervasives.string_of_int m.id ^ " */") @@
-      Option.map (pp_type vars) m.contents
+      (match m.contents with
+       | Some typ -> (* str "/* Tmeta */ " ++ *) pp_type vars typ
+       | None -> str "/* Tmeta (empty) */")
     | _ -> assert false
 
 let pp_comment s = str "// " ++ s ++ fnl ()
@@ -145,13 +183,6 @@ let pp_method binded modifier (typ,vars) name (argtyps,argnames) body =
      pp_wrap_b_nl body
 
 (* Pretty-printing of expressions *)
-
-let temporary_typemap = ref [] (* HACK *)
-let search ref =
-  let rec work = function
-    | [] -> assert false
-    | (ref',typ)::tl -> if ref = ref' then typ else work tl
-  in work temporary_typemap.contents
 
 let pp_expr env (typ,vars) term =
   let pp_consname typ ref =
@@ -174,66 +205,65 @@ let pp_expr env (typ,vars) term =
        with Not_found -> str raw_name in
   let mkvar  i   = "var" ^ Pervasives.string_of_int i in
   let return i r = (succ i,(mkvar i, r)) in
-  let rec pp_expr' k env =
-    let mock' msg = return k @@ pp_type vars typ ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
+  let wrap l r (k,(n,out)) = (k,(n, str l ++ out ++ str r)) in
+  let rec pp_expr' k env maybetyp =
+    let mock' msg = return k @@ pp_type vars (Option.default ((*assert false*)Tvar 1) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
     function
     (* I use here my own names for some expressions instead of given ids;
       make sure that all such ids aren't used (in my cases there were only relative variables). *)
-    | MLrel    i             -> let name = List.nth env (pred i) in (k,(name,mt ())) 
+    | MLrel    i             -> let name = try List.nth env (pred i) with Failure "nth" -> "FAIL_" ^ Pervasives.string_of_int i ^ "_of_" ^ Pervasives.string_of_int (List.length env) in (k,(name,mt ())) 
     | MLapp   (f,args)       ->
-      (* So far, we can't check type of function against arguments;
-         one of the solutions: to implement application one-by-one (via lambdas).
-         Also we need to instantiate generic parameters when apply polymorph functions. *)
-      (* TODO
-        We also need to instantiate types of generics in some cases:
-        e.g. call `insert(list<tree<a>>,...)' requires generic parameter `<tree<a>>'
-        and proper type of result variable *)
+      let restyp = Option.default ((* assert false *) Tvar 1) maybetyp in
       (match f with
        | MLglob ref ->
-         let (types,typ)  = search ref (* HACK *) in
-         let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
+         let step (k',acc) arg = let res = pp_expr' k' env None arg in (fst res,(snd res)::acc) in
          let (k'',args')  = List.fold_left step (k,[]) args in
          let      args''  = List.rev     args'  in
          let names        = List.map fst args'' in
          let output       = pp_list "" @@ List.map snd args'' in
          let call         =
-           str "final " ++ pp_type vars typ ++ str (" " ^ mkvar k'' ^ " = ") ++
+           str "final " ++ pp_type vars restyp ++ str (" " ^ mkvar k'' ^ " = ") ++
            pp_global Term ref ++
              str (".apply") ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";\n"
          in return k'' @@ output ++ call
        | _ -> (* TODO *)
-         let (k1,(fname,fcode)) = pp_expr' k env f in
-         let step (k',acc) arg = let res = pp_expr' k' env arg in (fst res,(snd res)::acc) in
+         let (k1,(fname,fcode)) = pp_expr' k env None f in
+         let step (k',acc) arg = let res = pp_expr' k' env None arg in (fst res,(snd res)::acc) in
          let (k2,args') = List.fold_left step (k1,[]) args in
          let     args'' = List.rev     args'  in
          let names      = List.map fst args'' in
          let output     = pp_list "" @@ fcode :: (List.map snd args'') in
          let call       =
-           str ("Object " ^ mkvar k2 ^ " = ") ++
+           str "final " ++ pp_type vars restyp ++ str (" " ^ mkvar k2 ^ " = ") ++
            str fname ++
              (pp_list' "" str @@ List.map (fun name -> ".apply(" ^ name ^ ")") names) ++ str ";\n"
          in return k2 @@ output ++ call
-       (* TODO
-         For lambdas I need:
-           1) smart representation of lambdas as objects;
-           2) get types for variables, etc.
-             a) infer it manually
-             b) look, what can suggest Coq source
-             c) make all variables be Object and cast them when apply function *)
        )
-    | MLlam   (_,term)       -> mock' "MLlam" (* collect_lams a ; push_vars (List.map id_of_mlid fl) env *)
+    | MLlam (_,term)       ->
+      (* TODO: problems with new type-variables: java can't express them *)
+      let rec work = function
+        | Some (Tarr (l,r) as arrow) ->
+          let arrow' = pp_type vars arrow in
+          let (k',arg) = (succ k, mkvar k) in
+          let (k2,(name,code)) = pp_expr' k' (arg::env) None term
+          in return k2 @@ str "final " ++ arrow' ++ str (" " ^ mkvar k2 ^ " = new ") ++
+            (pp_class (arrow' ++ str "()") @@
+               str "@Override\n" ++
+               (pp_method true "public" (r,vars) "apply" ([l],[arg]) @@
+                  code ++ (str @@ "return " ^ name ^ ";"))) ++ str ";"
+        | Some (Tmeta m) -> work m.contents (* TODO: need I map with vars like in pp_type? *)
+        | Some _ -> mock' "strange lambda type"
+        | None -> mock' "no type of lambda"
+       in work maybetyp
     | MLletin (_,t1,t2)      ->
-      let (k',(name1,output1)) = pp_expr' k env t1 (* push_vars [id_of_mlid id] env *) in
+      let (k',(name1,output1)) = pp_expr' k env None t1 (* push_vars [id_of_mlid id] env *) in
       let env' = name1::env in
-      let (k'',(name2,output2)) = pp_expr' k' env' t2
+      let (k'',(name2,output2)) = pp_expr' k' env' None t2
       in (k'',(name2,output1 ++ output2))
-    | MLglob   ref           ->
-      let (types,typ) = search ref (* HACK *)
-      in return k @@ str "final " ++ pp_type vars (fold_to_arrow @@ List.concat [types;[typ]]) ++ (str @@ " " ^ (mkvar k) ^ " = ") ++ pp_global Term ref ++ str ".lambda();\n"
+    | MLglob   ref           -> return k @@ str "final " ++ pp_type vars (Option.default ((*assert false*)Tvar 1) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = ") ++ pp_global Term ref ++ str ".lambda();\n"
     | MLcons  (typ,ref,args) ->
-      let (types,_)    = search ref (* HACK *) in
-      let step (k',acc) (argtyp,argterm) = let res = pp_expr' k' env argterm in (fst res,(snd res)::acc) in
-      let (k'',args')  = List.fold_left step (k,[]) @@ List.combine types args in
+      let step (k',acc) arg = let res = pp_expr' k' env None arg in (fst res,(snd res)::acc) in
+      let (k'',args')  = List.fold_left step (k,[]) args in
       let      args''  = List.rev     args'  in
       let names        = List.map fst args'' in
       let output       = pp_list "" @@ List.map snd args'' in
@@ -245,35 +275,44 @@ let pp_expr env (typ,vars) term =
     | MLtuple (terms)        -> mock' "MLtuple" (* assert (args=[]); *)
     | MLcase  (typ,term,brs) ->
       (* Other way (maybe better) is to generate eliminators *)
+      let restyp = Option.default ((*assert false*)Tvar 1) maybetyp in
       let (k1,resvar) = (succ k, mkvar k) in
-      let (k2,(name,output)) = pp_expr' k1 env term in
+      let (k2,(name,output)) = pp_expr' k1 env None term in
       let case (k,output) = function
         | (ids,Pusual ref,term) ->
           let (k' ,casted) = (succ k, mkvar k) in
           let env' = List.fold_left (fun acc i -> (casted ^ ".field" ^ Pervasives.string_of_int i)::acc) env @@ List.mapi (fun i _ -> i) ids in
-          let (k'',(name',output')) = pp_expr' k' env' term in
+          let (k'',(name',output')) = pp_expr' k' env' None term in
           let castedtyp = pp_consname typ ref in
+          let debug = str "/* " ++ (pp_list' "; " (fun (i,mlid) -> str (Pervasives.string_of_int i ^ " : " ^ (string_of_id @@ id_of_mlid mlid))) @@ List.mapi (fun i x -> (i,x)) ids) ++ str " */" in
           let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
-          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;") ++ str "\n")
+          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ debug ++ body ++ str "break;") ++ str "\n")
         | (ids,Pcons (ref,ps),term) -> assert false
         | (ids,Ptuple (ps),term) -> assert false
         | (ids,Prel i,term) -> assert false
         | (ids,Pwild,term) ->
-          let (k',(name',output')) = pp_expr' k env term
+          let (k',(name',output')) = pp_expr' k env None term
           in (k', output' ++ (pp_class (str "default:") @@ str (resvar ^ " = " ^ name' ^ ";\n")))
       in
       let (k3,cases_raw) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
       let cases = str @@ let t = string_of_ppcmds cases_raw in String.sub t 0 @@ pred @@ String.length t (* DIRTY *) in
-      let switch = output ++ str ("Object " (* TODO *) ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
+      let switch = output ++ pp_type vars restyp ++ str ((* TODO *) " " ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
-    | MLtyped (term,typ)     -> (* TODO *) pp_expr' k env term
+    | MLtyped (term,typ)     ->
+      (match maybetyp with
+       | Some typ' ->
+         (match eq_types "" (typ,typ') with (* debug *)
+          | Some error -> pp_expr' k env (Some typ) term
+          (* mock' @@ "\nOur type is `" ^ (string_of_ppcmds @@ pp_type vars typ) ^ "`; theirs is `" ^ (string_of_ppcmds @@ pp_type vars typ') ^ "`" ^ "\nMessage: " ^ error *)
+          | None -> pp_expr' k env (Some typ) term)
+       | None -> pp_expr' k env (Some typ) term)
     | MLfix   (i,ids,defs)   -> mock' "MLfix" (* push_vars (List.rev (Array.to_list ids)) env *)
     | MLexn    s             -> mock' "MLexn"
     | MLdummy                -> mock' "MLdummy"
     | MLmagic  a             -> mock' "MLmagic"
     | MLaxiom                -> mock' "MLaxiom"
-  in snd @@ pp_expr' 0 env term
+  in snd @@ pp_expr' 0 env (Some typ) term
 
 (* Pretty-printing of inductive types *)
 
@@ -286,7 +325,6 @@ let pp_constructor_field (i,typ) = str "public final " ++ typ () ++ str " field"
 let pp_constructor_args types = pp_list' ", " (fun (i,typ) -> typ () ++ str " arg" ++ i) types
 
 let pp_constructor_class vars father suffix (ref,types) =
-  temporary_typemap := (ref, (types, Tvar (-1) (* no output type *)))::temporary_typemap.contents; (* HACK *)
   let types  = List.mapi (fun i typ -> (str @@ Pervasives.string_of_int i, (fun _ -> pp_type vars typ))) types in
   let fields = List.mapi (fun i _ -> "field" ^ Pervasives.string_of_int i) types in
   let name   = pp_global Cons ref
@@ -345,7 +383,6 @@ let pp_function ref def  typ =
              then assert false
              else let (args,term) = collect_lams def in
                   let (types,typ) = unfold_arrows_n (List.length args) typ in
-                  temporary_typemap := (ref,(types,typ))::temporary_typemap.contents; (* HACK *)
                   let  vars       = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types in
                   let  fname      = pp_global Term ref in
                   let  names      = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types in
@@ -355,7 +392,7 @@ let pp_function ref def  typ =
                       | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
                       | (Tarr _ as arrow, names) ->
                         str "new " ++ pp_type vars arrow ++ (
-                          pp_class (str "() ") @@ pp_lambda_method (arrow,names)) ++ str ";"
+                          pp_class (str "()") @@ pp_lambda_method (arrow,names)) ++ str ";"
                       | _ -> assert false
                     and pp_lambda_method = function
                       | (Tarr (l,r),name::rest) ->
