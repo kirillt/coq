@@ -99,6 +99,8 @@ val eta_args_sign : int -> signature -> ml_ast list
 
 (*s Utility functions over ML terms. *)
 
+val glue_type : ml_type -> ml_ast -> ml_ast
+
 val mlapp : ml_ast -> ml_ast list -> ml_ast
 val ast_map : (ml_ast -> ml_ast) -> ml_ast -> ml_ast
 val ast_map_lift : (int -> ml_ast -> ml_ast) -> int -> ml_ast -> ml_ast

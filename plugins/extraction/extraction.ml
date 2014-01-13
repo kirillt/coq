@@ -553,76 +553,71 @@ let record_constant_type env kn opt_typ =
 (* [mlt] is the ML type we want our extraction of [(c args)] to have. *)
 
 let rec extract_term env mle mlt c args =
-  match kind_of_term c with
-    | App (f,a) ->
-	extract_term' env mle mlt f (Array.to_list a @ args)
-    | Lambda (n, t, d) ->
-	let id = id_of_name n in
-	(match args with
-	   | a :: l ->
-	       (* We make as many [LetIn] as possible. *)
- 	       let d' = mkLetIn (Name id,a,t,applistc d (List.map (lift 1) l))
-	       in extract_term' env mle mlt d' []
-	   | [] ->
-	       let env' = push_rel_assum (Name id, t) env in
-	       let id, a =
-		 try check_default env t; Id id, new_meta()
-		 with NotDefault d -> Dummy, Tdummy d
-	       in
-	       let b = new_meta () in
-	       (* If [mlt] cannot be unified with an arrow type, then magic! *)
-	       let magic = needs_magic (mlt, Tarr (a, b)) in
-	       let d' = extract_term' env' (Mlenv.push_type mle a) b d [] in
-	       put_magic_if magic (MLlam (id, d')))
-    | LetIn (n, c1, t1, c2) ->
-	let id = id_of_name n in
-	let env' = push_rel (Name id, Some c1, t1) env in
-	(* We directly push the args inside the [LetIn].
-           TODO: the opt_let_app flag is supposed to prevent that *)
-	let args' = List.map (lift 1) args in
-	(try
-	  check_default env t1;
-	  let a = new_meta () in
-	  let c1' = extract_term' env mle a c1 [] in
-	  (* The type of [c1'] is generalized and stored in [mle]. *)
-	  let mle' =
-	    if generalizable c1'
-	    then Mlenv.push_gen mle a
-	    else Mlenv.push_type mle a
-	  in
-	  MLletin (Id id, c1', extract_term' env' mle' mlt c2 args')
-	with NotDefault d ->
-	  let mle' = Mlenv.push_std_type mle (Tdummy d) in
-	  ast_pop (extract_term' env' mle' mlt c2 args'))
-    | Const kn ->
-	extract_cst_app env mle mlt kn args
-    | Construct cp ->
-	extract_cons_app env mle mlt cp args
-    | Rel n ->
-	(* As soon as the expected [mlt] for the head is known, *)
-	(* we unify it with an fresh copy of the stored type of [Rel n]. *)
-	let extract_rel mlt = put_magic (mlt, Mlenv.get mle n) (MLrel n)
-	in extract_app env mle mlt extract_rel args
-    | Case ({ci_ind=ip},_,c0,br) ->
- 	extract_app env mle mlt (extract_case env mle (ip,c0,br)) args
-    | Fix ((_,i),recd) ->
- 	extract_app env mle mlt (extract_fix env mle i recd) args
-    | CoFix (i,recd) ->
- 	extract_app env mle mlt (extract_fix env mle i recd) args
-    | Cast (c,_,_) -> extract_term' env mle mlt c args
-    | Ind _ | Prod _ | Sort _ | Meta _ | Evar _ | Var _ -> assert false
-
-and extract_term' env mle mlt c args =
-  let term = extract_term env mle mlt c args
+  let term =
+    match kind_of_term c with
+      | App (f,a) -> extract_term env mle mlt f (Array.to_list a @ args)
+      | Lambda (n, t, d) ->
+      let id = id_of_name n in
+      (match args with
+         | a :: l ->
+             (* We make as many [LetIn] as possible. *)
+             let d' = mkLetIn (Name id,a,t,applistc d (List.map (lift 1) l))
+             in extract_term env mle mlt d' []
+         | [] ->
+             let env' = push_rel_assum (Name id, t) env in
+             let id, a =
+           try check_default env t; Id id, new_meta()
+           with NotDefault d -> Dummy, Tdummy d
+             in
+             let b = new_meta () in
+             (* If [mlt] cannot be unified with an arrow type, then magic! *)
+             let magic = needs_magic (mlt, Tarr (a, b)) in
+             let d' = extract_term env' (Mlenv.push_type mle a) b d [] in
+             put_magic_if magic (MLlam (id, d')))
+      | LetIn (n, c1, t1, c2) ->
+      let id = id_of_name n in
+      let env' = push_rel (Name id, Some c1, t1) env in
+      (* We directly push the args inside the [LetIn].
+         TODO: the opt_let_app flag is supposed to prevent that *)
+      let args' = List.map (lift 1) args in
+      (try
+        check_default env t1;
+        let a = new_meta () in
+        let c1' = extract_term env mle a c1 [] in
+        (* The type of [c1'] is generalized and stored in [mle]. *)
+        let mle' =
+          if generalizable c1'
+          then Mlenv.push_gen mle a
+          else Mlenv.push_type mle a
+        in
+        MLletin (Id id, c1', extract_term env' mle' mlt c2 args')
+      with NotDefault d ->
+        let mle' = Mlenv.push_std_type mle (Tdummy d) in
+        ast_pop (extract_term env' mle' mlt c2 args'))
+      | Const     kn -> extract_cst_app env mle mlt kn args
+      | Construct cp -> extract_cons_app env mle mlt cp args
+      | Rel n ->
+      (* As soon as the expected [mlt] for the head is known,
+         we unify it with an fresh copy of the stored type of [Rel n]. *)
+      let extract_rel mlt = put_magic (mlt, Mlenv.get mle n) (MLrel n)
+      in extract_app env mle mlt extract_rel args
+      | Case ({ci_ind=ip},_,c0,br) ->
+      extract_app env mle mlt (extract_case env mle (ip,c0,br)) args
+      | Fix ((_,i),recd) ->
+      extract_app env mle mlt (extract_fix env mle i recd) args
+      | CoFix (i,recd) ->
+      extract_app env mle mlt (extract_fix env mle i recd) args
+      | Cast (c,_,_) -> extract_term env mle mlt c args
+      | Ind _ | Prod _ | Sort _ | Meta _ | Evar _ | Var _ -> assert false
   in match lang () with
-    | Java -> MLtyped (term, mlt)
+    | Java -> glue_type mlt term
     | _ -> term
 
 (*s [extract_maybe_term] is [extract_term] for usual terms, else [MLdummy] *)
 
 and extract_maybe_term env mle mlt c =
   try check_default env (type_of env c);
-    extract_term' env mle mlt c []
+    extract_term env mle mlt c []
   with NotDefault d ->
     put_magic (mlt, Tdummy d) MLdummy
 
@@ -805,7 +800,7 @@ and extract_case env mle ((kn,i) as ip,c,br) mlt =
       let metas = Array.init (List.length oi.ip_vars) new_meta in
       (* The extraction of the head. *)
       let type_head = Tglob (IndRef ip, Array.to_list metas) in
-      let a = extract_term' env mle type_head c [] in
+      let a = extract_term env mle type_head c [] in
       (* The extraction of each branch. *)
       let extract_branch i =
 	let r = ConstructRef (ip,i+1) in
@@ -925,7 +920,7 @@ let extract_std_constant env kn body typ =
   (* The according Coq environment. *)
   let env = push_rels_assum rels env in
   (* The real extraction: *)
-  let e = extract_term' env mle t' c [] in
+  let e = extract_term env mle t' c [] in
   (* Expunging term and type from dummy lambdas. *)
   let trm = term_expunge s (ids,e) in
   let trm = handle_exn (ConstRef kn) n (fun i -> fst (List.nth rels (i-1))) trm
