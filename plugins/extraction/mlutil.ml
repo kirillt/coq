@@ -758,14 +758,15 @@ let branch_as_fun typ (l,p,c) =
       MLcons (typ, r, List.map pat2rel pl)
     | _ -> raise Impossible
   in
-  let rec genrec n = function
+  let rec genrec n = iter_mltyped (function
     | MLrel i as c ->
 	let i' = i-n in
 	if i'<1 then c
 	else if i'>nargs then MLrel (i-nargs+1)
 	else raise Impossible
     | MLcons _ as cons' when cons' = ast_lift n cons -> MLrel (n+1)
-    | a -> ast_map_lift genrec n a
+    | MLtyped _ -> raise (Failure "MLtyped must be already eliminated")
+    | a -> ast_map_lift genrec n a)
   in genrec 0 c
 
 (*s [branch_as_cst (l,p,c)] tries to see branch [c] as a constant
