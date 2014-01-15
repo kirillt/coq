@@ -57,6 +57,11 @@ let drop n xs =
     | (i,x::xs) -> work ((pred i),xs)
   in work (n,xs)
 
+let fold_special f f' a l =
+  let f_without_last (acc,last) x = (f' acc last,x) in
+  let (res,last) = List.fold_left f_without_last (a,List.hd l) @@ List.tl l
+  in f res last
+
 let mktvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
 
 (* Type utilities *)
@@ -254,16 +259,15 @@ let pp_expr env (typ,vars) term =
           let (k'',(name',output')) = pp_expr' k' env' None term in
           let castedtyp = pp_consname typ ref in
           let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
-          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;") ++ str "\n")
+          in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;"))
         | (ids,Pcons (ref,ps),term) -> assert false
         | (ids,Ptuple (ps),term) -> assert false
         | (ids,Prel i,term) -> assert false
         | (ids,Pwild,term) ->
           let (k',(name',output')) = pp_expr' k env None term
-          in (k', output' ++ (pp_class (str "default:") @@ str (resvar ^ " = " ^ name' ^ ";\n")))
-      in
-      let (k3,cases_raw) = List.fold_left case (k2,mt ()) @@ Array.to_list brs in
-      let cases = str @@ let t = string_of_ppcmds cases_raw in String.sub t 0 @@ pred @@ String.length t (* DIRTY *) in
+          in (k', output' ++ (pp_class (str "default:") @@ str (resvar ^ " = " ^ name' ^ ";"))) in
+      let case_nl acc e = let (x,y) = case acc e in (x,y ++ str "\n") in
+      let (k3,cases) = fold_special case case_nl (k2,mt ()) @@ Array.to_list brs in
       let switch = output ++ pp_type vars restyp ++ str ((* TODO *) " " ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
       in (succ k3,(resvar,switch))
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
