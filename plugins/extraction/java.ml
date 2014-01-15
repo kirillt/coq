@@ -174,7 +174,7 @@ let pp_expr env (typ,vars) term =
   let return i r = (succ i,(mkvar i, r)) in
   let wrap l r (k,(n,out)) = (k,(n, str l ++ out ++ str r)) in
   let rec pp_expr' k env maybetyp =
-    let mock' msg = return k @@ pp_type vars (Option.default (assert false) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
+    let mock' msg = return k @@ pp_type vars (Option.default ((*assert false*)Tvar 1) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
     function
     (* I use here my own names for some expressions instead of given ids;
       make sure that all such ids aren't used (in my cases there were only relative variables). *)
@@ -398,8 +398,9 @@ let pp_decl = function
 
 let pp_struct =
   let pp_element = function
-    | (l,SEdecl d) -> pp_decl d
-    | _ -> assert false in
+    | (l,SEdecl    d) -> pp_decl d
+    | (l,SEmodule  m) -> str "\n/* SEmodule */\n"
+    | (l,SEmodtype t) -> str "\n/* SEmodtype */\n" in
   let pp_elements (mp,sel) =
     push_visible mp [];
     let output = pp_list' "\n" pp_element sel in
