@@ -265,7 +265,7 @@ let pp_expr env (typ,vars) term =
         | (ids,Prel i,term) -> assert false
         | (ids,Pwild,term) ->
           let (k',(name',output')) = pp_expr' k env None term
-          in (k', output' ++ (pp_class (str "default:") @@ str (resvar ^ " = " ^ name' ^ ";"))) in
+          in (k', pp_class (str "default:") @@ output' ++ str (resvar ^ " = " ^ name' ^ ";")) in
       let case_nl acc e = let (x,y) = case acc e in (x,y ++ str "\n") in
       let (k3,cases) = fold_special case case_nl (k2,mt ()) @@ Array.to_list brs in
       let switch = output ++ pp_type vars restyp ++ str ((* TODO *) " " ^ resvar ^ " = null;\n") ++ pp_class (str "switch (((" ++ pp_type vars typ ++ str (")" ^ name ^ ").tag)")) cases ++ str "\n" 
