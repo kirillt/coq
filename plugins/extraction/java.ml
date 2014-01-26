@@ -256,7 +256,7 @@ let pp_expr env (typ,vars) term =
         | (ids,Pusual ref,term) ->
           let (k' ,casted) = (succ k, mkvar k) in
           let env' = List.fold_left (fun acc i -> (casted ^ ".field" ^ Pervasives.string_of_int i)::acc) env @@ List.mapi (fun i _ -> i) ids in
-          let (k'',(name',output')) = pp_expr' k' env' None term in
+          let (k'',(name',output')) = pp_expr' k' env' maybetyp term in
           let castedtyp = pp_consname typ ref in
           let body = str "final " ++ castedtyp ++ str (" " ^ casted ^ " = ((") ++ castedtyp ++ str(")" ^ name ^ ");\n") ++ output' ++ str (resvar ^ " = " ^ name' ^ ";\n")
           in (k'', output ++ (pp_class (str "case " ++ pp_casetag ref ++ str ":") @@ body ++ str "break;"))
@@ -264,7 +264,7 @@ let pp_expr env (typ,vars) term =
         | (ids,Ptuple (ps),term) -> assert false
         | (ids,Prel i,term) -> assert false
         | (ids,Pwild,term) ->
-          let (k',(name',output')) = pp_expr' k env None term
+          let (k',(name',output')) = pp_expr' k env maybetyp term
           in (k', pp_class (str "default:") @@ output' ++ str (resvar ^ " = " ^ name' ^ ";")) in
       let case_nl acc e = let (x,y) = case acc e in (x,y ++ str "\n") in
       let (k3,cases) = fold_special case case_nl (k2,mt ()) @@ Array.to_list brs in

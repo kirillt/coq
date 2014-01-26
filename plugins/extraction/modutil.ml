@@ -98,8 +98,8 @@ let rec ast_iter_references do_term do_cons do_type a =
       | MLglob r -> do_term r
       | MLcons (_,r,_) -> do_cons r
       | MLcase (ty,_,v) ->
-	type_iter_references do_type ty;
-	Array.iter (fun (_,p,_) -> patt_iter_references do_cons p) v
+        type_iter_references do_type ty;
+        Array.iter (fun (_,p,_) -> patt_iter_references do_cons p) v
       | MLtyped (a,typ) -> ast_iter_references do_term do_cons do_type a
       | MLrel _ | MLlam _ | MLapp _ | MLletin _ | MLtuple _ | MLfix _ | MLexn _
       | MLdummy | MLaxiom | MLmagic _ -> ()
