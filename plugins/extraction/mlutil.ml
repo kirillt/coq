@@ -756,14 +756,15 @@ let branch_as_fun typ (l,p,c) =
     | Pcons (r,pl) ->
       let pat2rel = function Prel i -> MLrel i | _ -> raise Impossible in
       MLcons (typ, r, List.map pat2rel pl)
-    | _ -> raise Impossible
-  in
-  let rec genrec n = iter_mltyped (function
+    | _ -> raise Impossible in
+  let rec genrec n = map_mltyped (function
     | MLrel i as c ->
-	let i' = i-n in
-	if i'<1 then c
-	else if i'>nargs then MLrel (i-nargs+1)
-	else raise Impossible
+      let i' = i-n
+      in if i'<1
+         then c
+         else if i'>nargs
+              then MLrel (i-nargs+1)
+              else raise Impossible
     | MLcons _ as cons' when cons' = ast_lift n cons -> MLrel (n+1)
     | MLtyped _ -> raise (Failure "MLtyped must be already eliminated")
     | a -> ast_map_lift genrec n a)
