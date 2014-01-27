@@ -342,53 +342,39 @@ let pp_typedecl ref vars typ =
     else pp_class (str "public static class " ++ pp_global Type ref ++
                    str " extends " ++ pp_type vars typ) @@ str ""
 
-let pp_function ref def typ =
+let pp_function ref def arrow =
   if is_inline_custom ref
     then mt ()
-    else match typ with
-         | Tarr (l,r) as arrow ->
-           if is_custom ref
-             then assert false
-             else let fname           = pp_global Term ref in
-                  let (args,raw_term) = collect_lams def in
-                  let (types,typ) = unfold_arrows_n (List.length args) arrow in
-                  let term = match raw_term with
-                    | MLtyped (term',typ') -> term'
-                    | _ -> raw_term in
-                  let  vars       = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types in
-                  let  names      = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types in
-                  let
-                    rec pp_lambda_return x = str "return " ++ pp_lambda_object x
-                    and pp_lambda_object = function
-                      | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
-                      | (Tarr _ as arrow, names) ->
-                        str "new " ++ pp_type vars arrow ++ (
-                          pp_class (str "()") @@ pp_lambda_method (arrow,names)) ++ str ";"
-                      | _ -> assert false
-                    and pp_lambda_method = function
-                      | (Tarr (l,r),name::rest) ->
-                        str "@Override\n" ++
-                        (pp_method true "public" (r,vars) "apply" ([l],[name]) @@
-                          str "return " ++ pp_lambda_object (r,rest))
-                      | _ -> assert false in
-                  let (res,code) = pp_expr (List.rev names) (typ,vars) term
-                  in pp_class (str "public static class " ++ fname) @@
-                     (pp_method false "public static" (typ,vars) "apply" (types,names) @@
-                       code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")) ++ str "\n" ++
-                     (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
-                       pp_lambda_return (arrow,names))
-         | _ ->
-           if is_custom ref
-           then assert false
-             else let vars = List.map mktvar @@ range 1 @@ count_variables typ in
-                  let typname = pp_type vars typ in
-                  let fname = pp_global Term ref in
-                  let initname = fname ++ str "_init" in
-                  let (res,code) = pp_expr [] (typ,vars) @@ def
-                  in str "public static " ++ typname ++ str " " ++ fname ++ str " = " ++ initname ++ str ".create();\n" ++
-                     (pp_class (str "public static class " ++ initname) @@
-                       (pp_method false "public static" (typ,vars) "create" ([],[]) @@
-                         code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")))
+    else if is_custom ref
+      then assert false
+      else let fname           = pp_global Term ref in
+           let (args,raw_term) = collect_lams def in
+           let (types,typ)     = unfold_arrows_n (List.length args) arrow in
+           let term = match raw_term with
+             | MLtyped (term',typ') -> term'
+             | _ -> raw_term in
+           let  vars       = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types in
+           let  names      = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types in
+           let
+             rec pp_lambda_return x = str "return " ++ pp_lambda_object x
+             and pp_lambda_object = function
+               | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
+               | (Tarr _ as arrow, names) ->
+                 str "new " ++ pp_type vars arrow ++ (
+                   pp_class (str "()") @@ pp_lambda_method (arrow,names)) ++ str ";"
+               | _ -> assert false
+             and pp_lambda_method = function
+               | (Tarr (l,r),name::rest) ->
+                 str "@Override\n" ++
+                 (pp_method true "public" (r,vars) "apply" ([l],[name]) @@
+                   str "return " ++ pp_lambda_object (r,rest))
+               | _ -> assert false in
+                 let (res,code) = pp_expr (List.rev names) (typ,vars) term
+                 in pp_class (str "public static class " ++ fname) @@
+                   (pp_method false "public static" (typ,vars) "apply" (types,names) @@
+                     code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")) ++ str "\n" ++
+                   (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
+                     pp_lambda_return (arrow,names))
 
 let pp_decl = function
   | Dtype (ref , vars, typ  ) -> pp_typedecl ref vars typ
