@@ -68,16 +68,18 @@ let mktvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
 
 let unfold_arrows typ =
   let rec work acc = function
+    | Tmeta {contents = Some x} -> work acc x
     | Tarr (l,r) -> work (l::acc) r
     | x -> (List.rev acc,x)
   in work [] typ
 
 let unfold_arrows_n n typ =
   let rec work acc = function
+    | i,Tmeta {contents = Some x} -> work acc (i,x)
     | 0,(Tarr (l,r) as x) -> (List.rev acc,x)
     | i,Tarr (l,r) -> work (l::acc) (pred i,r)
     | 0,x -> (List.rev acc,x)
-    | _,_ -> assert false
+    | _,_ -> raise @@ Failure "Trying to unfold non-arrow."
   in work [] (n,typ)
 
 let unfold_arrows' typ =
@@ -90,13 +92,7 @@ let fold_to_arrow types =
   | [] -> assert false
 
 (* TODO: replace with type_maxvar *)
-let rec count_variables typ =
-  let work acc = function
-    | Tglob (ref,args) -> count_variables' @@ args
-    | Tarr _ as arrow -> count_variables' @@ unfold_arrows' arrow
-    | Tvar i -> Pervasives.max acc i
-    | _ -> assert false
-  in assert (type_maxvar typ = work 0 typ) ; type_maxvar typ
+let rec count_variables typ = type_maxvar typ
 
 and count_variables' types =
   let rec work acc = function
@@ -211,8 +207,7 @@ let pp_expr env (typ,vars) term =
            str "final " ++ pp_type vars restyp ++ str (" " ^ mkvar k2 ^ " = ") ++
            str fname ++
              (pp_list' "" str @@ List.map (fun name -> ".apply(" ^ name ^ ")") names) ++ str ";\n"
-         in return k2 @@ output ++ call
-       )
+         in return k2 @@ output ++ call)
     | MLlam (_,term)       ->
       (* TODO: problems with new type-variables: java can't express them *)
       let rec work = function
