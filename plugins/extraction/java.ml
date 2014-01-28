@@ -91,6 +91,10 @@ let fold_to_arrow types =
   | last::rest -> List.fold_left (fun arrow typ -> Tarr (typ,arrow)) last rest
   | [] -> assert false
 
+let rec unfold_meta = function
+  | Tmeta {contents = Some x} -> unfold_meta x
+  | x -> x
+
 (* TODO: replace with type_maxvar *)
 let rec count_variables typ = type_maxvar typ
 
@@ -170,18 +174,16 @@ let pp_expr env (typ,vars) term =
   let return i r = (succ i,(mkvar i, r)) in
   let wrap l r (k,(n,out)) = (k,(n, str l ++ out ++ str r)) in
   let rec pp_expr' k env maybetyp =
+    let getvar  i =
+      try List.nth env (pred i)
+      with Failure "nth" ->
+        "FAIL_" ^ Pervasives.string_of_int i ^
+         "_of_" ^ Pervasives.string_of_int (List.length env) in
     let mock' msg = return k @@ pp_type vars (Option.default ((*assert false*)Tvar 1) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = null; /* not implemented yet" ^ (if String.length msg < 1 then "" else ": " ^ msg) ^ " */\n") in
     function
     (* I use here my own names for some expressions instead of given ids;
       make sure that all such ids aren't used (in my cases there were only relative variables). *)
-    | MLrel    i             ->
-      let debug = mt () (* str ("/* " ^ Pervasives.string_of_int (pred i) ^ " / ") ++ pp_list' "; " str env ++ str " */ " *) in
-      let name =
-        try List.nth env (pred i)
-        with Failure "nth" ->
-          "FAIL_" ^ Pervasives.string_of_int i ^
-           "_of_" ^ Pervasives.string_of_int (List.length env)
-      in (k,(name, debug (*mt ()*))) 
+    | MLrel    i             -> (k,(getvar i, str ""))
     | MLapp   (f,args)       ->
       let restyp = Option.default ((*assert false*)Tvar 1) maybetyp in
       (match f with
@@ -268,9 +270,13 @@ let pp_expr env (typ,vars) term =
       (* is_custom_match brs; not (is_regular_match brs) ; if ids <> [] then named_lams (List.rev ids) e ; else dummy_lams (ast_lift 1 e) 1 ; find_custom_match brs *)
     | MLtyped (term,typ)     ->
       (match maybetyp with
-       | Some typ' -> pp_expr' k env (Some typ') term
+       | Some typ' -> pp_expr' k env (Some (unfold_meta typ')) term
        | None -> pp_expr' k env (Some typ) term)
-    | MLfix   (i,ids,defs)   -> mock' "MLfix" (* push_vars (List.rev (Array.to_list ids)) env *)
+    | MLfix   (i,ids,defs)   -> mock' ("MLfix"
+      ^ ": i = " ^ Pervasives.string_of_int i
+      ^ "; size of ids: "  ^ (Pervasives.string_of_int @@ Array.length ids)
+      ^ "; size of defs: " ^ (Pervasives.string_of_int @@ Array.length defs))
+      (* push_vars (List.rev (Array.to_list ids)) env *)
     | MLexn    s             -> mock' "MLexn"
     | MLdummy                -> mock' "MLdummy"
     | MLmagic  a             -> mock' "MLmagic"
@@ -373,7 +379,7 @@ let pp_function ref def arrow =
 
 let pp_decl = function
   | Dtype (ref , vars, typ  ) -> pp_typedecl ref vars typ
-  | Dterm (ref , def , typ  ) -> pp_function ref def  typ
+  | Dterm (ref , def , typ  ) -> pp_function ref def typ
   | Dfix  (refs, defs, types) -> pp_list' "\n" (fun i -> let k = pred i in pp_function refs.(k) defs.(k) types.(k)) @@ range 1 @@ Array.length refs
   | Dind  (kn  , ind        ) -> pp_inductive kn ind (* special case: ind.ind_kind = Singleton *)
 
