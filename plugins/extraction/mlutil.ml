@@ -254,7 +254,8 @@ let rec type_mem_kn kn = function
 let type_maxvar t =
   let rec parse n = function
     | Tmeta {contents = Some t} -> parse n t
-    | Tvar i -> max i n
+    | Tvar  i -> max i n
+    | Tvar' i -> max i n
     | Tarr (a,b) -> parse (parse n a) b
     | Tglob (_,l) -> List.fold_left parse n l
     | _ -> n
