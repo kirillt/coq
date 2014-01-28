@@ -64,20 +64,27 @@ let fold_special f f' a l =
 
 let mktvar i = id_of_string @@ Char.escaped @@ Char.chr @@ Char.code 'a' + i - 1
 
-let split_map f a =
-  let (l,r) = List.split @@ List.map f @@ Array.to_list a
-  in (Array.of_list l, Array.of_list r)
+let split_map f a = List.split @@ List.map f a
 
 let split_type = function
   | MLtyped (term,typ) -> (term,typ)
   | _ -> raise @@ Failure "No type annotation."
 
-let combine3 =
+let combine3 : 'a list -> 'b list -> 'c list -> ('a * 'b * 'c) list =
   let rec work acc xs ys zs = match (xs,ys,zs) with
     | (x::xs,y::ys,z::zs) -> work ((x,y,z)::acc) xs ys zs
     | ([],[],[]) -> List.rev acc
     | (_,_,_) -> raise @@ Failure "Bad lists lengths."
   in work []
+
+let init =
+  let rec work (lead,last) = function
+    | (x::xs) -> work (
+      (match last with
+       | Some h -> h::lead
+       | None -> lead), Some x) xs
+    | [] -> (List.rev lead,last)
+  in work ([],None)
 
 (* Type utilities *)
 
@@ -90,10 +97,9 @@ let unfold_arrows typ =
 
 let unfold_arrows_n n typ =
   let rec work acc = function
-    | i,Tmeta {contents = Some x} -> work acc (i,x)
-    | 0,(Tarr (l,r) as x) -> (List.rev acc,x)
-    | i,Tarr (l,r) -> work (l::acc) (pred i,r)
     | 0,x -> (List.rev acc,x)
+    | i,Tmeta {contents = Some x} -> work acc (i,x)
+    | i,Tarr (l,r) -> work (l::acc) (pred i,r)
     | _,_ -> raise @@ Failure "Trying to unfold non-arrow."
   in work [] (n,typ)
 
@@ -110,7 +116,6 @@ let rec unfold_meta = function
   | Tmeta {contents = Some x} -> unfold_meta x
   | x -> x
 
-(* TODO: replace with type_maxvar *)
 let rec count_variables typ = type_maxvar typ
 
 and count_variables' types =
@@ -118,6 +123,9 @@ and count_variables' types =
     | typ::types' -> work (Pervasives.max acc @@ count_variables typ) types'
     | [] -> acc
   in work 0 types
+
+let mktvars  typ   = List.map mktvar @@ range 1 @@ count_variables  typ
+let mktvars' types = List.map mktvar @@ range 1 @@ count_variables' types
 
 (* Java utilities *)
 
@@ -246,7 +254,7 @@ let pp_expr env (typ,vars) term =
       let env' = name1::env in
       let (k'',(name2,output2)) = pp_expr' k' env' (* TODO after debug: maybetyp *) None t2
       in (k'',(name2,output1 ++ output2))
-    | MLglob   ref           -> return k @@ str "final " ++ pp_type vars (Option.default ((*assert false*)Tvar 2) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = ") ++ pp_global Term ref ++ str ".lambda();\n"
+    | MLglob   ref           -> return k @@ str "final " ++ pp_type vars (Option.default ((*assert false*)Tvar 2) maybetyp) ++ (str @@ " " ^ (mkvar k) ^ " = ") ++ pp_global Term ref ++ str ".apply();\n"
     | MLcons  (typ,ref,args) ->
       let step (k',acc) arg = let res = pp_expr' k' env None arg in (fst res,(snd res)::acc) in
       let (k'',args')  = List.fold_left step (k,[]) args in
@@ -358,81 +366,107 @@ let pp_typedecl ref vars typ =
     else pp_class (str "public static class " ++ pp_global Type ref ++
                    str " extends " ++ pp_type vars typ) @@ str ""
 
-let pp_function ref def arrow =
-  let rec pp_function_rec env fname term arrow =
-    match term with
-      | MLfix (i,ids,defs) ->
-        (* TODO: remove copy-paste *)
-        let lnames       = Array.map (fun id -> (* HACK *) "_" ^ string_of_id id) ids in
-        let (defs,types) = split_map split_type defs in
-        let (term,arrow) = (defs.(i),types.(i)) in
-        let (args ,term) = collect_lams term in
-        let (types',typ) = unfold_arrows_n (List.length args) arrow in
-        let vars         = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types' in
-        let names        = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types' in
-        let
-          rec pp_lambda_return x = str "return " ++ pp_lambda_object x
-          and pp_lambda_object = function
-            | (Tmeta {contents = Some x},l) -> pp_lambda_object (x,l)
-            | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
-            | (Tarr _ as arrow, names) ->
-              str "new " ++ pp_type vars arrow ++ (
-                pp_class (str "()") @@ pp_lambda_method (arrow,names)) ++ str ";"
-            | _ -> assert false
-          and pp_lambda_method = function
-            | (Tmeta {contents = Some x},l) -> pp_lambda_method (x,l)
-            | (Tarr (l,r),name::rest) ->
-              str "@Override\n" ++
-              (pp_method true "public" (r,vars) "apply" ([l],[name]) @@
-                str "return " ++ pp_lambda_object (r,rest))
-            | _ -> assert false
-              in pp_class (str "public static class " ++ fname) @@
-                (pp_class (str "public static class local") @@
-                  let lnames = Array.to_list lnames in
-                  let locals = combine3 lnames (Array.to_list defs) (Array.to_list types) in
-                  let cast (n,_,t) = let c = string_of_ppcmds @@ pp_type vars t in "((" ^ c ^ ")((Object)(" ^ n ^ ".lambda())))" in (* DIRTY HACK *)
-                  let f (x,y,z) = pp_function_rec (List.append (List.map cast locals) env) (str x) y z
-                  in pp_list' "\n" f locals) ++ str "\n" ++
-                (pp_method false "public static" (typ,vars) "apply" (types',names) @@
-                    str ("return local." ^ lnames.(i) ^ ".apply") ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";") ++ str "\n" ++
-                (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
-                  pp_lambda_return (arrow,names))
-      | _ ->
-        let (args,term) = collect_lams term in
-        let (types,typ) = unfold_arrows_n (List.length args) arrow in
-        let vars        = List.map mktvar @@ range 1 @@ count_variables' @@ typ::types in
-        let names       = List.mapi (fun i _ -> "arg" ^ Pervasives.string_of_int i) types in
-        let (res,code)  = pp_expr (List.rev @@ List.append env names) (typ,vars) term in
-        let
-          rec pp_lambda_return x = str "return " ++ pp_lambda_object x
-          and pp_lambda_object = function
-            | (Tmeta {contents = Some x},l) -> pp_lambda_object (x,l)
-            | (_,[]) -> fname ++ str ".apply" ++ (pp_wrap_a @@ pp_list' ", " str names) ++ str ";"
-            | (Tarr _ as arrow, names) ->
-              str "new " ++ pp_type vars arrow ++ (
-                pp_class (str "()") @@ pp_lambda_method (arrow,names)) ++ str ";"
-            | _ -> assert false
-          and pp_lambda_method = function
-            | (Tmeta {contents = Some x},l) -> pp_lambda_method (x,l)
-            | (Tarr (l,r),name::rest) ->
-              str "@Override\n" ++
-              (pp_method true "public" (r,vars) "apply" ([l],[name]) @@
-                str "return " ++ pp_lambda_object (r,rest))
-            | _ -> assert false
-              in pp_class (str "public static class " ++ fname) @@
-                (pp_method false "public static" (typ,vars) "apply" (types,names) @@
-                  code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")) ++ str "\n" ++
-                (pp_method false "public static" (arrow,vars) "lambda" ([],[]) @@
-                  pp_lambda_return (arrow,names))
+(* There are three key forms of generated methods:
+    1) [core] apply() -- k arguments for k lead lambdas;
+    2) [full] apply() -- n arguments for full application (n >= k);
+    3) [zero] apply() -- 0 arguments.
+   I generate [core] method, then wrap it into lambdas and call it [zero] method;
+   then I fully unfold type arrow of [core], add necessary arguments and call it [full].
+   TODO: generate all intermediate methods between [zero] < [core] < [full].
+   Movement from [core] up   to [full] is `apply(arg1,..,argK).apply(argK+1)' and
+   movement from [core] down to [zero] is `\argI -> apply(arg1,..,argI)' (apply(arg1,..,argI) is generated, too). *)
+
+type local = {def : ml_ast; typ : ml_type; name : string}
+type args  = {names : string list; types : ml_type list}
+type arg   = {name  : string     ; typ   : ml_type}
+type core  = {size : int; def  : ml_ast}
+type full  = {size : int; args : args}
+
+let get  i args =
+  try {name = List.nth args.names i;
+       typ  = List.nth args.types i}
+  with _ ->
+    raise @@ Failure ("Attempt to get argument " ^ string_of_int i ^ " failed.")
+
+let take i args =
+  let rec work acc = function
+    | 0,_ -> {names = List.rev acc.names; types = List.rev acc.types}
+    | i,{names = n::nt; types = t::tt} -> work {names = n :: acc.names; types = t :: acc.types} (pred i, {names = nt; types = tt})
+    | _,_ -> {names = List.rev acc.names; types = List.rev acc.types}
+  in work {names = []; types = []} (i,args)
+
+let pp_function ref def typ =
+  let rec pp_function_rec depth env fname term arrow =
+    let core =
+      let x = match term with
+        | MLfix (i,_,defs) -> MLrel (-1)
+        | def -> def in
+      let (a,y) = collect_lams x
+      in {def = y; size = List.length a} in
+    let locals = match term with
+      | MLfix (_,ids,defs') ->
+        let names = List.map (fun id -> "local_" ^ string_of_id id) @@ Array.to_list ids in
+        let  defs = Array.to_list defs' in
+        let (defs,types) = split_map split_type defs
+        in List.map (fun (d,t,n) -> {def = d; typ = t; name = n}) @@ combine3 defs types names
+      | _ -> [] in
+    let local_names = List.map (fun (l : local) -> l.name) locals in
+    let full =
+      let x = fst @@ unfold_arrows arrow in
+      let n = List.length x
+      in {size = n;
+          args = {names = List.map (fun i -> "arg" ^ string_of_int i) @@ range 1 n;
+                  types = x}} in
+    let vars = mktvars arrow in
+    let local_scope = if depth > 0 then "local" ^ string_of_int depth else "local" in
+    let local_code  = match locals with
+      | [] -> str "" | _ -> 
+        let local_env  = List.append local_names env in
+        let generate_local (l : local) : std_ppcmds = pp_function_rec (depth + 1) local_env l.name l.def l.typ
+        in str "\n" ++
+           (pp_class (str @@ "public static class " ^ local_scope) @@
+            pp_list' "\n" generate_local locals) in
+    let generate i =
+      let (_,typ) = unfold_arrows_n i arrow in
+      let args = take i full.args
+      in pp_method false "public static" (typ,vars) "apply" (args.types,args.names) @@
+         if i = core.size
+         then 
+              match term with
+              | MLfix (i,_,_) ->
+                     let qualified =
+                       try local_scope ^ "." ^ (List.nth local_names i)
+                       with _ -> raise @@ Failure "Can't get local name."
+                     in str @@ "return " ^ qualified ^ ".apply();"
+              | _ -> let env = (List.rev @@ List.append env args.names) in
+                     let (res,code) = pp_expr env (typ,vars) core.def
+                     in code ++ str "return (" ++ pp_type vars typ ++ str (")" ^ res ^ ";")
+         else if i < core.size
+              then let typ' = snd @@ unfold_arrows_n 1 typ in
+                   let arg  = get i full.args
+                      in (pp_class (str "return new " ++ pp_type vars typ ++ str "()") @@
+                          str "@Override\n" ++
+                         (pp_method true "public" (typ',vars) "apply" ([arg.typ],[arg.name]) @@
+                          str ("return " ^ fname ^ ".apply(") ++ pp_list' ", " str (List.append args.names [arg.name]) ++ (str ");")))
+                         ++ str ";"
+              else let arg  = get (pred i) full.args in
+                   let (lead, last) =
+                        match init args.names with
+                        | (x, Some y) -> (x,y)
+                        | (_,None) -> assert false
+                      in str "final " ++ pp_type vars (Tarr (arg.typ,typ)) ++ (str @@ " lambda = " ^ fname ^ ".apply(") ++ pp_list' ", " str lead ++ str ");\n" ++
+                         (str @@ "return lambda.apply(" ^ last ^ ");")
+    in pp_class (str @@ "public static class " ^ fname) @@
+         (pp_list' "\n" generate @@ range 0 full.size) ++ local_code
   in if is_inline_custom ref
        then mt ()
         else if is_custom ref
           then assert false
-          else let fname = pp_global Term ref in
+          else let fname = string_of_ppcmds @@ pp_global Term ref in
                let term  = match def with
                  | MLtyped (def,_) -> def
                  | _ -> def
-               in pp_function_rec [] fname term arrow
+               in pp_function_rec 0 [] fname term typ
 
 let pp_decl = function
   | Dtype (ref , vars, typ  ) -> pp_typedecl ref vars typ
