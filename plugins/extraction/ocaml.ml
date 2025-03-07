@@ -261,6 +261,7 @@ let rec pp_expr par env args =
 		apply2
 		  (v 0 (str "match " ++ head ++ str " with" ++ fnl () ++
 			pp_pat env pv))))
+    | MLtyped _ -> assert false
 
 and pp_record_proj par env typ t pv args =
   (* Can a match be printed as a mere record projection ? *)

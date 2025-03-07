@@ -91,16 +91,16 @@ let patt_iter_references do_cons p =
     | Prel _ | Pwild -> ()
   in iter p
 
-let ast_iter_references do_term do_cons do_type a =
+let rec ast_iter_references do_term do_cons do_type a =
   let rec iter a =
     ast_iter iter a;
     match a with
       | MLglob r -> do_term r
       | MLcons (_,r,_) -> do_cons r
       | MLcase (ty,_,v) ->
-	type_iter_references do_type ty;
-	Array.iter (fun (_,p,_) -> patt_iter_references do_cons p) v
-
+        type_iter_references do_type ty;
+        Array.iter (fun (_,p,_) -> patt_iter_references do_cons p) v
+      | MLtyped (a,typ) -> ast_iter_references do_term do_cons do_type a
       | MLrel _ | MLlam _ | MLapp _ | MLletin _ | MLtuple _ | MLfix _ | MLexn _
       | MLdummy | MLaxiom | MLmagic _ -> ()
   in iter a
@@ -391,16 +391,13 @@ let check_implicits = function
 
 let optimize_struct to_appear struc =
   let subst = ref (Refmap'.empty : ml_ast Refmap'.t) in
-  let opt_struc =
-    List.map (fun (mp,lse) -> (mp, optim_se true (fst to_appear) subst lse))
-      struc
-  in
-  ignore (struct_ast_search check_implicits opt_struc);
-  if library () then
-    List.filter (fun (_,lse) -> lse<>[]) opt_struc
-  else begin
-    reset_needed ();
-    List.iter add_needed (fst to_appear);
-    List.iter add_needed_mp (snd to_appear);
-    depcheck_struct opt_struc
-  end
+  let opt_struc = List.map (fun (mp,lse) -> (mp, optim_se true (fst to_appear) subst lse)) struc
+  in ignore (struct_ast_search check_implicits opt_struc);
+    if library () then
+      List.filter (fun (_,lse) -> lse<>[]) opt_struc
+    else begin
+      reset_needed ();
+      List.iter add_needed (fst to_appear);
+      List.iter add_needed_mp (snd to_appear);
+      depcheck_struct opt_struc
+    end

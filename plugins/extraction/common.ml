@@ -552,6 +552,11 @@ let pp_haskell_gen k mp rls = match rls with
     let prf = if base_mp mp <> top_visible_mp () then s ^ "." else "" in
     prf ^ str
 
+(* Java *)
+
+let pp_java_gen k mp rls = pp_haskell_gen k mp rls
+
+
 (* Main name printing function for a reference *)
 
 let pp_global k r =
@@ -569,6 +574,7 @@ let pp_global k r =
       | Scheme -> unquote s (* no modular Scheme extraction... *)
       | Haskell -> if modular () then pp_haskell_gen k mp rls else s
       | Ocaml -> pp_ocaml_gen k mp rls (Some l)
+      | Java -> if modular () then pp_java_gen k mp rls else s
 
 (* The next function is used only in Ocaml extraction...*)
 
@@ -602,9 +608,9 @@ let check_extract_ascii () =
   with Not_found -> false
 
 let is_list_cons l =
- List.for_all (function MLcons (_,ConstructRef(_,_),[]) -> true | _ -> false) l
+ List.for_all (iter_mltyped @@ function MLcons (_,ConstructRef(_,_),[]) -> true | _ -> false) l
 
-let is_native_char = function
+let is_native_char = iter_mltyped @@ function
   | MLcons(_,ConstructRef ((kn,0),1),l) ->
     kn = ind_ascii && check_extract_ascii () && is_list_cons l
   | _ -> false
@@ -612,6 +618,7 @@ let is_native_char = function
 let pp_native_char c =
   let rec cumul = function
     | [] -> 0
+    | MLtyped(x,_)::l -> cumul (x::l)
     | MLcons(_,ConstructRef(_,j),[])::l -> (2-j) + 2 * (cumul l)
     | _ -> assert false
   in

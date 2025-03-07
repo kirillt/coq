@@ -122,6 +122,20 @@ and ml_ast =
   | MLdummy
   | MLaxiom
   | MLmagic  of ml_ast
+  | MLtyped  of ml_ast * ml_type
+
+  (* MLtyped is a fast solution for propogation of
+     inferred types to pretty-printing stage for languages
+     which require explicit type annotations (Java).
+
+     You should be careful with usage of it, because
+     in some places pattern matching can be broken
+     and require proper handling of MLtyped.
+
+     File mlutil.ml contains some high-order functions
+     for wrapping iterating/mapping ast functions.
+     Remember to avoid creation of
+     `MLtyped (MLtyped _,_)` terms. *)
 
 and ml_pattern =
   | Pcons   of global_reference * ml_pattern list
